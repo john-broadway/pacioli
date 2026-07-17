@@ -1,3 +1,4 @@
+<!-- mcp-name: io.github.john-broadway/pacioli -->
 <img src="../assets/marks/device.svg" width="72" align="right" alt="The printer's device"/>
 
 *Tractatus de Instrumentis — the broker.* ❧ *Nulla in libro sine contraria — no debit without a credit.*

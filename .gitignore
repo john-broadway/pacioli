@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+.venv-*/
+
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Git worktrees (superpowers:using-git-worktrees)
+.worktrees/
+
+# OS / editor cruft
+.DS_Store
+*.swp
+*~
+.scratch/

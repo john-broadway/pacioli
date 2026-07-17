@@ -7,4 +7,4 @@ The security-critical pillar logic lives in the pure cores (``prove``, ``consent
 and MCP-facing glue (``erpnext``, ``server``, ``registry``) is thin and proven live. See ``SPEC.md``.
 """
 
-__version__ = "0.30.0"
+__version__ = "0.30.1"

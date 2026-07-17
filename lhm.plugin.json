@@ -1,0 +1,794 @@
+{
+  "identifier": "john-broadway-pacioli",
+  "name": "Pacioli — the governed front door to your ERPNext books",
+  "description": "Governed agent access to your ERPNext books — Sales/Purchase Invoices, Payments, Journal Entries: every write PLANNED, CONSENTED, PROVEN, and UNDOable. No debit without a credit. MCP + A2A doors, one spine.",
+  "version": "0.30.1",
+  "tools": [
+    {
+      "name": "get_sales_invoice",
+      "description": "Read one Sales Invoice (permission-scoped, read-only).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Document name."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "list_sales_invoices",
+      "description": "List Sales Invoices (read-only). Optional Frappe filters, e.g. [[\"status\",\"=\",\"Draft\"]].",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "filters": {
+            "type": "array",
+            "items": {
+              "type": "array"
+            },
+            "description": "Frappe filter triples."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 20
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        }
+      }
+    },
+    {
+      "name": "submit_sales_invoice",
+      "description": "Submit a Sales Invoice under a recorded plan and a live human-minted consent marker. Refuses a stale plan, a period-lock violation, a plan bound to a different document or document type, or a missing/spent/mismatched marker. This is one of the two state-changing tools.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Draft document name."
+          },
+          "plan_id": {
+            "type": "string",
+            "description": "From plan_submit."
+          },
+          "marker": {
+            "type": "string",
+            "description": "The single-use consent token a human handed you."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name",
+          "plan_id",
+          "marker"
+        ]
+      }
+    },
+    {
+      "name": "cancel_sales_invoice",
+      "description": "Cancel a submitted Sales Invoice under a recorded cancel-plan and a live human-minted consent marker (UNDO — docstatus 1 → 2). Refuses a stale plan, a period-lock violation, a missing/spent/mismatched marker, a plan bound to a different document or document type, or a marker minted for any other operation. ERPNext's own cancel-blocks are honored, never bypassed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Submitted document name."
+          },
+          "plan_id": {
+            "type": "string",
+            "description": "From plan_cancel."
+          },
+          "marker": {
+            "type": "string",
+            "description": "The single-use consent token a human handed you."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name",
+          "plan_id",
+          "marker"
+        ]
+      }
+    },
+    {
+      "name": "amend_sales_invoice",
+      "description": "Create the corrected re-draft of a CANCELLED Sales Invoice (UNDO's second half): a new DRAFT copied from it with amended_from set. Reversible — nothing posts, deleting the draft undoes it — so no consent marker is required; submitting the corrected draft is the irreversible step and demands its own plan_submit + human-minted marker. Under an active ERPNext Workflow the draft is seated at the workflow's initial state (disclosed as workflow_seat), so it is born with legal transitions. Refuses an uncancelled source, a source that already has an amendment (any docstatus), a wrong-books company, and ambiguous/malformed/unseatable workflow configuration. Writes the intent+outcome receipt pair.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Cancelled document name."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "get_purchase_invoice",
+      "description": "Read one Purchase Invoice (permission-scoped, read-only).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Document name."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "list_purchase_invoices",
+      "description": "List Purchase Invoices (read-only). Optional Frappe filters, e.g. [[\"status\",\"=\",\"Draft\"]].",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "filters": {
+            "type": "array",
+            "items": {
+              "type": "array"
+            },
+            "description": "Frappe filter triples."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 20
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        }
+      }
+    },
+    {
+      "name": "submit_purchase_invoice",
+      "description": "Submit a Purchase Invoice under a recorded plan and a live human-minted consent marker. Refuses a stale plan, a period-lock violation, a plan bound to a different document or document type, or a missing/spent/mismatched marker. This is one of the two state-changing tools.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Draft document name."
+          },
+          "plan_id": {
+            "type": "string",
+            "description": "From plan_submit."
+          },
+          "marker": {
+            "type": "string",
+            "description": "The single-use consent token a human handed you."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name",
+          "plan_id",
+          "marker"
+        ]
+      }
+    },
+    {
+      "name": "cancel_purchase_invoice",
+      "description": "Cancel a submitted Purchase Invoice under a recorded cancel-plan and a live human-minted consent marker (UNDO — docstatus 1 → 2). Refuses a stale plan, a period-lock violation, a missing/spent/mismatched marker, a plan bound to a different document or document type, or a marker minted for any other operation. ERPNext's own cancel-blocks are honored, never bypassed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Submitted document name."
+          },
+          "plan_id": {
+            "type": "string",
+            "description": "From plan_cancel."
+          },
+          "marker": {
+            "type": "string",
+            "description": "The single-use consent token a human handed you."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name",
+          "plan_id",
+          "marker"
+        ]
+      }
+    },
+    {
+      "name": "amend_purchase_invoice",
+      "description": "Create the corrected re-draft of a CANCELLED Purchase Invoice (UNDO's second half): a new DRAFT copied from it with amended_from set. Reversible — nothing posts, deleting the draft undoes it — so no consent marker is required; submitting the corrected draft is the irreversible step and demands its own plan_submit + human-minted marker. Under an active ERPNext Workflow the draft is seated at the workflow's initial state (disclosed as workflow_seat), so it is born with legal transitions. Refuses an uncancelled source, a source that already has an amendment (any docstatus), a wrong-books company, and ambiguous/malformed/unseatable workflow configuration. Writes the intent+outcome receipt pair.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Cancelled document name."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "get_payment_entry",
+      "description": "Read one Payment Entry (permission-scoped, read-only).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Document name."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "list_payment_entries",
+      "description": "List Payment Entries (read-only). Optional Frappe filters, e.g. [[\"status\",\"=\",\"Draft\"]].",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "filters": {
+            "type": "array",
+            "items": {
+              "type": "array"
+            },
+            "description": "Frappe filter triples."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 20
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        }
+      }
+    },
+    {
+      "name": "submit_payment_entry",
+      "description": "Submit a Payment Entry under a recorded plan and a live human-minted consent marker. Refuses a stale plan, a period-lock violation, a plan bound to a different document or document type, or a missing/spent/mismatched marker. This is one of the two state-changing tools.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Draft document name."
+          },
+          "plan_id": {
+            "type": "string",
+            "description": "From plan_submit."
+          },
+          "marker": {
+            "type": "string",
+            "description": "The single-use consent token a human handed you."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name",
+          "plan_id",
+          "marker"
+        ]
+      }
+    },
+    {
+      "name": "cancel_payment_entry",
+      "description": "Cancel a submitted Payment Entry under a recorded cancel-plan and a live human-minted consent marker (UNDO — docstatus 1 → 2). Refuses a stale plan, a period-lock violation, a missing/spent/mismatched marker, a plan bound to a different document or document type, or a marker minted for any other operation. ERPNext's own cancel-blocks are honored, never bypassed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Submitted document name."
+          },
+          "plan_id": {
+            "type": "string",
+            "description": "From plan_cancel."
+          },
+          "marker": {
+            "type": "string",
+            "description": "The single-use consent token a human handed you."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name",
+          "plan_id",
+          "marker"
+        ]
+      }
+    },
+    {
+      "name": "amend_payment_entry",
+      "description": "Create the corrected re-draft of a CANCELLED Payment Entry (UNDO's second half): a new DRAFT copied from it with amended_from set. Reversible — nothing posts, deleting the draft undoes it — so no consent marker is required; submitting the corrected draft is the irreversible step and demands its own plan_submit + human-minted marker. Under an active ERPNext Workflow the draft is seated at the workflow's initial state (disclosed as workflow_seat), so it is born with legal transitions. Refuses an uncancelled source, a source that already has an amendment (any docstatus), a wrong-books company, and ambiguous/malformed/unseatable workflow configuration. Writes the intent+outcome receipt pair.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Cancelled document name."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "get_journal_entry",
+      "description": "Read one Journal Entry (permission-scoped, read-only).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Document name."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "list_journal_entries",
+      "description": "List Journal Entries (read-only). Optional Frappe filters, e.g. [[\"status\",\"=\",\"Draft\"]].",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "filters": {
+            "type": "array",
+            "items": {
+              "type": "array"
+            },
+            "description": "Frappe filter triples."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 20
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        }
+      }
+    },
+    {
+      "name": "submit_journal_entry",
+      "description": "Submit a Journal Entry under a recorded plan and a live human-minted consent marker. Refuses a stale plan, a period-lock violation, a plan bound to a different document or document type, or a missing/spent/mismatched marker. This is one of the two state-changing tools.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Draft document name."
+          },
+          "plan_id": {
+            "type": "string",
+            "description": "From plan_submit."
+          },
+          "marker": {
+            "type": "string",
+            "description": "The single-use consent token a human handed you."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name",
+          "plan_id",
+          "marker"
+        ]
+      }
+    },
+    {
+      "name": "cancel_journal_entry",
+      "description": "Cancel a submitted Journal Entry under a recorded cancel-plan and a live human-minted consent marker (UNDO — docstatus 1 → 2). Refuses a stale plan, a period-lock violation, a missing/spent/mismatched marker, a plan bound to a different document or document type, or a marker minted for any other operation. ERPNext's own cancel-blocks are honored, never bypassed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Submitted document name."
+          },
+          "plan_id": {
+            "type": "string",
+            "description": "From plan_cancel."
+          },
+          "marker": {
+            "type": "string",
+            "description": "The single-use consent token a human handed you."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name",
+          "plan_id",
+          "marker"
+        ]
+      }
+    },
+    {
+      "name": "amend_journal_entry",
+      "description": "Create the corrected re-draft of a CANCELLED Journal Entry (UNDO's second half): a new DRAFT copied from it with amended_from set. Reversible — nothing posts, deleting the draft undoes it — so no consent marker is required; submitting the corrected draft is the irreversible step and demands its own plan_submit + human-minted marker. Under an active ERPNext Workflow the draft is seated at the workflow's initial state (disclosed as workflow_seat), so it is born with legal transitions. Refuses an uncancelled source, a source that already has an amendment (any docstatus), a wrong-books company, and ambiguous/malformed/unseatable workflow configuration. Writes the intent+outcome receipt pair.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Cancelled document name."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "workflow_status",
+      "description": "Read the ERPNext Workflow (if any) governing this document: whether one is active, the document's current workflow state, the legal transitions from here (each flagged approving vs non-approving, with its role and self-approval setting), and an honest separation-of-duties risk note. Read-only; unrelated to the plan/marker flow. No active workflow returns workflow_active=false, not an error. pacioli_doctype selects the document's DocType (default Sales Invoice).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Document name."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          },
+          "pacioli_doctype": {
+            "type": "string",
+            "description": "ERPNext DocType to operate on: 'Sales Invoice', 'Purchase Invoice', 'Payment Entry', or 'Journal Entry' (omit for 'Sales Invoice', today's default). A doctype this broker is not built and tested for is refused."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "plan_submit",
+      "description": "PLAN a document submit: dry-run the draft via ERPNext's native ledger preview and record the plan. Returns plan_id, the projected GL impact, and risk flags. Nothing is posted. A human then mints a consent marker for the plan_id, out of band. pacioli_doctype selects the document's DocType (default Sales Invoice) — the plan is BOUND to it, and the matching submit_<doctype> tool must be used to consume it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Draft document name."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          },
+          "pacioli_doctype": {
+            "type": "string",
+            "description": "ERPNext DocType to operate on: 'Sales Invoice', 'Purchase Invoice', 'Payment Entry', or 'Journal Entry' (omit for 'Sales Invoice', today's default). A doctype this broker is not built and tested for is refused."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "plan_cancel",
+      "description": "PLAN a document cancel (UNDO): read the posting's live GL rows (what the cancel unwinds), check the linked-submitted-documents blast radius, and record the plan. Refuses when other submitted documents link to this one (use plan_cascade_cancel to govern the whole graph in one consent). Nothing is cancelled. A human then mints a consent marker for the plan_id, out of band — a cancel marker never authorizes a submit, or vice versa. pacioli_doctype selects the document's DocType (default Sales Invoice) — the plan is BOUND to it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Submitted document name."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          },
+          "pacioli_doctype": {
+            "type": "string",
+            "description": "ERPNext DocType to operate on: 'Sales Invoice', 'Purchase Invoice', 'Payment Entry', or 'Journal Entry' (omit for 'Sales Invoice', today's default). A doctype this broker is not built and tested for is refused."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "plan_cascade_cancel",
+      "description": "PLAN a CASCADE cancel: discover the full submitted-dependent graph of a document, order it (dependents first, the target last), and record the plan for the WHOLE ordered graph. Refuses a cycle or a graph over the cap. Nothing is cancelled. A human then mints ONE consent marker for the plan_id that authorizes exactly this enumerated graph. pacioli_doctype selects the target's DocType (default Sales Invoice). Any doctype may appear in the graph; each node is labeled 'modeled' (Sales/Purchase Invoice) or 'generic'.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Submitted target document name."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          },
+          "pacioli_doctype": {
+            "type": "string",
+            "description": "ERPNext DocType to operate on: 'Sales Invoice', 'Purchase Invoice', 'Payment Entry', or 'Journal Entry' (omit for 'Sales Invoice', today's default). A doctype this broker is not built and tested for is refused."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "cascade_cancel",
+      "description": "Execute a recorded cascade-cancel plan under a live human-minted marker: cancel every document in the frozen graph in order (dependents first, target last, docstatus 1 -> 2). Re-checks the graph is unchanged since planning and each node's freshness + period-lock before its cancel. Fail-stop: on the first failure it STOPS and returns exactly what was cancelled and where it stopped (ok is true only if ALL cancelled). The marker is spent if any document was cancelled. ERPNext's own cancel-blocks are honored, never bypassed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Submitted target document name."
+          },
+          "plan_id": {
+            "type": "string",
+            "description": "From plan_cascade_cancel."
+          },
+          "marker": {
+            "type": "string",
+            "description": "The single-use consent token a human handed you."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "name",
+          "plan_id",
+          "marker"
+        ]
+      }
+    },
+    {
+      "name": "plan_reconcile",
+      "description": "PLAN a governed reconciliation (settling payments against invoices): the agent proposes specific (payment, invoice, amount) tuples; the broker reads each named invoice and payment FRESH, discloses the settlement (per row: which payment settles which invoice, the amount, live pre-outstanding -> projected post-outstanding), a standing note that reconciliation bypasses ERPNext's own freeze belts (the broker enforces the closed-books refusal itself, ERPNext will not), and a note naming the possible system Journal Entry side-effects (exchange gain/loss; credit/debit note). Nothing is posted. A human then mints a consent marker for the plan_id, out of band — it binds to exactly this pinned allocation set; reconcile never re-reads the allocation from the caller.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "party_type": {
+            "type": "string",
+            "description": "ERPNext party type, e.g. 'Customer' or 'Supplier'."
+          },
+          "party": {
+            "type": "string",
+            "description": "The party name."
+          },
+          "company": {
+            "type": "string",
+            "description": "The ERPNext company every allocation must belong to."
+          },
+          "receivable_payable_account": {
+            "type": "string",
+            "description": "The GL account (e.g. Debtors/Creditors) reconciliation is scoped to."
+          },
+          "allocations": {
+            "type": "array",
+            "description": "The specific settlements proposed: each row names one payment and one invoice to settle it against, and the amount. The broker validates and owns the final allocation graph — it does not auto-match.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "payment_type": {
+                  "type": "string",
+                  "description": "'Payment Entry'. Journal-Entry payments are a deferred extension, refused at plan and execute."
+                },
+                "payment_no": {
+                  "type": "string",
+                  "description": "The Payment Entry name."
+                },
+                "invoice_type": {
+                  "type": "string",
+                  "description": "'Sales Invoice' or 'Purchase Invoice'."
+                },
+                "invoice_no": {
+                  "type": "string",
+                  "description": "The invoice name."
+                },
+                "allocated_amount": {
+                  "type": "number",
+                  "description": "The amount to settle."
+                }
+              },
+              "required": [
+                "payment_type",
+                "payment_no",
+                "invoice_type",
+                "invoice_no",
+                "allocated_amount"
+              ]
+            }
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "party_type",
+          "party",
+          "company",
+          "receivable_payable_account",
+          "allocations"
+        ]
+      }
+    },
+    {
+      "name": "reconcile",
+      "description": "Execute a recorded reconcile plan under a live human-minted marker: settle exactly the pinned allocation set from plan_reconcile. The allocation is NEVER re-supplied here — only plan_id and marker travel — it comes only from the pinned plan graph (the broker's safety control: the agent proposes at plan time, the broker owns and constructs the write). Re-checks per-row freshness, closed-books, and the allocation ceiling against a FRESH read (never the plan's disclosed numbers) before any write; one reconcile call across the whole set; confirms via a readback of each invoice's real post-write outstanding, never the call's own result body.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "description": "From plan_reconcile."
+          },
+          "marker": {
+            "type": "string",
+            "description": "The single-use consent token a human handed you."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        },
+        "required": [
+          "plan_id",
+          "marker"
+        ]
+      }
+    },
+    {
+      "name": "request_workflow_transition",
+      "description": "Perform a NON-APPROVING ERPNext Workflow transition (e.g. Draft -> Pending Approval) on a document governed by an active Workflow. Refuses any transition whose next state carries docstatus 1 or 2 — that approving transition belongs to a human with the named role, never the broker — and refuses an action that isn't legal from the document's current state, naming the legal ones. Reversible (a workflow-state move, never a docstatus change), so it takes no consent marker, but writes the intent+outcome receipt pair like every other mutation. pacioli_doctype selects the document's DocType (default Sales Invoice).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Document name."
+          },
+          "action": {
+            "type": "string",
+            "description": "The workflow transition's action name."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          },
+          "pacioli_doctype": {
+            "type": "string",
+            "description": "ERPNext DocType to operate on: 'Sales Invoice', 'Purchase Invoice', 'Payment Entry', or 'Journal Entry' (omit for 'Sales Invoice', today's default). A doctype this broker is not built and tested for is refused."
+          }
+        },
+        "required": [
+          "name",
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "prove_verify",
+      "description": "Verify the receipt chain (PROVE). Optionally check the head against an off-box-recorded anchor.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "expected_head": {
+            "type": "string",
+            "description": "Off-box-recorded head hmac."
+          },
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        }
+      }
+    },
+    {
+      "name": "prove_orphans",
+      "description": "Intent receipts with no committed outcome — mutations whose success was never proven; reconcile each against the document's real docstatus.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pacioli_target": {
+            "type": "string",
+            "description": "Registry target to route to (omit to use the default target)."
+          }
+        }
+      }
+    }
+  ]
+}

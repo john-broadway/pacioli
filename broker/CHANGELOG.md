@@ -6,6 +6,17 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.30.1 — 2026-07-17 — official MCP registry ownership marker
+
+PATCH (metadata only — no code, no behavior change). Adds the marker the Official MCP Registry
+requires to verify PyPI package ownership, so `pacioli` can be listed at
+`io.github.john-broadway/pacioli` (and propagate to Glama / mcp.so / PulseMCP).
+
+- **`mcp-name: io.github.john-broadway/pacioli`** added to the broker README — Pacioli's PyPI
+  long-description, which the registry greps on the published artifact. Invisible HTML comment;
+  no rendered change.
+- `server.json` and the LobeHub manifest re-stamped 0.30.0 → 0.30.1. Tool surface unchanged (30).
+
 ## 0.30.0 — 2026-07-17 — amend seats the draft in the workflow (the F1 dogfood finding)
 
 MINOR (new amend behavior + new deny-paths; no new grant, no new ERPNext read beyond the

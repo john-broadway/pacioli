@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.john-broadway/pacioli",
+  "title": "Pacioli — the governed front door to your ERPNext books",
+  "description": "Governed agent access to ERPNext — MCP + A2A doors, one spine. No debit without a credit.",
+  "repository": {
+    "url": "https://github.com/john-broadway/pacioli",
+    "source": "github"
+  },
+  "version": "0.30.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "pacioli",
+      "version": "0.30.1",
+      "runtimeHint": "uvx",
+      "runtimeArguments": [
+        { "type": "named", "name": "--from", "value": "pacioli[server]" }
+      ],
+      "packageArguments": [
+        { "type": "positional", "valueHint": "subcommand", "value": "serve" }
+      ],
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
