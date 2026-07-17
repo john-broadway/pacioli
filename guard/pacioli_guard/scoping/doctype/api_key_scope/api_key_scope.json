@@ -1,0 +1,132 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:user",
+ "creation": "2026-07-01 00:00:00.000000",
+ "description": "A scoped credential is bound to this allowlist. Scope only ever narrows a credential's capabilities relative to the user's own role permissions — it never widens them. Caveat: a generic RPC method in Methods (e.g. frappe.client.set_value or frappe.client.*) is matched by name only; Resource DocTypes does NOT constrain which DocType such a method touches. Grant generic RPC methods with care.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "user",
+  "enabled",
+  "rate_limit_per_minute",
+  "enforce_workflow",
+  "allow_resource",
+  "verb_read",
+  "verb_create",
+  "verb_write",
+  "verb_delete",
+  "methods",
+  "resource_doctypes"
+ ],
+ "fields": [
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "label": "User",
+   "options": "User",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled",
+   "default": "1",
+   "in_list_view": 1,
+   "description": "Kill switch. Untick to deny EVERY request from this credential, effective on the next request (no restart). A grant created before this field existed reads as enabled."
+  },
+  {
+   "fieldname": "rate_limit_per_minute",
+   "fieldtype": "Int",
+   "label": "Rate Limit (per minute)",
+   "default": "0",
+   "description": "Max requests per fixed one-minute window; 0 = no limit. Best-effort velocity damping via the site cache (a cache flush resets the counter) — containment, not tamper-evident accounting."
+  },
+  {
+   "fieldname": "enforce_workflow",
+   "fieldtype": "Check",
+   "label": "Enforce Workflow",
+   "default": "0",
+   "description": "Opt-in, OFF by default. When on, a docstatus-changing call (submit/cancel, or a raw PUT/PATCH carrying a docstatus key) against a doctype that has an active Workflow is denied unless it goes through frappe.model.workflow.apply_workflow. Turning this on can newly deny calls this credential could previously make -- enable it per-credential once you've confirmed the workflow path, not site-wide by default. Complements (does not replace) the Pacioli broker's own Workflow gate on the agent's own path; this one governs every api-key request through this credential, not just the broker's."
+  },
+  {
+   "fieldname": "allow_resource",
+   "fieldtype": "Check",
+   "label": "Allow Resource",
+   "default": "0",
+   "description": "Gates raw /api/resource CRUD access. Deny-by-default: a scoped credential is method-only unless this is explicitly turned on."
+  },
+  {
+   "fieldname": "verb_read",
+   "fieldtype": "Check",
+   "label": "Allow Read",
+   "default": "1",
+   "depends_on": "allow_resource",
+   "description": "When Allow Resource is on, permit GET (read) on /api/resource. Untick to deny reads. All four verb boxes default on (= every verb), so a grant from before this field existed is unchanged; untick to narrow. Narrowing is per-credential (applies to every Resource DocType listed)."
+  },
+  {
+   "fieldname": "verb_create",
+   "fieldtype": "Check",
+   "label": "Allow Create",
+   "default": "1",
+   "depends_on": "allow_resource",
+   "description": "When Allow Resource is on, permit POST (create) on /api/resource. Untick for a credential that may read but not create."
+  },
+  {
+   "fieldname": "verb_write",
+   "fieldtype": "Check",
+   "label": "Allow Write",
+   "default": "1",
+   "depends_on": "allow_resource",
+   "description": "When Allow Resource is on, permit PUT/PATCH (write) on /api/resource. Untick for a read-only (or read+create) credential."
+  },
+  {
+   "fieldname": "verb_delete",
+   "fieldtype": "Check",
+   "label": "Allow Delete",
+   "default": "1",
+   "depends_on": "allow_resource",
+   "description": "When Allow Resource is on, permit DELETE on /api/resource. Untick to deny deletes."
+  },
+  {
+   "fieldname": "methods",
+   "fieldtype": "Table",
+   "label": "Methods",
+   "options": "API Key Scope Method"
+  },
+  {
+   "fieldname": "resource_doctypes",
+   "fieldtype": "Table",
+   "label": "Resource DocTypes",
+   "options": "API Key Scope DocType"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-07-04 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Scoping",
+ "name": "API Key Scope",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 0,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

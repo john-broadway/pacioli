@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 460" role="img" aria-label="Title page: Summa de Governatione — Particularis de Computis et Scripturis, for the governance of agents upon the books. No debit without a credit. Venetiis MCDXCIV, in the workshop of John Broadway, MMXXVI">
+  <!-- parchment ground: self-filled so the plate reads identically on light and dark -->
+  <rect width="880" height="460" fill="#f3ead7"/>
+  <rect x="10" y="10" width="860" height="440" fill="none" stroke="#2b2118" stroke-width="2.5"/>
+  <rect x="18" y="18" width="844" height="424" fill="none" stroke="#2b2118" stroke-width="1"/>
+
+  <!-- fleuron row, rubricated -->
+  <text x="440" y="56" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="18" fill="#8b1a1a">&#10087; &#10087; &#10087;</text>
+
+  <!-- the title, period spelling: V for U -->
+  <text x="440" y="112" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="46" letter-spacing="6" fill="#2b2118">SVMMA DE GOVERNATIONE</text>
+
+  <!-- rubricated subtitle -->
+  <text x="440" y="148" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-style="italic" font-size="17" fill="#8b1a1a">Particularis de Computis et Scripturis &#183; for the governance of agents upon the books</text>
+
+  <!-- the printer's device: the glass solid of the portrait, hanging by its thread -->
+  <g transform="translate(345,162) scale(0.95)">
+    <g stroke="#2b2118" stroke-width="2.4" fill="none" stroke-linejoin="miter">
+      <polygon points="167.2,127.8 127.8,167.2 72.2,167.2 32.8,127.8 32.8,72.2 72.2,32.8 127.8,32.8 167.2,72.2"/>
+      <rect x="70" y="70" width="60" height="60"/>
+      <path d="M130,70 L167.2,72.2 M130,70 L127.8,32.8"/>
+      <path d="M70,70 L32.8,72.2 M70,70 L72.2,32.8"/>
+      <path d="M130,130 L167.2,127.8 M130,130 L127.8,167.2"/>
+      <path d="M70,130 L32.8,127.8 M70,130 L72.2,167.2"/>
+    </g>
+    <line x1="100" y1="-14" x2="100" y2="32.8" stroke="#8b1a1a" stroke-width="1.6"/>
+  </g>
+
+  <!-- the motto -->
+  <text x="440" y="352" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="19" letter-spacing="1.5" fill="#2b2118">Nulla in libro sine contraria &#8212; <tspan fill="#8b1a1a">no debit without a credit.</tspan></text>
+
+  <!-- ledger rule, red ink, thin over thick -->
+  <line x1="220" y1="376" x2="660" y2="376" stroke="#a03123" stroke-width="1"/>
+  <line x1="220" y1="381" x2="660" y2="381" stroke="#a03123" stroke-width="3"/>
+
+  <!-- the imprint -->
+  <text x="440" y="416" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="15" letter-spacing="2" fill="#2b2118">VENETIIS MCDXCIV &#183; IN THE WORKSHOP OF JOHN BROADWAY &#183; MMXXVI</text>
+</svg>

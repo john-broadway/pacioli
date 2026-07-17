@@ -1,0 +1,14 @@
+# Guard resource-doctype allowlist (REST /api/resource reads; verbs r1 c1 w0 d0 set by govern.sh).
+# From the proven live build (12 doctypes): the four governed doctypes + the doctor's read set.
+Sales Invoice
+Purchase Invoice
+Payment Entry
+Journal Entry
+Workflow
+GL Entry
+Period Closing Voucher
+Accounting Period
+Payment Ledger Entry
+Repost Accounting Ledger
+Company
+Accounts Settings

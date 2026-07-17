@@ -1,0 +1,30 @@
+{
+ "actions": [],
+ "creation": "2026-07-01 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "pattern"
+ ],
+ "fields": [
+  {
+   "fieldname": "pattern",
+   "fieldtype": "Data",
+   "label": "Method Pattern",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "Exact dotted method name or an fnmatch glob, e.g. frappe.auth.get_logged_user or erpnext.selling.*"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-07-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Scoping",
+ "name": "API Key Scope Method",
+ "owner": "Administrator",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,0 +1,2 @@
+# Ordered, run-once migrate steps — frappe imports each dotted path and calls its execute().
+pacioli_guard.patches.v0_6_0.warn_unresolved_method_grants

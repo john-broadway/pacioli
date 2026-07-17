@@ -1,0 +1,31 @@
+{
+ "actions": [],
+ "creation": "2026-07-01 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "ref_doctype"
+ ],
+ "fields": [
+  {
+   "fieldname": "ref_doctype",
+   "fieldtype": "Link",
+   "label": "DocType",
+   "options": "DocType",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "A DocType this credential may reach via /api/resource when Allow Resource is on."
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-07-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Scoping",
+ "name": "API Key Scope DocType",
+ "owner": "Administrator",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

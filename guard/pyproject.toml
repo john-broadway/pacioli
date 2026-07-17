@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# One name, whole chain: dist `pacioli-guard` (PyPI), Frappe app_name / import module
+# `pacioli_guard` (hooks.py) — installed via `bench get-app`. The bare `guard` was renamed
+# 2026-07-02, pre-any-install: a generic app_name squats the bench's flat app namespace and the
+# env's top-level import namespace on exactly the customer benches this app exists to protect.
+name = "pacioli-guard"
+version = "0.6.2"
+description = "Deny-by-default credential governance for Frappe/ERPNext — the counting-house door (credential-layer, no core fork)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "John Broadway" }]
+keywords = ["frappe", "erpnext", "api-security", "least-privilege", "credential-scoping"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/john-broadway/pacioli"
+Source = "https://github.com/john-broadway/pacioli"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["pacioli_guard*"]

@@ -1,0 +1,9 @@
+# Frappe apps are normally installed via `bench get-app <git-url>` (a raw clone), but if this is
+# ever built into an sdist/wheel the DocType schema, module list, and patches MUST travel with it —
+# otherwise the auth_hook fires against a DocType that was never migrated. Ship the data model.
+recursive-include pacioli_guard *.json
+include pacioli_guard/modules.txt
+include pacioli_guard/patches.txt
+include pacioli_guard/hooks.py
+include license.txt
+include README.md

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 10" preserveAspectRatio="none" role="img" aria-label="Ledger rule: red double line, thin over thick">
+  <!-- ledgers were ruled in red ink; red also reads on light and dark grounds alike -->
+  <line x1="8" y1="3" x2="592" y2="3" stroke="#a03123" stroke-width="0.75"/>
+  <line x1="8" y1="7" x2="592" y2="7" stroke="#a03123" stroke-width="2.25"/>
+</svg>

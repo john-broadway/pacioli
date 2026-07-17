@@ -1,0 +1,10 @@
+# The "Pacioli Seat" dedicated read-role: read-only grants the doctor's probes require.
+# From the proven live build (B5, 8 doctypes). One doctype per line.
+Workflow
+GL Entry
+Period Closing Voucher
+Accounting Period
+Payment Ledger Entry
+Repost Accounting Ledger
+Company
+Accounts Settings

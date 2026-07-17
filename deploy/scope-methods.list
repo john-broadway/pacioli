@@ -1,0 +1,14 @@
+# Guard /api/method allowlist — dumped VERBATIM from the proven live install 2026-07-17
+# (dump-live-scope.sh; seat pacioli@example.lan, 10 rows). Note the shape: generic endpoints
+# (frappe.client.submit/cancel, run_doc_method, apply_workflow) carry the doctype-specific
+# governance at the BROKER layer; the one dotted <DocType>.submit row is the URL-path vector.
+frappe.auth.get_logged_user
+ping
+erpnext.controllers.stock_controller.show_accounting_ledger_preview
+frappe.client.submit
+frappe.client.cancel
+frappe.desk.form.linked_with.get_submitted_linked_docs
+frappe.model.workflow.apply_workflow
+run_doc_method
+User.get_roles
+Journal Entry.submit

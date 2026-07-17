@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="Rubricated initial O">
+  <rect width="96" height="96" fill="#f3ead7"/>
+  <rect x="4" y="4" width="88" height="88" fill="none" stroke="#2b2118" stroke-width="2"/>
+  <rect x="9" y="9" width="78" height="78" fill="none" stroke="#2b2118" stroke-width="0.8"/>
+  <text x="48" y="72" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="64" fill="#8b1a1a">O</text>
+</svg>

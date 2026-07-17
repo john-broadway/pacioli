@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pacioli — Summa de Governatione</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<style>
+  @font-face { font-family: 'EB Garamond'; src: url('fonts/EBGaramond-var.ttf'); font-weight: 400 800; font-style: normal; }
+  @font-face { font-family: 'EB Garamond'; src: url('fonts/EBGaramond-Italic-var.ttf'); font-weight: 400 800; font-style: italic; }
+  @font-face { font-family: 'Cardo'; src: url('fonts/Cardo-Regular.ttf'); font-weight: 400; font-style: normal; }
+
+  :root {
+    --parchment: #f3ead7;
+    --parchment-deep: #ecdfc3;
+    --ink: #2b2118;
+    --rubric: #8b1a1a;
+    --rule: #a03123;
+    --shadow: rgba(43,33,24,.18);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --parchment: #201a12;
+      --parchment-deep: #191410;
+      --ink: #e6d9bd;
+      --rubric: #cd5c45;
+      --rule: #b34a35;
+      --shadow: rgba(0,0,0,.5);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { background:
+      radial-gradient(ellipse 120% 90% at 50% 0%, transparent 60%, var(--shadow) 100%),
+      linear-gradient(var(--parchment), var(--parchment-deep));
+    background-attachment: fixed; }
+  body { margin: 0; color: var(--ink);
+    font-family: 'EB Garamond', Georgia, serif; font-size: 20px; line-height: 1.65; }
+
+  .folio { max-width: 46rem; margin: 0 auto; padding: 0 1.4rem 6rem; }
+
+  /* ── title page ── */
+  header { text-align: center; padding: 5rem 1rem 3rem;
+    border-bottom: none; }
+  .fleurons { color: var(--rubric); font-size: 1.2rem; letter-spacing: 1.2rem; padding-left: 1.2rem; }
+  h1 { font-family: 'Cardo', 'EB Garamond', serif; font-weight: 400;
+    font-size: clamp(2.2rem, 7vw, 4.2rem); letter-spacing: .18em; margin: 1.2rem 0 .4rem;
+    padding-left: .18em; }
+  .subtitle { font-style: italic; color: var(--rubric); font-size: 1.15rem; }
+  .device { margin: 2.4rem auto 1.6rem; display: block; width: 170px; }
+  .motto { font-variant: small-caps; letter-spacing: .08em; font-size: 1.25rem; }
+  .motto .en { color: var(--rubric); }
+  .imprint { font-variant: small-caps; letter-spacing: .22em; font-size: .85rem; margin-top: 2rem; }
+
+  /* ── the ledger rule: thin over thick, red ink ── */
+  .rule { border: 0; height: 8px; margin: 3.2rem auto; width: min(30rem, 80%);
+    background: linear-gradient(var(--rule), var(--rule)) 0 1px/100% 1px no-repeat,
+                linear-gradient(var(--rule), var(--rule)) 0 5px/100% 3px no-repeat; }
+
+  /* ── chapters ── */
+  h2 { font-family: 'Cardo', 'EB Garamond', serif; font-weight: 400; text-align: center;
+    font-variant: small-caps; letter-spacing: .1em; font-size: 1.7rem; margin: 0 0 1.6rem; }
+  h2 .no { color: var(--rubric); }
+  h3 { font-variant: small-caps; font-weight: 600; letter-spacing: .06em; font-size: 1.25rem; }
+  p.opener::first-letter { color: var(--rubric); font-family: 'Cardo', serif;
+    font-size: 3.4em; float: left; line-height: .82; padding: .04em .12em 0 0; }
+  em, i { font-style: italic; }
+  strong { font-weight: 650; }
+
+  blockquote.counsel { margin: 2.2rem 0; padding: 0 1.4rem; text-align: center;
+    font-style: italic; font-size: 1.35rem; color: var(--rubric); }
+  blockquote.counsel::before { content: "❧  "; font-style: normal; }
+
+  /* ── plates ── */
+  figure { margin: 2.6rem 0; text-align: center; }
+  figure img { max-width: 100%; height: auto; box-shadow: 0 4px 26px var(--shadow);
+    border: 1px solid var(--shadow); }
+  figcaption { font-style: italic; font-size: .95rem; margin-top: .8rem; line-height: 1.5; }
+  figcaption .tav { font-variant: small-caps; font-style: normal; color: var(--rubric); }
+
+  /* ── the per/a spread ── */
+  table { width: 100%; border-collapse: collapse; margin: 1.8rem 0; font-size: .98rem; }
+  caption { font-variant: small-caps; letter-spacing: .06em; padding-bottom: .6rem; }
+  th { font-variant: small-caps; font-weight: 650; text-align: left; color: var(--rubric);
+    border-top: 3px double var(--rule); border-bottom: 1px solid var(--rule); padding: .5rem .6rem; }
+  td { vertical-align: top; padding: .55rem .6rem; border-bottom: 1px solid var(--shadow); }
+  td.folio, th.folio { font-family: 'Cardo', serif; color: var(--rubric); width: 2rem; text-align: center; }
+  tr:last-child td { border-bottom: 3px double var(--rule); }
+
+  code, pre { font-family: ui-monospace, 'Cascadia Code', Menlo, monospace; font-size: .82em; }
+  pre { background: color-mix(in srgb, var(--ink) 7%, transparent); padding: 1rem 1.2rem;
+    overflow-x: auto; border-left: 3px solid var(--rule); }
+
+  footer { text-align: center; margin-top: 4rem; }
+  footer .end { font-style: italic; max-width: 34rem; margin: 1.4rem auto; }
+  a { color: var(--rubric); }
+</style>
+</head>
+<body>
+<div class="folio">
+
+  <header>
+    <div class="fleurons">❧ ❧ ❧</div>
+    <h1>SVMMA DE GOVERNATIONE</h1>
+    <div class="subtitle">Particularis de Computis et Scripturis · for the governance of agents upon the books</div>
+    <svg class="device" viewBox="0 0 200 214" role="img" aria-label="The glass rhombicuboctahedron of the 1495 portrait, hanging by its thread">
+      <line x1="100" y1="0" x2="100" y2="46.8" stroke="var(--rubric)" stroke-width="1.4"/>
+      <g transform="translate(0,14)" stroke="var(--ink)" stroke-width="2.2" fill="none">
+        <polygon points="167.2,127.8 127.8,167.2 72.2,167.2 32.8,127.8 32.8,72.2 72.2,32.8 127.8,32.8 167.2,72.2"/>
+        <rect x="70" y="70" width="60" height="60"/>
+        <path d="M130,70 L167.2,72.2 M130,70 L127.8,32.8"/>
+        <path d="M70,70 L32.8,72.2 M70,70 L72.2,32.8"/>
+        <path d="M130,130 L167.2,127.8 M130,130 L127.8,167.2"/>
+        <path d="M70,130 L32.8,127.8 M70,130 L72.2,167.2"/>
+      </g>
+    </svg>
+    <div class="motto">Nulla in libro sine contraria — <span class="en">no debit without a credit.</span></div>
+    <div class="imprint">VENETIIS MCDXCIV · IN THE WORKSHOP OF JOHN BROADWAY · MMXXVI</div>
+  </header>
+
+  <hr class="rule">
+
+  <p class="opener"><strong>In 1494, in Venice, Luca Pacioli printed the <em>Summa de
+  arithmetica</em></strong> — and inside it, the tract that taught the world double-entry
+  bookkeeping. He wrote it down not because merchants couldn't count, but because they couldn't
+  <strong>trust</strong>. His rule is one sentence deep: <strong>no debit without a
+  credit.</strong> Every action gets an equal, opposite, recorded counterpart — and a book that
+  doesn't balance confesses on the spot. Five hundred years of <em>prove it or it didn't
+  happen</em>.</p>
+
+  <p>This house is that tract, written again for a new clerk. The merchant's problem hasn't
+  changed; the clerk has. He balanced books for merchants who couldn't watch every clerk. This
+  balances them for owners who can't watch every agent. Same problem, five centuries apart.
+  Same fix.</p>
+
+  <figure>
+    <img src="plates/tavola-1-pacioli-portrait.jpg" alt="Portrait of Luca Pacioli, attributed to Jacopo de' Barbari, 1495" width="1500" height="1250">
+    <figcaption><span class="tav">Tavola I</span> — The friar at his slate, attributed to
+    Jacopo de' Barbari, 1495. The glass rhombicuboctahedron hangs at his left; the Summa sits
+    under the dodecahedron at his right. This house's device is that hanging solid.</figcaption>
+  </figure>
+
+  <hr class="rule">
+
+  <h2><span class="no">Distinctio I</span> — Of the Two Instruments</h2>
+
+  <p class="opener"><strong>There are two instruments in this house, and they compose — they do
+  not couple.</strong> The first guards every credential on the site whether an agent is
+  involved or not; the second is the one governed door an agent may use. The first is the
+  floor; the second stands on it and submits to it.</p>
+
+  <h3>The Guard — the counting-house door</h3>
+  <p><em>No one writes in the books but the appointed hand, and only in the books appointed to
+  them.</em> A Frappe/ERPNext bench app that binds any API credential — an integration, a
+  script, a vendor token, a cron job, an AI agent — to an allowlist of methods and DocTypes,
+  enforced at the credential layer, deny-by-default. No core fork. It governs
+  <strong>every</strong> credential on the site, agent or not.</p>
+  <pre>bench get-app pacioli_guard &lt;repo-url&gt;
+bench --site &lt;your-site&gt; install-app pacioli_guard</pre>
+
+  <h3>The Broker — the governed front door</h3>
+  <p><em>The clerk may propose; only the merchant disposes.</em> A standalone MCP server that
+  gives an AI agent a governed way to touch ERPNext: PLAN → CONSENT → execute → PROVE,
+  deny-by-default beyond its grants — and its own credential is itself Guard-scoped, a hard
+  precondition, not an optional hardening step.</p>
+  <pre>pip install pacioli</pre>
+
+  <hr class="rule">
+
+  <h2><span class="no">Distinctio II</span> — Of the Memorandum, the Journal, and the Ledger</h2>
+
+  <p class="opener"><strong>Double entry is not a metaphor here. It is the design.</strong> The
+  bookkeeping tract of the Summa organizes a merchant's truth into three books, and slice for
+  slice they are this system. In his journal every entry named its debit with <em>per</em> and
+  its credit with <em>a</em> — nothing moved on one leg.</p>
+
+  <table>
+    <caption>The spread, as he ruled it</caption>
+    <tr><th class="folio">fo.</th><th><em>per</em> — his book (1494)</th><th><em>a</em> — here</th></tr>
+    <tr><td class="folio">1</td><td>The <strong>memorandum</strong> (<em>memoriale</em>) — every transaction written down first, roughly, before any formal entry</td><td><strong>PLAN</strong> — the projected GL and the risk flags, dated, bound to the draft. Nothing posts.</td></tr>
+    <tr><td class="folio">2</td><td>The <strong>journal</strong> (<em>giornale</em>) — each entry rewritten in fixed form, its debit marked <em>per</em>, its credit marked <em>a</em></td><td><strong>PROVE</strong> — the hash-chained receipt book. Intent is the <em>per</em>, outcome the <em>a</em>; an intent with no outcome is a debit with no credit, and the trial balance surfaces it as an orphan.</td></tr>
+    <tr><td class="folio">3</td><td>The <strong>ledger</strong> (<em>quaderno</em>) — the book of account itself</td><td><strong>ERPNext's GL</strong> — never written directly; every entry reaches the ledger through the journal's discipline.</td></tr>
+    <tr><td class="folio">4</td><td>An agent wants to write</td><td><strong>PLAN</strong> — the mirror entry precedes the entry.</td></tr>
+    <tr><td class="folio">5</td><td>A plan exists</td><td><strong>CONSENT</strong> — a human mints the marker, out of band. Two hands on every posting, never one.</td></tr>
+    <tr><td class="folio">6</td><td>The write fires</td><td><strong>PROVE</strong> — intent receipt before, outcome receipt after; a write missing its outcome is an <strong>orphan</strong>.</td></tr>
+    <tr><td class="folio">7</td><td>A posting stands</td><td><strong>UNDO</strong> — cancel/amend posts equal-and-opposite rows. Nothing erased, everything answered.</td></tr>
+    <tr><td class="folio">8</td><td>A credential exists</td><td><strong>Guard</strong> — no capability without its explicit grant line.</td></tr>
+  </table>
+
+  <p>Same law at every layer: <strong>nothing moves without its counterpart.</strong> The one
+  system you <em>can't</em> trust is the one where an action can happen alone — unplanned,
+  unconsented, unreceipted. Everything Pacioli refuses is exactly that: the lone entry.</p>
+
+  <figure>
+    <img src="plates/summa-spread.jpg" alt="The Summa de arithmetica open at Ragione de Partitori — worked arithmetic in columns. The Metropolitan Museum of Art's copy." width="4000" height="3144">
+    <figcaption><span class="tav">Tavola II</span> — The Summa itself, open at <em>Ragione de
+    Partitori</em>: worked arithmetic ruled into columns. The Metropolitan Museum of Art's copy,
+    printed by Paganino Paganini, Venice, 1494.</figcaption>
+  </figure>
+
+  <hr class="rule">
+
+  <h2><span class="no">Distinctio III</span> — Of the Counting-House Door</h2>
+
+  <p><strong>Two hands on every entry.</strong> The clerk writes; the merchant grants. The
+  consent marker is minted outside the agent's reach — no posting on one hand's authority.</p>
+  <p><strong>The registered book.</strong> The books take their authority from a mark held
+  outside the bookkeeper's own hand: the anchor carries the receipt-book's head off the box —
+  a registration the book cannot rewrite, so a truncated or swapped book confesses against
+  it.</p>
+
+  <hr class="rule">
+
+  <h2><span class="no">Distinctio IV</span> — Of the Closing of the Books</h2>
+
+  <blockquote class="counsel">Do not go to sleep until the debits equal the credits.</blockquote>
+
+  <p>He gave merchants that rule, and it is the operating rule here too: run the trial balance,
+  and if intent and outcome don't pair, the book itself tells you. And the broker refuses to
+  write in a closed book — a closed period, a ruling-off, a frozen date — and never slips a
+  backdated entry past it.</p>
+
+  <hr class="rule">
+
+  <h2><span class="no">Distinctio V</span> — Of the Inventory</h2>
+
+  <p class="opener"><strong>Open no books before the survey.</strong> He starts the merchant
+  with a complete inventory before a single entry. The doctor is that survey for this house —
+  what is reachable, what is granted, what refuses and why — and the road does not proceed
+  until the doctor says <code>ready.</code> The census then keeps the inventory honest for
+  every period after: every finding accounted for, or the book says so out loud.</p>
+
+  <figure>
+    <img src="plates/tavola-2-leonardo-polyhedron.jpg" alt="The hollow rhombicuboctahedron drawn by Leonardo da Vinci for De divina proportione" width="1235" height="1338" style="max-width: 24rem">
+    <figcaption><span class="tav">Tavola III</span> — <em>Vigintisex Basium Planum Vacuum</em>:
+    the same solid, drawn hollow by Leonardo da Vinci for Pacioli's <em>De divina
+    proportione</em>. Leonardo illustrated Luca's book; the debt is repaid here.</figcaption>
+  </figure>
+
+  <hr class="rule">
+
+  <footer>
+    <svg class="device" style="width:110px" viewBox="0 0 200 214" role="img" aria-label="The printer's device">
+      <line x1="100" y1="0" x2="100" y2="46.8" stroke="var(--rubric)" stroke-width="1.4"/>
+      <g transform="translate(0,14)" stroke="var(--ink)" stroke-width="2.2" fill="none">
+        <polygon points="167.2,127.8 127.8,167.2 72.2,167.2 32.8,127.8 32.8,72.2 72.2,32.8 127.8,32.8 167.2,72.2"/>
+        <rect x="70" y="70" width="60" height="60"/>
+        <path d="M130,70 L167.2,72.2 M130,70 L127.8,32.8"/>
+        <path d="M70,70 L32.8,72.2 M70,70 L72.2,32.8"/>
+        <path d="M130,130 L167.2,127.8 M130,130 L127.8,167.2"/>
+        <path d="M70,130 L32.8,127.8 M70,130 L72.2,167.2"/>
+      </g>
+    </svg>
+    <p class="end">Here ends the Summa of Governance: printed upon the counsel of Fra Luca
+    Pacioli, who taught that no entry stands alone; set in these types for the governance of
+    agents upon the books.</p>
+    <div class="imprint">VENETIIS MCDXCIV · IN THE WORKSHOP OF JOHN BROADWAY · MMXXVI</div>
+  </footer>
+
+</div>
+</body>
+</html>
