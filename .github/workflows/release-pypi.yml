@@ -1,0 +1,107 @@
+name: Release — PyPI (Trusted Publishing)
+
+# Tokenless publish to PyPI via OIDC, gated behind the `pypi` Environment's
+# required-reviewer rule (John approves before anything goes public).
+# Two packages, one repo — the tag picks the package:
+#   v*        -> broker/  (PyPI: pacioli)
+#   guard-v*  -> guard/   (PyPI: pacioli-guard)
+#   - real release: when a GitHub Release is published
+#   - dry run:      workflow_dispatch -> TestPyPI (prove the OIDC path first)
+# (Same rail as Proximo's release-pypi.yml; SBOM + signed provenance layers follow.)
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Which package"
+        required: true
+        default: broker
+        type: choice
+        options: [broker, guard]
+      target:
+        description: "Where to publish"
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      pkgdir: ${{ steps.pick.outputs.pkgdir }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Pick the package from the tag (or the dispatch input)
+        id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            case "$GITHUB_REF_NAME" in
+              guard-v*) echo "pkgdir=guard"  >> "$GITHUB_OUTPUT" ;;
+              v*)       echo "pkgdir=broker" >> "$GITHUB_OUTPUT" ;;
+              *) echo "XX unrecognized tag '$GITHUB_REF_NAME' (want v* or guard-v*)"; exit 1 ;;
+            esac
+          else
+            echo "pkgdir=${{ inputs.package }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify tag == pyproject version (real releases only)
+        if: github.event_name == 'release'
+        run: |
+          PKGDIR=${{ steps.pick.outputs.pkgdir }}
+          TAGVER="${GITHUB_REF_NAME#guard-}"; TAGVER="${TAGVER#v}"
+          python - "$PKGDIR" "$TAGVER" <<'EOF'
+          import sys, tomllib
+          pkgdir, tagver = sys.argv[1], sys.argv[2]
+          ver = tomllib.load(open(f"{pkgdir}/pyproject.toml", "rb"))["project"]["version"]
+          assert ver == tagver, f"XX tag {tagver} != {pkgdir}/pyproject version {ver}"
+          print(f"ok {pkgdir} {ver}")
+          EOF
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install build
+          cd ${{ steps.pick.outputs.pkgdir }} && python -m build
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dist
+          path: ${{ steps.pick.outputs.pkgdir }}/dist/
+
+  publish-testpypi:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write   # OIDC — no token/secret
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    needs: build
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    environment: pypi    # required-reviewer rule pauses here for John's approval
+    permissions:
+      id-token: write    # OIDC — no token/secret
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
