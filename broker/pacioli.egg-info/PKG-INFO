@@ -1,8 +1,34 @@
+Metadata-Version: 2.4
+Name: pacioli
+Version: 0.30.0
+Summary: Governed MCP broker for ERPNext — no debit without a credit: PLAN, CONSENT, PROVE, UNDO over the books, on the Pacioli Guard credential floor
+Author: John Broadway
+License: Apache-2.0
+Project-URL: Homepage, https://github.com/john-broadway/pacioli
+Project-URL: Source, https://github.com/john-broadway/pacioli
+Keywords: mcp,erpnext,frappe,ai-agents,governance,audit,accounting
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Office/Business :: Financial :: Accounting
+Classifier: Topic :: Security
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Provides-Extra: server
+Requires-Dist: mcp>=1.0; extra == "server"
+Provides-Extra: a2a
+Requires-Dist: a2a-sdk[signing]>=1.1; extra == "a2a"
+Requires-Dist: uvicorn>=0.30; extra == "a2a"
+Requires-Dist: cryptography>=42; extra == "a2a"
+Dynamic: license-file
+
 <img src="../assets/marks/device.svg" width="72" align="right" alt="The printer's device"/>
 
 *Tractatus de Instrumentis — the broker.* ❧ *Nulla in libro sine contraria — no debit without a credit.*
 
-# Pacioli — the ERPNext agent broker you can hand the books, governed (MCP · A2A)
+# Pacioli — the ERPNext MCP you can hand the books, governed
 
 **Status: four doctypes — Sales Invoice, Purchase Invoice, Payment Entry, Journal Entry — are
 live-proven end-to-end on a real ERPNext v16 bench: governed submit / cancel / amend, cascade

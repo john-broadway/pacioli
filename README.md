@@ -2,7 +2,7 @@
   <img src="assets/marks/titlepage.svg" width="880" alt="SVMMA DE GOVERNATIONE — Particularis de Computis et Scripturis, for the governance of agents upon the books. Nulla in libro sine contraria — no debit without a credit. Venetiis MCDXCIV, in the workshop of John Broadway, MMXXVI."/>
 </div>
 
-**Least-privilege API governance for ERPNext, and a governed MCP front door built on top of it.**
+**Least-privilege API governance for ERPNext, and a governed agent front door built on top of it — MCP and A2A, one spine behind both. A door admits; it never decides.**
 
 In 1494, in Venice, Luca Pacioli printed the *Summa de arithmetica* — and inside it, the
 tract that taught the world double-entry bookkeeping. He wrote it down not because merchants
@@ -56,9 +56,10 @@ bench --site <your-site> install-app pacioli_guard
 
 *The clerk may propose; only the merchant disposes.*
 
-A standalone, pip-installable **MCP server** (`pip install pacioli`) that gives an AI agent a
-governed way to touch ERPNext. Slice-one governs one write — submitting a Sales Invoice —
-through PLAN → CONSENT → execute → PROVE, deny-by-default beyond that.
+A standalone, pip-installable broker (`pip install pacioli`) that gives an AI agent a
+governed way to touch ERPNext — through the door of your choosing: **MCP or A2A**, one spine
+behind both. Slice-one governs one write — submitting a Sales Invoice — through
+PLAN → CONSENT → execute → PROVE, deny-by-default beyond that. The door admits; the spine decides.
 
 ```bash
 pip install pacioli
