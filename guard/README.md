@@ -4,7 +4,7 @@
 
 # Pacioli Guard
 
-**Least-privilege API governance for ERPNext. Agents included.**
+**Least-privilege governance for ERPNext. Agents included.**
 
 Frappe/ERPNext has no native way to scope an API credential. An API key authenticates *as a user*
 and inherits that user's full role permissions across **every** REST endpoint — so a token you
@@ -368,7 +368,7 @@ import, unit-tested bench-free (`pacioli_guard/tests/test_scope.py`). The live e
 frappe attributing the 403 to this app) is written up in `../SCOPED-TOKEN-PROOF.md`; the market/novelty
 verdict is recorded in the workshop's internal research verdict (a 73-agent adversarial review; not shipped in this tree).
 
-Part of **Pacioli** — least-privilege API governance for ERPNext. Pacioli Guard is the foundation;
+Part of **Pacioli** — least-privilege governance for ERPNext. Pacioli Guard is the foundation;
 the Pacioli MCP broker (planned/consented/proven/reversible tool calls) is the agent front door built on top.
 
 License: Apache-2.0.

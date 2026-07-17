@@ -21,7 +21,7 @@
 > it was a **system of provable controls and integrity over records** (double-entry = self-checking,
 > tamper-evident). Trust-by-construction over the books → trust-by-construction over *access to* the books.
 > The name carries the domain + ethos; the **tagline carries the function** — same split as Proximo.
-> **Tagline: "Least-privilege API governance for ERPNext. Agents included."**
+> **Tagline (updated 2026-07-17, John: drop "API" — the product governs agents through any door): "Least-privilege governance for ERPNext. Agents included."**
 > Family: **Pacioli** (brand) · **Pacioli Guard** (the credential-scope app — the universal foundation) ·
 > **Pacioli MCP** (the agent front door — the tip).
 >

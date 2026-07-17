@@ -2,7 +2,7 @@
   <img src="assets/marks/titlepage.svg" width="880" alt="SVMMA DE GOVERNATIONE — Particularis de Computis et Scripturis, for the governance of agents upon the books. Nulla in libro sine contraria — no debit without a credit. Venetiis MCDXCIV, in the workshop of John Broadway, MMXXVI."/>
 </div>
 
-**Least-privilege API governance for ERPNext, and a governed agent front door built on top of it — MCP and A2A, one spine behind both. A door admits; it never decides.**
+**Least-privilege governance for ERPNext, and a governed agent front door built on top of it — MCP and A2A, one spine behind both. A door admits; it never decides.**
 
 In 1494, in Venice, Luca Pacioli printed the *Summa de arithmetica* — and inside it, the
 tract that taught the world double-entry bookkeeping. He wrote it down not because merchants
