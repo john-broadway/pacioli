@@ -1,0 +1,41 @@
+# Dependabot — keep dependencies and pinned Actions current, grouped so updates arrive as a few
+# tidy PRs instead of one-per-package. Ecosystems match what's actually in the tree:
+#   - github-actions: the SHA-pinned actions in ci / codeql / scorecard / release-pypi
+#   - pip (/guard):   the credential floor  (reads guard/pyproject.toml)
+#   - pip (/broker):  the MCP broker        (reads broker/pyproject.toml)
+# (These are uv-managed projects; Dependabot has no `uv` ecosystem, so `pip` reads the pyproject
+#  dependencies directly — it surfaces the bump, uv.lock is refreshed on the next `uv sync`.)
+# Majors are left ungrouped on purpose (a breaking bump deserves its own reviewed PR).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /guard
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    groups:
+      guard:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: pip
+    directory: /broker
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    groups:
+      broker:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
