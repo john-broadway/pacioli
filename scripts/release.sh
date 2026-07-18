@@ -48,7 +48,8 @@ if [ "$PKG" = broker ]; then CL="broker/CHANGELOG.md"; TAG="v$V"; else CL="guard
 printf '== release: setting %s version %s ==\n' "$PKG" "$V"
 "$PY" scripts/version_tools.py set "$PKG" "$V" || { printf 'release: version set failed\n' >&2; exit 1; }
 
-if ! grep -q "^## $V " "$CL" && ! grep -q "^## $V\$" "$CL"; then
+Vre="${V//./\\.}"   # escape the version's dots so they anchor literally in the grep below
+if ! grep -q "^## $Vre " "$CL" && ! grep -q "^## $Vre\$" "$CL"; then
   printf 'release: NOTE — %s has no "## %s" entry yet. Write it (your words) before tagging.\n' "$CL" "$V"
 fi
 
@@ -57,14 +58,16 @@ RC=0
 "$PY" scripts/version_tools.py check || RC=1
 "$PY" scripts/version_tools.py release-check "$PKG" "$V" || RC=1
 
-# The broker's LobeHub manifest is GENERATED (tool surface + version) — regenerate and fail on
-# drift, so a version bump can never ship a stale tool array or a mismatched version banner.
+# The broker's LobeHub manifest is GENERATED (tool surface + version) — regenerate it so a bump
+# never ships a stale tool array or version banner. A version bump legitimately CHANGES lhm, so a
+# resulting diff is expected release output, not a failure — note it (commit it with the release).
+# The hard consistency gate is `version_tools.py check` above (lhm version == pyproject).
 if [ "$PKG" = broker ]; then
   if [ -x broker/.venv/bin/python ]; then
     ( cd broker && .venv/bin/python scripts/gen_lobehub_manifest.py ) >/dev/null \
       || { printf 'release: gen_lobehub_manifest.py failed\n' >&2; RC=1; }
-    git diff --exit-code --stat lhm.plugin.json \
-      || { printf 'release: lhm.plugin.json drifted — commit the regenerated manifest.\n' >&2; RC=1; }
+    git diff --quiet lhm.plugin.json \
+      || printf 'release: NOTE — lhm.plugin.json regenerated for %s; commit it with the release.\n' "$V"
   else
     printf 'release: broker/.venv missing — cannot regenerate lhm.plugin.json (run: cd broker && uv venv && uv pip install -e ".[server,a2a]").\n' >&2
     RC=1

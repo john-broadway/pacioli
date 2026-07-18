@@ -1,5 +1,10 @@
 name: CI
 
+# THE DUALITY: this GitHub CI covers the backward-compat range — python 3.10–3.13, the "lower
+# models" — while the latest python (3.14, the version the live deployment runs) is covered
+# upstream before publish. Older here, latest upstream: no version is tested twice, and neither
+# side runs the whole matrix. GitHub-native checks (CodeQL, Scorecard, the OIDC PyPI publish)
+# also live here.
 on:
   push:
     branches: [main]

@@ -6,25 +6,10 @@ name: Release — PyPI (Trusted Publishing)
 #   v*        -> broker/  (PyPI: pacioli)
 #   guard-v*  -> guard/   (PyPI: pacioli-guard)
 #   - real release: when a GitHub Release is published
-#   - dry run:      workflow_dispatch -> TestPyPI (prove the OIDC path first)
 # (Same rail as Proximo's release-pypi.yml; SBOM + signed build-provenance included 2026-07-18.)
 on:
   release:
     types: [published]
-  workflow_dispatch:
-    inputs:
-      package:
-        description: "Which package"
-        required: true
-        default: broker
-        type: choice
-        options: [broker, guard]
-      target:
-        description: "Where to publish"
-        required: true
-        default: testpypi
-        type: choice
-        options: [testpypi, pypi]
 
 permissions:
   contents: read
@@ -44,18 +29,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Pick the package from the tag (or the dispatch input)
+      - name: Pick the package from the tag
         id: pick
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            case "$GITHUB_REF_NAME" in
-              guard-v*) echo "pkgdir=guard"  >> "$GITHUB_OUTPUT" ;;
-              v*)       echo "pkgdir=broker" >> "$GITHUB_OUTPUT" ;;
-              *) echo "XX unrecognized tag '$GITHUB_REF_NAME' (want v* or guard-v*)"; exit 1 ;;
-            esac
-          else
-            echo "pkgdir=${{ inputs.package }}" >> "$GITHUB_OUTPUT"
-          fi
+          case "$GITHUB_REF_NAME" in
+            guard-v*) echo "pkgdir=guard"  >> "$GITHUB_OUTPUT" ;;
+            v*)       echo "pkgdir=broker" >> "$GITHUB_OUTPUT" ;;
+            *) echo "XX unrecognized tag '$GITHUB_REF_NAME' (want v* or guard-v*)"; exit 1 ;;
+          esac
 
       - name: Verify tag == pyproject version (real releases only)
         if: github.event_name == 'release'
@@ -133,25 +114,9 @@ jobs:
           cp "$BUNDLE" "${PKG}-${VER}.intoto.jsonl"
           gh release upload "$GITHUB_REF_NAME" "${PKG}-${VER}.intoto.jsonl" --clobber
 
-  publish-testpypi:
-    needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
-    runs-on: ubuntu-latest
-    environment: testpypi
-    permissions:
-      id-token: write   # OIDC — no token/secret
-    steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: dist
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-
   publish-pypi:
     needs: build
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     environment: pypi    # required-reviewer rule pauses here for John's approval
     permissions:
