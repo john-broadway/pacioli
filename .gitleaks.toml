@@ -1,0 +1,15 @@
+# Pacioli gitleaks config — default ruleset plus a narrow allowlist for known false
+# positives. gitleaks auto-detects this file (used by the GitHub gitleaks-action, the gitea
+# runner, AND the box pre-push guard). useDefault keeps the full ruleset; the allowlist is a
+# strict superset of "no config", so it never loosens what the box guard already enforces.
+title = "Pacioli gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Compiled bytecode. Test fixtures must use LOW-ENTROPY fakes (deployment-standard fixture law) so they don't trip gitleaks; add a narrow regex here only if a legitimate fixture is flagged."
+paths = [
+  '''(^|/)__pycache__/''',
+  '''\.pyc$''',
+]

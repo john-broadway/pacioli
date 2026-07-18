@@ -1,0 +1,24 @@
+# Root ruff config for the Pacioli monorepo (broker/ + guard/).
+# Conservative baseline: ruff's default rule set — E4 (imports), E7 (statement), E9 (syntax)
+# real errors + F (pyflakes: undefined names, unused imports). High signal, low noise, so the
+# existing code lands green; tighten (isort/pyupgrade/bugbear, E501) in a later pass once CI is on.
+line-length = 100
+target-version = "py310"   # guard's floor (broker is 3.11+); py310 keeps the lint baseline safe
+
+extend-exclude = [
+    ".venv",
+    "**/.venv",
+    "**/build",
+    "**/dist",
+]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+
+[lint.per-file-ignores]
+# Lint SHIPPED code strictly; be lenient on tests for idiomatic lint "noise": unused imports/vars
+# kept for clarity or side effects, `assertRaises(...) as ctx` context capture (F841), compact
+# test-double one-liners (E702), and the mock-before-import ordering the guard tests require (E402).
+# Follow-up: a `ruff --fix` pass to strip the genuinely-dead test imports once the suite can be
+# re-run in the loop to confirm nothing was load-bearing.
+"**/tests/**" = ["F401", "F841", "E401", "E402", "E702"]

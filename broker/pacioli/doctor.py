@@ -32,7 +32,7 @@ import json
 import urllib.parse
 from pathlib import Path
 
-from pacioli.erpnext import SALES_INVOICE, SUPPORTED_DOCTYPES, default_transport
+from pacioli.erpnext import SUPPORTED_DOCTYPES, default_transport
 from pacioli.registry import RegistryError, _resolve_ref, load_registry
 from pacioli.runtime import _SEAL_KEY_BYTES, _seal_key_path, state_db_path
 

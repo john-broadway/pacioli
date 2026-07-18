@@ -1,0 +1,12 @@
+name: "Pacioli CodeQL config"
+
+# Scope CodeQL to the two SHIPPED packages — the broker (`pacioli`) and the guard
+# (`pacioli_guard`). `tests/` are excluded (test fixtures embed leak-shaped + adversarial
+# literals by design, which the taint tracker flags with no shipped impact), and `scripts/`
+# / `deploy/` are dev + host-ops tooling outside the published wheels. SAST analyzes exactly
+# what ships.
+paths:
+  - broker/pacioli
+  - guard/pacioli_guard
+paths-ignore:
+  - "**/tests"

@@ -7,7 +7,7 @@ name: Release — PyPI (Trusted Publishing)
 #   guard-v*  -> guard/   (PyPI: pacioli-guard)
 #   - real release: when a GitHub Release is published
 #   - dry run:      workflow_dispatch -> TestPyPI (prove the OIDC path first)
-# (Same rail as Proximo's release-pypi.yml; SBOM + signed provenance layers follow.)
+# (Same rail as Proximo's release-pypi.yml; SBOM + signed build-provenance included 2026-07-18.)
 on:
   release:
     types: [published]
@@ -32,6 +32,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write      # gh release upload of the SBOM + signed provenance
+      id-token: write      # OIDC — keyless (sigstore) signing of the release provenance
+      attestations: write  # record the build-provenance attestation
     outputs:
       pkgdir: ${{ steps.pick.outputs.pkgdir }}
     steps:
@@ -75,6 +79,59 @@ jobs:
         with:
           name: dist
           path: ${{ steps.pick.outputs.pkgdir }}/dist/
+
+      # Receipts: a CycloneDX SBOM for the published wheel. The pure cores are zero-dep, so the
+      # base wheel's SBOM is minimal BY DESIGN — the MCP/A2A doors are OPTIONAL extras, not base
+      # deps; the SBOM documents exactly what a plain `pip install` pulls. The generator runs in
+      # the runner's system python and only INTROSPECTS the wheel-only venv, so it never pollutes
+      # the SBOM with its own dependency tree.
+      - name: Generate CycloneDX SBOM for the wheel
+        env:
+          PKGDIR: ${{ steps.pick.outputs.pkgdir }}
+        run: |
+          set -e
+          VER="${GITHUB_REF_NAME#guard-}"; VER="${VER#v}"
+          [ "$PKGDIR" = "guard" ] && PKG=pacioli-guard || PKG=pacioli
+          python -m venv /tmp/sbom-env
+          /tmp/sbom-env/bin/pip install --quiet --no-deps "$PKGDIR"/dist/*.whl
+          python -m pip install --quiet cyclonedx-bom
+          mkdir -p sbom
+          python -m cyclonedx_py environment --of JSON \
+            -o "sbom/${PKG}-${VER}-sbom.cdx.json" /tmp/sbom-env/bin/python
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sbom
+          path: sbom/
+
+      - name: Attach SBOM to the GitHub release (real releases only)
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" sbom/*.cdx.json --clobber
+
+      # PROVE at the artifact layer: a sigstore-signed build-provenance attestation over the exact
+      # sdist + wheel that ship. Verifiable with `gh attestation verify <file> --owner john-broadway`.
+      # Named *.intoto.jsonl so OpenSSF Scorecard's Signed-Releases check recognizes it.
+      - name: Attest build provenance for the release artifacts (real releases only)
+        if: github.event_name == 'release'
+        id: attest
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        with:
+          subject-path: ${{ steps.pick.outputs.pkgdir }}/dist/*
+
+      - name: Attach signed provenance to the GitHub release (real releases only)
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          PKGDIR: ${{ steps.pick.outputs.pkgdir }}
+        run: |
+          set -e
+          VER="${GITHUB_REF_NAME#guard-}"; VER="${VER#v}"
+          [ "$PKGDIR" = "guard" ] && PKG=pacioli-guard || PKG=pacioli
+          cp "$BUNDLE" "${PKG}-${VER}.intoto.jsonl"
+          gh release upload "$GITHUB_REF_NAME" "${PKG}-${VER}.intoto.jsonl" --clobber
 
   publish-testpypi:
     needs: build

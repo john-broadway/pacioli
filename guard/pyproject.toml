@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]   # SPDX license expression (PEP 639)
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -12,13 +12,12 @@ version = "0.6.2"
 description = "Deny-by-default credential governance for Frappe/ERPNext — the counting-house door (credential-layer, no core fork)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 authors = [{ name = "John Broadway" }]
 keywords = ["frappe", "erpnext", "api-security", "least-privilege", "credential-scoping"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Topic :: Security",
 ]
@@ -33,3 +32,4 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["pacioli_guard*"]
+exclude = ["pacioli_guard.tests*"]   # tests are for the repo, not the wheel
