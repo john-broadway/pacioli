@@ -6,6 +6,15 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.30.2 — 2026-07-17 — cleaner wheel: test suite out, SPDX license
+
+PATCH (packaging + metadata; no API or behavior change). The distributed wheel no longer ships the
+test suite — `pacioli.tests` is excluded from `packages.find`, so `pip install pacioli` is smaller
+and carries no stray importable test namespace. License metadata moves to the PEP 639 SPDX
+expression (`license = "Apache-2.0"`, the deprecated `License ::` classifier dropped, build requires
+`setuptools>=77`); wheels now carry `License-Expression: Apache-2.0`. Verified end-to-end by
+`scripts/install_smoke.sh` against a freshly-built wheel.
+
 ## 0.30.1 — 2026-07-17 — official MCP registry ownership marker
 
 PATCH (metadata only — no code, no behavior change). Adds the marker the Official MCP Registry

@@ -3,6 +3,14 @@
 Least-privilege API capability scoping for Frappe/ERPNext. Honest pre-1.0 semver.
 Distribution name `pacioli-guard`; Frappe app / import module `pacioli_guard`.
 
+## 0.6.3 — 2026-07-17 — cleaner wheel: test suite out, SPDX license
+
+PATCH (packaging + metadata; no behavior change). The distributed wheel no longer ships the test
+suite (`pacioli_guard.tests` excluded); the DocType schema and data model (`*.json`, `modules.txt`,
+`hooks.py`) still travel with it, as a Frappe app requires. License metadata moves to the PEP 639
+SPDX expression (`license = "Apache-2.0"`, deprecated classifier dropped, build requires
+`setuptools>=77`).
+
 ## 0.6.2 — 2026-07-10 — container-DocType 2-hop: four broker-unneeded tool-DocTypes hard-denied
 
 PATCH (a flagged residual, closed at John's ask + scope ruling; deny-more-only, no grant ever
