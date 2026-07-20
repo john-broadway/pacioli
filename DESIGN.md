@@ -56,8 +56,9 @@ follow-up surfaced **two more — commercial/hosted: Composio and Definable.ai**
 **Source-verified — see `COMPETITORS.md` (every OSS repo cloned + read at code level, 2026-06-30; it
 supersedes the disputed sweep).** The honest picture: *some* governance primitives **do** exist —
 **FAC** and **mascor** ship real per-call audit logs, and **mascor** has a real deny-by-default
-allowlist. But **every existing audit log is a mutable Frappe DocType (not tamper-evident); nobody
-dry-runs a `submit`/`cancel`, nobody has graph-aware UNDO, a CONSENT gate on postings, or multi-site
+allowlist. But **every existing audit log is a mutable Frappe DocType (not tamper-evident); no MCP server
+dry-runs a `submit`/`cancel` (the one propose-then-confirm analog, Ask ALYF, is an in-Desk app —
+see the 2026-07-20 delta in `COMPETITORS.md`); nobody has graph-aware UNDO or multi-site
 routing; and the broad servers ship arbitrary-code-exec tools.** What's unoccupied is the
 **trust-by-construction *combination*** — unforgeable PROVE + planned + reversible + consented +
 no-exec + multi-site, at breadth and sovereign. The nearest competitor (FAC) is **"audited but not
@@ -273,9 +274,11 @@ The pipeline Proximo already ran: **Anthropic MCP registry** + **awesome-mcp-ser
 PyPI + GHCR, an `[a2a]` extra for the Agent2Agent face routing through the same trust core (no second
 mutate path). **Strategic opening (verified in the sweep — `COMPETITORS.md`): the official MCP registry,
 `modelcontextprotocol/servers`, and `awesome-mcp-servers` have ZERO ERPNext entries.** All ~40 existing
-tools live only on auto-indexing aggregators (Glama/PulseMCP) — **the canonical registry slot is unclaimed,**
-and **Frappe ships no first-party AI product** to fill it. Discovery is solved by being *the governed one*
-**and** the first ERPNext entry in the official registry, in a field of thin wrappers.
+tools live only on auto-indexing aggregators (Glama/PulseMCP) — and as of 2026-07-17 **that canonical
+registry slot is OURS** (`io.github.john-broadway/pacioli`, the only ERPNext-governance entry there,
+re-verified 2026-07-20), while **Frappe ships no first-party AI product** to contest it. Discovery is
+solved by being *the governed one* **and** the first ERPNext entry in the official registry, in a field
+of thin wrappers.
 
 ## 9. Open questions / next probes (before any build)
 

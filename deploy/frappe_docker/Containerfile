@@ -1,0 +1,90 @@
+# pacioli-guard baked into a frappe_docker image.
+#
+# Mirror of frappe_docker's images/layered/Containerfile (fetched 2026-07-20) with exactly
+# two additions, marked PACIOLI below. Everything else is upstream verbatim, on purpose:
+# the smaller the diff, the longer this survives upstream drift.
+#
+# Why not apps.json for pacioli-guard: apps.json entries are git URLs consumed by
+# `bench get-app` (git-only, verified in bench/app.py). pacioli-guard ships as a PyPI
+# wheel. The proven install shape (deploy/govern.sh, classic bench) is pip-into-bench-venv
+# plus an apps.txt entry. In frappe_docker, sites/apps.txt is REGENERATED on every stack
+# start by the configurator service (`ls -1 apps > sites/apps.txt`), so the durable move
+# is a stub directory under apps/. Frappe resolves an app's code by Python import
+# (frappe/modules/utils.py get_pymodule_path), never through apps/<name> content; the
+# stub only satisfies the apps.txt gate in frappe.installer.install_app.
+#
+# Build FROM A frappe_docker CHECKOUT (the COPY resources/core/* lines need it):
+#   docker build \
+#     --build-arg=FRAPPE_BRANCH=version-16 \
+#     --build-arg=PACIOLI_GUARD_VERSION=0.6.3 \
+#     --secret=id=apps_json,src=apps.json \
+#     --tag=<your-registry>/pacioli-erpnext:16 \
+#     --file=<pacioli-checkout>/deploy/frappe_docker/Containerfile \
+#     <frappe_docker-checkout>
+# apps.json still carries the GIT apps (erpnext itself) - see apps.json.example.
+
+ARG FRAPPE_BRANCH=version-16
+ARG FRAPPE_IMAGE_PREFIX=frappe
+
+FROM ${FRAPPE_IMAGE_PREFIX}/build:${FRAPPE_BRANCH} AS builder
+
+ARG FRAPPE_BRANCH=version-16
+ARG FRAPPE_PATH=https://github.com/frappe/frappe
+ARG CACHE_BUST=""
+# PACIOLI: pin the guard wheel. No default on purpose - an unpinned governance layer is
+# an unaccountable governance layer; the build refuses without an explicit version.
+ARG PACIOLI_GUARD_VERSION
+
+USER frappe
+
+RUN --mount=type=secret,id=apps_json,target=/opt/frappe/apps.json,uid=1000,gid=1000 \
+  : "${CACHE_BUST}" && \
+  export APP_INSTALL_ARGS="" && \
+  if [ -f /opt/frappe/apps.json ] && [ -s /opt/frappe/apps.json ]; then \
+    export APP_INSTALL_ARGS="--apps_path=/opt/frappe/apps.json"; \
+  fi && \
+  bench init ${APP_INSTALL_ARGS}\
+    --frappe-branch=${FRAPPE_BRANCH} \
+    --frappe-path=${FRAPPE_PATH} \
+    --no-procfile \
+    --no-backups \
+    --skip-redis-config-generation \
+    --verbose \
+    /home/frappe/frappe-bench && \
+  cd /home/frappe/frappe-bench && \
+  # PACIOLI: the wheel into the bench venv + the apps.txt stub (see header for why).
+  test -n "${PACIOLI_GUARD_VERSION}" || { echo "PACIOLI_GUARD_VERSION build-arg is required"; exit 1; } && \
+  ./env/bin/pip install --no-cache-dir "pacioli-guard==${PACIOLI_GUARD_VERSION}" && \
+  mkdir -p apps/pacioli_guard && \
+  echo "{}" > sites/common_site_config.json && \
+  find apps -mindepth 1 -path "*/.git" | xargs rm -fr
+
+FROM ${FRAPPE_IMAGE_PREFIX}/base:${FRAPPE_BRANCH} AS backend
+
+USER frappe
+
+COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
+
+WORKDIR /home/frappe/frappe-bench
+
+# Move assets to image-layer storage
+RUN cp -r /home/frappe/frappe-bench/sites/assets /home/frappe/frappe-bench/assets && \
+  rm -rf /home/frappe/frappe-bench/sites/assets
+
+VOLUME [ \
+  "/home/frappe/frappe-bench/sites", \
+  "/home/frappe/frappe-bench/logs" \
+]
+
+USER root
+# This entrypoint script link build assets of the image to the mounted sites volume at container initialization
+COPY resources/core/main-entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 755 /usr/local/bin/entrypoint.sh
+
+COPY resources/core/start.sh /usr/local/bin/start.sh
+RUN chmod 755 /usr/local/bin/start.sh
+
+USER frappe
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+CMD ["start.sh"]

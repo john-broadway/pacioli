@@ -81,5 +81,9 @@ this road** before the word "product" goes on any public surface.
   site database was DROPPED and on-box backups deleted, then restored from the off-box
   copy alone — every account back, doctor `ready.`, chain matching the off-box anchor.
   A trusted install is eventually a restored install; this one has been.
-- **SMTP**, multi-company postures, and the frappe_docker overlay (planned: guard via
-  `apps.json` custom image + broker sidecar — after this road is lab-proven).
+- **SMTP** and multi-company postures.
+- **frappe_docker overlay — DRAFTED 2026-07-20, not yet lab-proven** (`frappe_docker/`):
+  guard baked via pip-into-bench-venv + apps.txt stub (apps.json turned out git-only at the
+  bench-source level, so the "apps.json custom image" plan was corrected); broker stays a
+  separate host by design, never a co-located sidecar. Proven only when a from-blank docker
+  lab build passes `doctor: ready.` — see `frappe_docker/README.md` status header.

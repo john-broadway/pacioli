@@ -10,6 +10,10 @@
 > thin REST wrappers, dev-tooling, skill-packs, or in-Desk chatbots. This is a 2026-06-30 snapshot — the
 > ecosystem adds repos weekly (several found here were created/updated in the last 30 days). The earlier
 > "6 servers, governed tier empty" claim was **far too small and too strong**; this supersedes it.
+>
+> **Re-swept 2026-07-20** — see "2026-07-20 re-sweep delta" at the bottom. Net: the combination is still
+> unclaimed by anyone else; **Ask ALYF is the one to watch** (propose-then-confirm now covers
+> submit/cancel/amend — non-MCP); one new entrant (**AgentReady**, cloud MVP).
 
 ---
 
@@ -53,7 +57,7 @@
 ### B3 · Commercial / cloud-relay MCP
 - **Pipedream** ERPNext MCP — exists but a **stub** (auth, no pre-built actions). (Pipedream → acquired by Workday.)
 - **Relevance AI** — ERPNext via the Pipedream embed (inherits the stub).
-- **StackOne** — ERPNext connector **"coming soon"**: API + **MCP + A2A** + a **"Defender" prompt-injection layer**, finance-ops focus. The one entrant *positioning on security* — **vaporware today**, worth watching.
+- **StackOne** — ERPNext connector **"coming soon"**: API + **MCP + A2A** + a **"Defender" prompt-injection layer**, finance-ops focus. The one entrant *positioning on security* — **still unshipped today**, worth watching.
 - **kkwangchaoyi/erpnext-mcp-server** — "Amazon Quick SMB Finance Agent, **AWS Partner** 2026."
 - (Composio, Definable.ai → Tier A.)
 
@@ -125,3 +129,73 @@
   `discuss.frappe.io` threads (403 throughout); Frappe blog "AI Debates 2026" (403); Glama results beyond
   page 1; Smithery/mcp.so tag pages (403). A long tail of 0★ stub repos is summarized by count, not listed.
 - **Snapshot 2026-06-30.** Fast-moving — re-sweep before any public launch claim about "the landscape."
+
+---
+
+## 2026-07-20 re-sweep delta (README-level verification — Tier B discipline, not code-read)
+
+> Method: one research agent, 2026-07-20 — new-entrant sweep (GitHub/PyPI/npm/registry/forum), the six
+> flagged Tier-B repos verified at README level against five governance dimensions, and status checks on
+> StackOne / frappe-mcp / the official registry. **Nothing below was code-verified** — same honesty rule
+> as Tier B above. Items not mentioned here are unchanged from the 06-30 snapshot.
+
+### New entrants since 06-30
+
+- **AgentReady** (agent-ready.tech; forum showcase discuss.frappe.io/t/163678, 2026-07-20) — the only
+  genuinely new named entrant. Auto-discovers an ERPNext site's DocTypes/schemas and exposes them as MCP
+  tools over a fixed verb set (`search/get/create/update/submit/run_report`). Governance per its own docs:
+  approval workflows, schema validation, audit logging, a policy engine — but permission scoping is
+  **inherited from the connected ERP's existing roles** (ambient authority), not a separately-scoped
+  least-privilege credential; no distinction in governance weight between reads and irreversible submits.
+  Self-described MVP: appears cloud-hosted (Login/Start-workspace flow; no self-host option found or
+  mentioned), no public GitHub repo found, no pricing, contact is a personal Gmail seeking design
+  partners. Watch, don't fear — and note the distinction
+  candidly: they build discovery/the door; the least-privilege + tamper-evident books layer is not what
+  they ship. (Don't confuse with agentready.org or agent-ready.dev — unrelated projects.)
+- **erpnext-readonly-mcp** (npm, v1.0.0, 2026-06-25) — read-only-by-construction MCP server; no repo, no
+  author metadata, unverifiable. Adjacent philosophy (governance by removing writes), not a competitor.
+- Long tail: expected fresh 0★ clones; nothing else material. Casys bumped to 2.4.1 (2026-07-16), same entrant.
+
+### The six flagged Tier-B repos, verified (README level)
+
+| Repo | ★ | Last real push | deny-by-default | tamper-evident audit | plan/dry-run submit·cancel | consent gate | exec hatch |
+|---|---|---|---|---|---|---|---|
+| appliedrelevance/frappe-mcp-server | 14 | 2025-09-16 (~10 mo stale) | ✗ | ✗ | ✗ (no submit tool at all) | ✗ | ✓ `call_method` |
+| Codenetic-tech/frappe-js-mcp-server | 0 | 2026-06-25 (dormant) | ✗ (plus `switch_user`) | ✗ | ✗ (direct submit/cancel) | ✗ | ✓ `call_method` + force-execute jobs |
+| Kai-Oesterling/erpnext-mcp-server | 0 | 2026-01-04 (single-shot) | ✗ | ✗ | ✗ (direct) | ✗ | ✓-class: creates DocTypes/fields/workflows (schema mutation) |
+| KorucuTech/kai | 49 | **2024-04-30 — 2+ yrs stale** (metadata touches only) | ✗ | ✗ | n/a (not MCP) | ✗ | ✓ by design (arbitrary Python TOOL backends) |
+| yazelin/erpnext-mcp | 1 | 2026-05-25 (~8 wks stale) | ✗ | ✗ | ✗ (direct) | ✗ | ✓ `run_method` |
+| **Ask ALYF** (alyf-de/ask_alyf) | 15 | **2026-07-20 — active TODAY** | partial (Frappe RBAC + admin excluded-DocTypes list; no separate credential layer) | ✗ (history = mutable DocType) | **✓ — `document-planner` proposal now covers submit/cancel/amend** | **✓ — explicit confirm on every write** | ✓ `run_whitelisted_method` (behind the gate) |
+
+Corrections to 06-30 reads: appliedrelevance was "most mature → verify" — actually inactive 10 months, wordier
+not maturer. KorucuTech/kai was "most distinctive → verify" — 49★ is historical interest; no code since
+April 2024. **Ask ALYF is the one that moved**: 10 commits in the 8 days before this sweep (including a
+migration to LangChain DeepAgents), and its propose-then-confirm mechanism now demonstrably covers the
+destructive verbs. By a wide margin the most actively developed governance-adjacent thing in the field.
+
+### Status checks
+
+- **StackOne ERPNext connector: still "Planned," unchanged since 06-30.** Their "Defender" prompt-injection
+  layer is real and moving (ONNX classifier, blog 2026-05/06) but horizontal, not wired to any ERPNext
+  connector that exists yet.
+- **frappe/mcp: still 0 ERPNext tools**, still "highly experimental," no resources/prompts, last push
+  2026-05-29. frappe/frappe#33170 closed 2025-07-08 with the library as its answer — the proposed
+  RBAC/audit/sandbox never shipped.
+- **Official MCP registry** (registry.modelcontextprotocol.io): `erpnext` → 0 results; `frappe` → only a
+  dev-tooling scaffolder; **`pacioli` → io.github.john-broadway/pacioli, active, 0.30.2**. The slot is
+  HELD GROUND now, not an open opportunity — no competitor is contesting it.
+
+### Wedge delta (the 7 open items from the section above)
+
+1. Tamper-evident PROVE — **open**, untouched (Ask ALYF's log is a plain mutable DocType).
+2. PLAN/dry-run on submit/cancel — **narrowed by Ask ALYF from the non-MCP side**; "in an MCP server" still holds, but the mechanism is no longer uniquely ours.
+3. Graph-aware UNDO — **open**, untouched.
+4. CONSENT inside an MCP server — **open**; Ask ALYF's gate matured but remains in-Desk, non-MCP.
+5. No exec escape hatch — **open and REINFORCED**: every server verified this round ships one; even Ask ALYF keeps `run_whitelisted_method`. The strongest surviving differentiator.
+6. Multi-site contextvar routing — **open**, unmentioned anywhere.
+7. Registry slot — **closed BY US** (0.30.x live in the official registry since 07-17/18). Held ground.
+
+**Bottom line 2026-07-20:** "no one ships the trust-by-construction combination in an MCP server" is
+**still true**. Score: 1 of 7 closed (by us), 1 narrowed (Ask ALYF, non-MCP), 5 untouched. The name to
+watch is Ask ALYF (velocity + a real consent mechanism); the name to be candid about is AgentReady (real,
+early, cloud, ambient-authority). Re-sweep again before any public claim that cites this landscape.
