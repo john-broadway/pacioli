@@ -82,8 +82,10 @@ this road** before the word "product" goes on any public surface.
   copy alone — every account back, doctor `ready.`, chain matching the off-box anchor.
   A trusted install is eventually a restored install; this one has been.
 - **SMTP** and multi-company postures.
-- **frappe_docker overlay — DRAFTED 2026-07-20, not yet lab-proven** (`frappe_docker/`):
+- **frappe_docker overlay — LAB-PROVEN 2026-07-20 from blank** (`frappe_docker/`; run record `docs/plans/2026-07-20-frappe-docker-labproof.md`):
   guard baked via pip-into-bench-venv + apps.txt stub (apps.json turned out git-only at the
   bench-source level, so the "apps.json custom image" plan was corrected); broker stays a
-  separate host by design, never a co-located sidecar. Proven only when a from-blank docker
-  lab build passes `doctor: ready.` — see `frappe_docker/README.md` status header.
+  separate host by design, never a co-located sidecar. Proven at the guard/site layer:
+  from-blank image → site → guard enforcing (in-scope 200 / out-of-scope 403 / out-of-verb
+  403). Still owed there: the broker `doctor: ready.` leg and the container upgrade drill —
+  see `frappe_docker/README.md` Known unknowns.

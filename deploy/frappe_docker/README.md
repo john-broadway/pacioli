@@ -1,11 +1,15 @@
 # pacioli-guard on frappe_docker
 
-> **Status: DRAFTED, NOT YET LAB-PROVEN.** The mechanism below is source-verified against
-> frappe_docker, bench, and frappe internals, and it is the direct container translation of the
-> classic-bench recipe this repo has already proven live (`deploy/govern.sh`, run records in
-> `broker/docs/plans/`). But no image has been built and booted from these files yet. The same bar
-> DEPLOY.md holds applies here: this section says "proven" only after a from-blank lab build passes
-> `doctor: ready.` Until that line changes, treat this as a recipe, not a promise.
+> **Status: LAB-PROVEN 2026-07-20, from blank.** A throwaway Debian 13 host (docker 29 in an
+> unprivileged LXC, `nesting=1` alone — no keyctl needed): image built from these exact files
+> (frappe 16.27.1 + erpnext 16.28.0 via apps.json secret, pacioli-guard 0.6.3 pinned via pip),
+> stack up, `bench new-site --install-app pacioli_guard` clean, site serving HTTP 200, and the
+> guard's chokepoint enforcing live — in-scope read 200, out-of-scope read **403**, out-of-verb
+> write **403** (unscoped credentials are a documented no-op; bind every credential you mint, same
+> as `deploy/govern.sh` does). The empty `apps/pacioli_guard` stub survived the configurator's
+> apps.txt regeneration and asset handling with zero issues. What this run did NOT cover: the
+> broker/`doctor` leg (separate host by design) and the upgrade drill (rebuild with a newer pin) —
+> both still owed.
 
 Most of the ERPNext world runs on [frappe_docker](https://github.com/frappe/frappe_docker). This
 overlay bakes `pacioli-guard` into a custom frappe_docker image so a containerized site is guarded
@@ -87,9 +91,11 @@ two hosts: the box that keeps the books is not the box that consents to writes
 documents, pointed at this stack's published HTTP door. Co-locating the consent hand with the books
 would quietly delete the separation that makes the consent mean something.
 
-## Known unknowns (close these in the lab run)
+## Known unknowns (remaining)
 
-- Whether an empty `apps/pacioli_guard` stub is sufficient at `bench build` / asset-collection
-  time. Expected yes (guard is a backend-hooks app with no assets), but expected is not proven.
+- ~~Whether an empty `apps/pacioli_guard` stub is sufficient at asset-collection time~~ — **proven
+  yes, 2026-07-20** (from-blank build + install + serve, zero asset complaints).
 - The upgrade story: rebuilding the image with a newer `PACIOLI_GUARD_VERSION` and re-running
   `bench --site <site> migrate` should be the whole drill; not yet exercised.
+- The broker leg in a containerized estate (separate host by design; `doctor: ready.` against a
+  frappe_docker-served site) — not yet exercised.
