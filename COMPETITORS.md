@@ -11,9 +11,7 @@
 > ecosystem adds repos weekly (several found here were created/updated in the last 30 days). The earlier
 > "6 servers, governed tier empty" claim was **far too small and too strong**; this supersedes it.
 >
-> **Re-swept 2026-07-20** — see "2026-07-20 re-sweep delta" at the bottom. Net: the combination is still
-> unclaimed by anyone else; **Ask ALYF is the one to watch** (propose-then-confirm now covers
-> submit/cancel/amend — non-MCP); one new entrant (**AgentReady**, cloud MVP).
+> **Re-swept 2026-07-20** — see "2026-07-20 re-sweep delta" at the bottom for what moved since 06-30.
 
 ---
 
@@ -80,46 +78,6 @@
 
 ---
 
-## Strategic findings from the sweep (these matter more than the count)
-
-1. **The official MCP registry is EMPTY of ERPNext.** `registry.modelcontextprotocol.io`,
-   `modelcontextprotocol/servers`, `punkpeye/awesome-mcp-servers` → **zero** entries. All activity is on
-   *aggregator* directories (Glama 20+17, PulseMCP, mcp.so, Smithery) that auto-index GitHub. **The
-   canonical distribution slot is unclaimed** — the exact opening Proximo took.
-2. **Frappe is NOT shipping a first-party AI product** — only the `frappe/mcp` framework library and the
-   `frappe-agent-skills` docs repo. **No "Frappe Copilot"/"Frappe AI" incumbent to displace.**
-3. **Demand exists** — forum threads *"Official MCP Server from Frappe?"* (162735) and others (couldn't be
-   read in full — discuss.frappe.io 403s — but the titles confirm the ask). Partially answers our earlier
-   "no demand signal" open question: there *is* latent demand for an official/governed MCP.
-4. **Governance shows up PIECEMEAL, never combined.** mascor (allowlist+audit), FAC (audit), **Ask ALYF
-   (approval gate before mutations)**, Noreli North (compliance capture), StackOne (planned "Defender").
-   **No MCP server combines these into a trust spine.**
-5. **Raven confirmed: no MCP, no external API, no roadmap for either.** "Not-MCP" stands.
-
-## Revised gap + wedge (honest, post-sweep)
-
-- **"Nobody has governance" is DEAD** — don't pitch it. Allowlists, audit logs, and an approval gate
-  (Ask ALYF) already exist somewhere in the field.
-- **Still genuinely open** (no one combines them, in an MCP server, sovereign, at breadth):
-  1. **Tamper-*evident* PROVE** — every existing log is mutable; none hash-chained/keyed.
-  2. **PLAN / dry-run on `submit`/`cancel`** (not just `create`).
-  3. **Graph-aware UNDO** (cancel+amend in dependency order).
-  4. **CONSENT gate inside an MCP server** — Ask ALYF has the gate but it's an in-Desk app, not MCP.
-  5. **No arbitrary-`exec()` tool** (FAC/rakeshgangwar/ManotLuijiu/Codenetic-style power tools ship them).
-  6. **Multi-site / multi-company contextvar routing.**
-  7. **The official-registry slot** — be the first governed ERPNext MCP in the canonical registry.
-- **Closest analogs to watch:** **Ask ALYF** (approval-gated, but in-app non-MCP), **StackOne** (security-
-  positioned, vaporware), **FAC** (audited MCP, self-hosted), **mascor** (allowlist+audit PoC).
-
-> **Bottom line (post-sweep):** the field is crowded with *capability* (40+ tools, several adding deeper
-> power — workflow creation, real-time, force-execute jobs) and sprinkled with *isolated* governance
-> primitives — but **no one ships the trust-by-construction *combination* in an MCP server**, the
-> **official registry slot is open**, **Frappe isn't building it themselves**, and **the community is
-> asking for it.** That is a sharper, better-grounded opening than "the tier is empty" — and it survives
-> scrutiny because it names exactly who already does each piece.
-
----
-
 ## Coverage & honesty (what this sweep did and did NOT cover)
 
 - **Tier B is discovery-only.** Source-verify before relying on any Tier-B governance claim. Flagged for
@@ -149,9 +107,9 @@
   least-privilege credential; no distinction in governance weight between reads and irreversible submits.
   Self-described MVP: appears cloud-hosted (Login/Start-workspace flow; no self-host option found or
   mentioned), no public GitHub repo found, no pricing, contact is a personal Gmail seeking design
-  partners. Watch, don't fear — and note the distinction
-  candidly: they build discovery/the door; the least-privilege + tamper-evident books layer is not what
-  they ship. (Don't confuse with agentready.org or agent-ready.dev — unrelated projects.)
+  partners. Their published scope is discovery and the tool surface; a separately-scoped least-privilege
+  credential layer and a tamper-evident ledger are not in what they document.
+  (Don't confuse with agentready.org or agent-ready.dev — unrelated projects.)
 - **erpnext-readonly-mcp** (npm, v1.0.0, 2026-06-25) — read-only-by-construction MCP server; no repo, no
   author metadata, unverifiable. Adjacent philosophy (governance by removing writes), not a competitor.
 - Long tail: expected fresh 0★ clones; nothing else material. Casys bumped to 2.4.1 (2026-07-16), same entrant.
@@ -182,20 +140,7 @@ destructive verbs. By a wide margin the most actively developed governance-adjac
   2026-05-29. frappe/frappe#33170 closed 2025-07-08 with the library as its answer — the proposed
   RBAC/audit/sandbox never shipped.
 - **Official MCP registry** (registry.modelcontextprotocol.io): `erpnext` → 0 results; `frappe` → only a
-  dev-tooling scaffolder; **`pacioli` → io.github.john-broadway/pacioli, active, 0.30.2**. The slot is
-  HELD GROUND now, not an open opportunity — no competitor is contesting it.
+  dev-tooling scaffolder; **`pacioli` → io.github.john-broadway/pacioli, active, 0.30.2** — the only
+  ERPNext-relevant entry there (re-verified 2026-07-20).
 
-### Wedge delta (the 7 open items from the section above)
-
-1. Tamper-evident PROVE — **open**, untouched (Ask ALYF's log is a plain mutable DocType).
-2. PLAN/dry-run on submit/cancel — **narrowed by Ask ALYF from the non-MCP side**; "in an MCP server" still holds, but the mechanism is no longer uniquely ours.
-3. Graph-aware UNDO — **open**, untouched.
-4. CONSENT inside an MCP server — **open**; Ask ALYF's gate matured but remains in-Desk, non-MCP.
-5. No exec escape hatch — **open and REINFORCED**: every server verified this round ships one; even Ask ALYF keeps `run_whitelisted_method`. The strongest surviving differentiator.
-6. Multi-site contextvar routing — **open**, unmentioned anywhere.
-7. Registry slot — **closed BY US** (0.30.x live in the official registry since 07-17/18). Held ground.
-
-**Bottom line 2026-07-20:** "no one ships the trust-by-construction combination in an MCP server" is
-**still true**. Score: 1 of 7 closed (by us), 1 narrowed (Ask ALYF, non-MCP), 5 untouched. The name to
-watch is Ask ALYF (velocity + a real consent mechanism); the name to be candid about is AgentReady (real,
-early, cloud, ambient-authority). Re-sweep again before any public claim that cites this landscape.
+Re-sweep before citing this landscape — it moves weekly.
