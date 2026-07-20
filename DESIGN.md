@@ -91,7 +91,7 @@ governed."**
 > log (and its code-exec tools); **the code proves all three real.** "Refuted" meant "couldn't confirm,"
 > not "absent" — exactly the trap the advisor flagged. FAC is the closest competitor and is *audited
 > but not governed*; Pacioli's edge over it is **trust-spine depth, not sovereignty** (FAC is
-> self-hosted too — sovereignty is the wedge against the *cloud* tools, Composio/Definable).
+> self-hosted too — sovereignty is the differentiator vs the *cloud* tools, Composio/Definable).
 
 **The gap, in one line:** every server we could verify delegates safety entirely to ERPNext's
 API-level permissions and adds no *tool-level* trust layer. (FAC is the one unverified maybe — §9.1.)
@@ -272,27 +272,6 @@ norms, the AI-on-ERP-data debate) is a separate deliverable, not folded in here.
 
 The pipeline Proximo already ran: **Anthropic MCP registry** + **awesome-mcp-servers** PR + **mcp.so**,
 PyPI + GHCR, an `[a2a]` extra for the Agent2Agent face routing through the same trust core (no second
-mutate path). **Strategic opening (verified in the sweep — `COMPETITORS.md`): the official MCP registry,
-`modelcontextprotocol/servers`, and `awesome-mcp-servers` have ZERO ERPNext entries.** All ~40 existing
-tools live only on auto-indexing aggregators (Glama/PulseMCP) — and as of 2026-07-17 **that canonical
-registry slot is OURS** (`io.github.john-broadway/pacioli`, the only ERPNext-governance entry there,
-re-verified 2026-07-20), while **Frappe ships no first-party AI product** to contest it. Discovery is
-solved by being *the governed one* **and** the first ERPNext entry in the official registry, in a field
-of thin wrappers.
-
-## 9. Open questions / next probes (before any build)
-
-1. ~~Re-scope FAC by hand~~ **DONE → `COMPETITORS.md`.** Verified: real audit log + OAuth2 +
-   `has_permission` + workflow-aware, but permissive, create-only dry-run, no cancel/undo, single-site,
-   ships `exec()`. "Audited but not governed." (Remaining unknowns: Composio/Definable are closed
-   cloud relays — can't read their source, but their *cloud-relay* model already loses on sovereignty.)
-2. **Official `frappe/mcp` real state** — is it a published package, a bench app, or an in-repo
-   experiment, and what does it expose by default? It's the incumbent-by-name.
-3. **Commercial connectors — partially found.** Composio's ERPNext toolkit and Definable.ai both
-   expose submit/cancel and *claim* audit trails (unverified marketing copy). Hand-verify their real
-   governance depth (a *log* is not a trust spine); also check LangChain / Make / Zapier ERPNext nodes.
-4. **ERPNext reversibility edges** — confirm exactly where cancel/amend is *forbidden* (closed
-   periods, reconciled payments, stock already consumed) so UNDO fails closed and honest.
-5. ~~The name~~ — **CONFIRMED: Pacioli** (John, 2026-06-30). Availability checked: **PyPI `pacioli`
-   FREE** (cleaner than Proximo's reserved bare name), npm `pacioli` taken (irrelevant for a Python
-   pkg), only small dormant GitHub namesakes (none in our lane). Clear to use as `pacioli`.
+mutate path). Pacioli is in the official MCP registry (`io.github.john-broadway/pacioli`, since
+2026-07-17) — the only ERPNext-relevant entry there (re-verified 2026-07-20); the ~40 other tools
+live on auto-indexing aggregators (Glama/PulseMCP), and Frappe ships no first-party AI product.

@@ -3,9 +3,7 @@
 > **Ruling (2026-07-11): "two doors, one product." The law.** One product — Guard + the broker —
 > reached through two doors: retrofit onto an existing ERPNext, or a hardened all-in-one deploy with
 > ERPNext included. Same core both ways; the ERP is either yours-already or bundled. This note is the
-> durable record of that decision and the market read behind it. Grounds on `COMPETITORS.md` (the
-> 40+ sweep) and the workshop-internal research verdict (a 73-agent adversarial review); extends them with the
-> appliance angle those two do not cover.
+> durable record of that decision.
 
 ## The law
 
@@ -39,35 +37,6 @@ someone else's live install can never force:
   disabled; the seat scoped by default. The `doctor` probes and the tight-role seat are already the
   hardening spec — the appliance is mostly *assembling, locking, and shipping* what's built.
 
-## How it plays (market read — 2026-07-11, focused)
-
-**Door 1 (layer): verdicted GO** (workshop-internal research verdict). Field crowded with *capability*, empty of
-the governance *combination*; the wedge is the **credential-layer bypass** (same token that hits
-`/api/method/X` hits `/api/resource/<DocType>` and walks around every tool-/role-layer control); demand
-is real and long-standing; Frappe isn't building it natively (MEDIUM confidence — the one thing to
-keep watching); the canonical registry slot is open.
-
-**Door 2 (appliance): emptier than Door 1.** The ERPNext deployment space is entirely (a) managed
-hosting (Frappe Cloud, partner-managed, DeployFrappe) and (b) DIY hardening guides. **No one ships a
-governance-hardened, trust-native, agent-safe ERPNext distribution.** And the incumbents' "security"
-pitch — *"your existing ERPNext permissions apply, every action logged, ISO 27001"* — is exactly the
-model the verdict proved is bypassable at the credential layer. The market's security story has the
-precise hole Pacioli fills, sitting in the incumbent's storefront (the official-marketplace AI path,
-FAC, the sweep already graded *"audited but not governed"*).
-
-**Three strategic reads:**
-1. **The appliance is the moat.** Every one of the 40+ competitors is a tool-layer or in-Desk app.
-   The deepest guarantees (DB-level append-only, console off) require shipping *infra* — high ground a
-   software-layer competitor can't take with more tools.
-2. **The appliance is the hedge on the layer's one risk.** If Frappe ever ships native per-credential
-   scoping (the verdict's "keep watching" soft spot), it narrows Door 1's wedge — but does nothing to
-   Door 2, because "a scope object" is not "a sovereign, hardened, tamper-evident, PLAN/CONSENT/UNDO
-   trust-native distribution." **Door 2 insures Door 1.**
-3. **Position around Frappe Cloud, not against it.** Frappe Cloud = easy, cloud, official hosting.
-   The appliance = sovereign, governed, hardened self-host — a different axis. Guard+broker can even
-   run *on* Frappe Cloud, so Door 1 is compatible with the incumbent while Door 2 is a genuine
-   alternative to its trust posture. No head-on war; a clear reason to exist.
-
 ## The discipline that keeps the double honest
 
 The Guard and broker **inside the appliance must be byte-identical to the standalone packages** — same
@@ -75,10 +44,3 @@ version, same code, config on top, never a fork of Pacioli's *own* product. The 
 Pacioli drifts from the shelf Pacioli, it's two things wearing one name and the double breaks. **One
 Pacioli, entered two ways.**
 
-## Before any public Door-2 claim
-
-- `COMPETITORS.md` is a 2026-06-30 snapshot in a field that adds repos weekly — **re-sweep.**
-- **Run a dedicated appliance-competitor scan** (is anyone quietly building a governed/hardened ERP
-  distribution?) — tonight's look was focused (verified sweep + two searches), not exhaustive.
-- Un-checked tail: Workato/Boomi/Tray enterprise-iPaaS ERPNext connectors; full `discuss.frappe.io`
-  threads (403 throughout the prior sweep).
