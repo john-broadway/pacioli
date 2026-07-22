@@ -1,9 +1,869 @@
 # Guard resource-doctype allowlist (REST /api/resource reads; verbs r1 c1 w0 d0 set by govern.sh).
 # From the proven live build (12 doctypes): the four governed doctypes + the doctor's read set.
+# Sales Order added 2026-07-20 (breadth campaign Wave 1) — a fifth governed doctype, same
+# run_method submit/cancel surface as Sales Invoice/Purchase Invoice/Payment Entry.
+# Purchase Order added 2026-07-20 (breadth campaign Wave 1) — a sixth governed doctype, same
+# run_method submit/cancel surface, mechanically identical to Sales Order.
+# Material Request added 2026-07-20 (breadth campaign Wave 1) — a seventh governed doctype, same
+# run_method submit/cancel surface; the lowest-risk stock row (no GL/SL of its own, party_field
+# =None — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block).
+# Delivery Note added 2026-07-21 (breadth campaign Wave 1) — an eighth governed doctype, same
+# run_method submit/cancel surface; the first STOCK-PRIMARY row (posts both Stock Ledger Entry
+# and, conditionally, GL Entry of its own — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment
+# block).
+# Purchase Receipt added 2026-07-21 (breadth campaign Wave 1) — a ninth governed doctype, same
+# run_method submit/cancel surface; the second STOCK-PRIMARY row (posts both Stock Ledger Entry
+# and, conditionally, GL Entry of its own — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment
+# block).
+# Stock Entry added 2026-07-21 (breadth campaign Wave 1) — the tenth governed doctype and the LAST
+# of Wave 1, same run_method submit/cancel surface; the third STOCK-PRIMARY row and the first
+# genuinely polymorphic one (13-way purpose) — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment
+# block.
+# Supplier Quotation added 2026-07-21 (breadth campaign Wave 2, first row) — the eleventh governed
+# doctype, same run_method submit/cancel surface; a byte-for-byte mechanical twin of Purchase
+# Order (same party_field/submit_via/date_field) — see pacioli/erpnext.py's SUPPORTED_DOCTYPES
+# comment block.
+# Quotation added 2026-07-21 (breadth campaign Wave 2, second row) — the twelfth governed doctype,
+# same run_method submit/cancel surface; the FIRST dynamic-party doctype (quotation_to + party_name,
+# a Dynamic Link pair — party_field=None, no single static party field to scope by name) — see
+# pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# POS Invoice added 2026-07-21 (breadth campaign Wave 2, third row) — the thirteenth governed
+# doctype, same run_method submit/cancel surface; byte-for-byte mechanical twin of Sales Invoice's
+# SUPPORTED_DOCTYPES entry, but its own submit posts NEITHER a GL Entry NOR a Stock Ledger Entry —
+# POSInvoice.on_submit fully overrides SalesInvoice.on_submit without calling it; real GL/SL
+# posting is deferred to a separate, later-submitted Sales Invoice a POS Closing Entry builds at
+# consolidation — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Dunning added 2026-07-21 (breadth campaign Wave 2, fourth row) — the fourteenth governed
+# doctype, same run_method submit/cancel surface; the FIRST doctype whose native ledger_preview
+# RPC this broker skips outright — Dunning has no make_gl_entries method anywhere in its class
+# hierarchy (inherits AccountsController, never StockController), so the preview would raise
+# AttributeError on a live bench if called; plan_submit reports projected_gl=[] by construction
+# instead, with a doctype-gated disclosure naming why — see pacioli/erpnext.py's SUPPORTED_DOCTYPES
+# comment block.
+# Stock Reconciliation added 2026-07-21 (breadth campaign Wave 2, fifth row) — the fifteenth
+# governed doctype, and the SECOND to ride SUBMIT_VIA_CLIENT_RPC (frappe.client.submit/.cancel),
+# not the run_method surface every doctype since Journal Entry has used: StockReconciliation
+# overrides submit()/cancel() themselves, neither decorated @frappe.whitelist(), so the run_method
+# vector 403s exactly like Journal Entry's own. Also the first doctype whose native ledger_preview
+# RPC is callable and empty but MISLEADING (not honest) — it is absent from ERPNext's own
+# SLE-seeding whitelist (unlike Delivery Note/Purchase Receipt/Stock Entry), so the preview never
+# seeds the Stock Ledger Entry rows a real submit unconditionally writes; plan_submit carries a
+# doctype-gated disclosure naming the false negative — see pacioli/erpnext.py's SUPPORTED_DOCTYPES
+# comment block.
+# Landed Cost Voucher added 2026-07-21 (breadth campaign Wave 2, sixth row and LAST) — the
+# sixteenth governed doctype, same run_method submit/cancel surface; the FIRST doctype whose own
+# submit/cancel rewrites OTHER submitted documents' posted ledger rows (the Purchase Receipt/
+# Purchase Invoice/Stock Entry/Subcontracting Receipt documents named in its own purchase_receipts
+# table are revalued and their Stock Ledger Entry + GL Entry rows reposted, both directions). Its
+# native ledger_preview RPC is uncallable (no make_gl_entries anywhere in its class hierarchy —
+# LandedCostVoucher(Document), never AccountsController or StockController — the Dunning shape,
+# skipped outright) and even a working preview would describe the wrong document, since this
+# doctype never posts under its own voucher_type at all; plan_submit AND plan_cancel both carry a
+# doctype-gated disclosure naming the real revaluation elsewhere. Its one real cascade edge
+# (Landed Cost Purchase Receipt.receipt_document, a Dynamic Link) is genuinely discoverable by the
+# generic blast-radius walk (frappe's own live distinct-value resolution, not a static schema
+# scan) — a correction against both the pinned dossier and this doctype's own earlier mention in
+# Purchase Receipt's landing — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Request for Quotation added 2026-07-21 (breadth campaign Wave 3, first row) — the seventeenth
+# governed doctype, same run_method submit/cancel surface; dispatches to MULTIPLE suppliers via a
+# required child table (party_field=None — no single header party); status present, grand_total
+# absent, its own eighth _list_fields branch (Material Request's own shape, not a reuse — its
+# substitute fields don't exist on this doctype's schema). RFQ is the SO/PO/MR/SQ/Q "honest-empty"
+# ledger_preview category, NOT Dunning/LCV's "uncallable" one — it genuinely inherits a real,
+# callable make_gl_entries via BuyingController -> SubcontractingController -> StockController, so
+# it is NOT added to the ledger_preview skip tuple. on_submit dispatches real email to every
+# supplier in the child table — an external-communication side effect, documented as a plan-tier
+# disclosure note, never reversed on cancel — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment
+# block.
+# Blanket Order added 2026-07-21 (breadth campaign Wave 3, second row) — the eighteenth governed
+# doctype, same run_method submit/cancel surface; carries BOTH customer and supplier as real header
+# Link fields, client-side gated by blanket_order_type but NEITHER server-enforced nor server-set
+# (party_field=None); status and grand_total both confirmed absent, its own ninth _list_fields
+# branch (blanket_order_type + customer/supplier + to_date stand in — the only party=None+absent
+# branch that also carries real party context). date_field="from_date" — the first doctype on
+# neither the posting_date nor transaction_date pattern. Its native ledger_preview RPC is
+# uncallable (BlanketOrder(Document), no make_gl_entries anywhere in its class hierarchy — joins
+# the Dunning/Landed Cost Voucher skip tuple) but, unlike LCV, has no revaluation-elsewhere side
+# effect on cancel — the simpler Dunning shape. A dossier correction: quotation_item.blanket_order
+# is a real Link field the dossier wrongly called non-Link, widening the cascade disclosure surface
+# (zero new code either way, cascade.py stays doctype-blind) — see pacioli/erpnext.py's
+# SUPPORTED_DOCTYPES comment block.
+# Job Card added 2026-07-21 (breadth campaign Wave 3, third row) — the nineteenth governed doctype,
+# same run_method submit/cancel surface; a shop-floor operation record, zero party fields at all
+# (party_field=None); status present (8 options), grand_total absent, its own eleventh
+# _list_fields branch (work_order/operation/for_quantity stand in — none of these exist on
+# Material Request's or RFQ's own same-shape schemas, so neither is reused). date_field=
+# "posting_date" (the default — no new plumbing). Its native ledger_preview RPC is uncallable
+# (JobCard(Document), no make_gl_entries anywhere in its class hierarchy — joins the Dunning/
+# Landed Cost Voucher/Blanket Order skip tuple) but, like Blanket Order, has no
+# revaluation-elsewhere side effect on cancel (on_cancel resets the linked Work Order's operation
+# quantities only). A dossier clarification: Material Request's own job_card Link field is the
+# same standing shape as Stock Entry's/Purchase Order Item's/both Subcontracting Item doctypes',
+# not merely a creation-lineage artifact (zero new code either way, cascade.py stays doctype-blind)
+# — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block. CAVEAT: Job Card exposes 14 separate
+# whitelisted time-log/job-control methods (pause_job, resume_job, start_timer, complete_job_card,
+# make_stock_entry, make_stock_entry_for_semi_fg_item, make_subcontracting_po,
+# make_material_request, make_corrective_job_card, and others) OUTSIDE this broker's
+# submit/cancel/amend surface — this scope grant covers submit/cancel/reads only; it does NOT
+# extend to those methods, and no tool is built for any of them.
+# BOM added 2026-07-21 (breadth campaign Wave 3, fourth row) — the twentieth governed doctype,
+# same run_method submit/cancel surface; a product recipe/structure, THE FIRST DATELESS DOCTYPE
+# (date_field=None — zero Date/Datetime fields across bom.json's 94; the closed-books chain
+# branches on the declared pin end to end, equal to ERPNext, which never period-checks BOM).
+# party_field=None; status and grand_total both absent (is_active/is_default/total_cost stand in,
+# its own twelfth _list_fields branch, no date column at all). Native ledger_preview uncallable
+# (BOM(WebsiteGenerator), no make_gl_entries in the MRO — joins the skip tuple). CAVEAT: BOM
+# exposes 10 whitelisted methods OUTSIDE the 5-verb surface — sharpest is update_cost, which
+# REWRITES A SUBMITTED BOM's stored costs in place and recursively its submitted parents'; also
+# make_variant_bom (creates a new BOM). This grant covers submit/cancel/reads only; it does NOT
+# extend to those methods, and no tool is built for any of them.
+# Work Order added 2026-07-21 (breadth campaign Wave 3, fifth row) — the twenty-first governed
+# doctype, same run_method submit/cancel surface; an internal manufacturing order
+# (party_field=None); status present (10 options), grand_total absent, its own thirteenth
+# _list_fields branch (production_item/qty/produced_qty/bom_no stand in). date_field=
+# "planned_start_date" — THE FIRST DATETIME-TYPED date field; the broker projects it to its date
+# part for the closed-books chain (malformed values stay refused). Native ledger_preview
+# uncallable (WorkOrder(Document) — joins the skip tuple). Its own on_cancel refuses while status
+# is "Stopped" and while ANY submitted Stock Entry references it. CAVEAT: Work Order exposes 19
+# whitelisted methods OUTSIDE the 5-verb surface including TWO submitted-state status mutators —
+# stop_unstop (Stopped <-> live) and close_work_order (terminal Closed) — that move the very
+# status its own cancel gate keys on, with only base write permission. This grant covers
+# submit/cancel/reads only; it does NOT extend to those methods, and no tool is built for any.
+# Asset added 2026-07-21 (breadth campaign Wave 3, sixth row and LAST) — the twenty-second
+# governed doctype, same run_method submit/cancel surface; the first with SCHEDULED ASYNC GL
+# (submit arms two channels this broker cannot govern: depreciation JEs via the daily
+# post_depreciation_entries scheduler, and the deferred CWIP transfer via the daily
+# make_post_gl_entry scheduler for a future available_for_use_date — both disclosed at plan
+# time). party_field=None (the asset_owner trio is ownership metadata, not a GL party);
+# date_field="available_for_use_date" (the GL posting date; Asset IS in period_closing_doctypes —
+# the closed-books check is natively equal to ERPNext). Native ledger_preview CALLABLE (real
+# make_gl_entries — NOT in the skip tuple). STRUCTURAL: submit auto-creates and submits an Asset
+# Movement linking back, so leaf-node plan_cancel refuses for every submitted Asset —
+# plan_cascade_cancel is the governed cancel path (the whole unwind graph, named and consented).
+# CAVEAT: Asset exposes 15 whitelisted document-factory methods (make_sales_invoice, split_asset,
+# transfer_asset, make_journal_entry, create_asset_repair/_maintenance/_capitalization/
+# _value_adjustment, and others) OUTSIDE the 5-verb surface. This grant covers submit/cancel/
+# reads only; it does NOT extend to those methods, and no tool is built for any of them.
+# Packing Slip added 2026-07-21 (breadth campaign Wave 4, first row) — the twenty-third governed
+# doctype, same run_method submit/cancel surface; a shipment-packing record, zero party fields at
+# all (party_field=None; delivery_note is a Link AT a Delivery Note, not a party). status and
+# grand_total both absent; its own fifteenth _list_fields branch (delivery_note/from_case_no/
+# to_case_no stand in) is also the FIRST to omit "company" from the requested columns — Packing
+# Slip carries no company field either (see below). date_field=None — THE SECOND DATELESS
+# doctype (reuses BOM's own NO_DATE_FIELD machinery unchanged). Native ledger_preview uncallable
+# (PackingSlip(StatusUpdater), no make_gl_entries in the MRO — joins the skip tuple); on_submit/
+# on_cancel both rewrite a packed_qty COUNTER on the linked Delivery Note Item/Packed Item via a
+# raw SQL update, never a GL row. CASCADE LEAF: the only Link -> Packing Slip field anywhere in
+# the tree is its own self-referencing amended_from — no other doctype can ever block this
+# doctype's own cancel. NEW FINDING (not new machinery): Packing Slip also carries no "company"
+# field, so a company-PINNED target correctly refuses every governed write on it ("wrong books" —
+# None never matches a real pin); only an UNPINNED target (registry.py's documented posture) can
+# govern it. Reads (get/list) are unaffected either way. CAVEAT: ONE read-only whitelisted method
+# (item_details, a search filter) — nothing to withhold, the smallest side surface yet.
+# Cost Center Allocation added 2026-07-21 (breadth campaign Wave 4, second row) — the
+# twenty-fourth governed doctype, same run_method submit/cancel surface; a recurring-allocation
+# RULE, zero party fields at all (party_field=None; main_cost_center/company are structural
+# routing fields, not a party). status and grand_total both absent; its own sixteenth
+# _list_fields branch (main_cost_center/valid_from stand in, no substitute/context column exists
+# at all — the smallest schema this campaign has found, 7 fields total). date_field="valid_from"
+# — A DOSSIER CORRECTION: the dossier claimed this doctype was both dated AND "dateless"; settled
+# from source as an ORDINARY dated doctype (a real, required Date field, default "Today") — the
+# sixth distinct date-fieldname pattern, riding the existing generic date machinery unchanged,
+# never the NO_DATE_FIELD sentinel. Unlike Packing Slip, "company" DOES exist here (fetched from
+# main_cost_center, reqd) — the standing "wrong books" belt applies in its ordinary form, no new
+# machinery. Native ledger_preview uncallable (a direct Document subclass, no make_gl_entries in
+# the MRO — joins the skip tuple); NO on_submit/on_cancel hook of any kind is defined — the
+# simplest submit/cancel lifecycle this campaign has found, never even a counter rewrite. CASCADE
+# LEAF: the only Link -> Cost Center Allocation field anywhere in the tree is its own
+# self-referencing amended_from. CAVEAT: ZERO whitelisted methods — nothing to withhold, smaller
+# even than Packing Slip's one read-only search filter.
+# Supplier Scorecard Period added 2026-07-21 (breadth campaign Wave 4, third row) — the
+# twenty-fifth governed doctype, same run_method submit/cancel surface; Wave 4's FIRST ROW WITH A
+# REAL PARTY FIELD (party_field="supplier", a required header-level Link — Packing Slip/Cost
+# Center Allocation both carried party_field=None). status and grand_total both absent
+# (total_score, a Percent, is a SCORE, never a monetary substitute); its own seventeenth
+# _list_fields branch. date_field="start_date" (a real, required Date field, chosen over the
+# doctype's own end_date as the period's anchor) — the seventh distinct date-fieldname pattern.
+# "company" is CONFIRMED ABSENT — a dossier omission, the SECOND companyless doctype after
+# Packing Slip: a company-PINNED target correctly refuses every governed write ("wrong books" —
+# None never matches a real pin); only an UNPINNED target can govern it, though (unlike Packing
+# Slip) the closed-books disclosure still reads a real, companyless period-lock call under that
+# unpinned target, since this doctype IS genuinely dated. Native ledger_preview uncallable (a
+# direct Document subclass, no make_gl_entries in the MRO — joins the skip tuple); NO
+# on_submit/on_cancel hook of any kind is defined (the same simplest lifecycle Cost Center
+# Allocation established). CASCADE LEAF: the only Link -> Supplier Scorecard Period field
+# anywhere in the tree is its own self-referencing amended_from (the parent Supplier Scorecard
+# relationship runs the OTHER way — this doctype's own `scorecard` field links TO it). CAVEAT:
+# ZERO whitelisted methods — nothing to withhold. A SEPARATE caveat load-bearing to the whole
+# doctype: it is ordinarily MACHINE-GENERATED AND MACHINE-SUBMITTED by its own parent Supplier
+# Scorecard doctype (on every parent save, and once daily via the refresh_scorecards scheduled
+# job) — never by this broker, a dossier §11 omission (its RED FLAGS scan never checked the
+# parent doctype).
+# Quality Inspection added 2026-07-21 (breadth campaign Wave 4, fourth row) — the twenty-sixth
+# governed doctype, same run_method submit/cancel surface; the FIRST DOCTYPE ON A DYNAMIC LINK
+# PAIR since Quotation (party_field=None — reference_type/reference_name, never a static party).
+# status present (Accepted/Rejected/Cancelled, default Accepted); grand_total absent (a pure
+# control/quality record, never a transaction) — its own eighteenth _list_fields branch.
+# date_field="report_date" (real, required, default Today) — the EIGHTH distinct date-fieldname
+# pattern. company IS present (unlike Packing Slip/Supplier Scorecard Period) though not reqd —
+# set programmatically from the reference document; a dossier "GL party fixture" framing
+# corrected (this doctype posts no GL at all). Native ledger_preview UNCALLABLE (a direct
+# Document subclass, no make_gl_entries anywhere in either the erpnext-16 or frappe-16 checkouts
+# — joins the skip tuple). before_submit THROWS if any readings row lacks its own status value
+# — a genuine dossier omission (its own §4/§6 never mention this hook), disclosed as a
+# doctype-scoped submit risk flag. on_cancel unconditionally rewrites the reference document's
+# own quality_inspection link via raw SQL — for reference_type=="Job Card" directly against Job
+# Card's own TOP-LEVEL row (a SECOND dossier correction: its own §7 "child row" framing does not
+# hold for this one reference_type, since Job Card carries no child table for the field at all),
+# for every other reference_type a child-table row instead — disclosed as a doctype-scoped cancel
+# risk flag branching on reference_type. CASCADE: the FIRST real external blast-radius partner
+# since Cost Center Allocation/Packing Slip/Supplier Scorecard Period's own leaf shape — NINE
+# Link -> Quality Inspection fields (seven non-submittable child-table rows + the
+# self-referencing amended_from + Job Card, the one genuine submittable edge). CAVEAT: FIVE
+# whitelisted methods (another dossier correction — its own §9 claimed four, treating
+# make_quality_inspection as undecorated; verified @frappe.whitelist() at quality_inspection.py:
+# 487) — nothing granted toward any of them.
+# Installation Note added 2026-07-21 (breadth campaign Wave 4, fifth row) — the twenty-seventh
+# governed doctype, same run_method submit/cancel surface; Wave 4's SECOND ROW WITH A REAL PARTY
+# FIELD (party_field="customer", a required header-level Link — Quality Inspection/Cost Center
+# Allocation/Packing Slip all carried party_field=None). status present (Draft/Submitted/
+# Cancelled, read-only lifecycle stamp); grand_total absent with no substitute of any kind (the
+# NINETEENTH _list_fields branch — remarks is the only other in_list_view field). company IS
+# present and required (unlike Packing Slip/Supplier Scorecard Period) — the standing "wrong
+# books" belt applies in its ordinary form. date_field="inst_date" (real, required) — the NINTH
+# date-fieldname pattern; the schema's only other Date/Datetime field, inst_time, is a clock time
+# only, never a period-lock candidate. Native ledger_preview UNCALLABLE, reached through a DEEPER
+# MRO than any prior member (InstallationNote -> TransactionBase -> StatusUpdater -> Document, no
+# make_gl_entries anywhere in the chain — joins the skip tuple). on_submit calls
+# validate_serial_no() (every throw condition requires reading a DIFFERENT doctype — Item/Serial
+# No/the linked Delivery Note Item — so no new risk-flag function is built, per the doc-only
+# discipline every existing flag function already follows) THEN update_prevdoc_status();
+# on_cancel calls ONLY update_prevdoc_status(). Both share the same update_qty()/validate_qty()
+# StatusUpdater mechanism Packing Slip's own landing already named (a raw-SQL installed_qty/
+# per_installed counter rewrite plus ERPNext's own over-allowance guard, never a GL row, never a
+# flag this broker fabricates). CASCADE LEAF: the only Link -> Installation Note field anywhere
+# in the tree is its own self-referencing amended_from (the child table's own Delivery Note
+# references are plain Data fields, never Link). CAVEAT: ZERO whitelisted methods — nothing to
+# withhold, the same smallest side-surface shape Cost Center Allocation's own landing established.
+# Shipment added 2026-07-21 (breadth campaign Wave 4, sixth row) — the twenty-eighth governed
+# doctype, same run_method submit/cancel surface; the FIRST DOCTYPE WITH TWO INDEPENDENT
+# DYNAMIC-SELECTOR PAIRS (pickup_from_type/delivery_to_type, each gating a trio of mutually
+# exclusive Company/Customer/Supplier Links, never server-enforced). party_field=None (a THIRD
+# distinct reason, after Quotation's Dynamic Link and Blanket Order's two-gated-Links shape).
+# status present (Draft/Submitted/Booked/Cancelled/Completed, read-only, db_set-only — Booked/
+# Completed are declared but never reached anywhere in this v16 OSS tree, a verified finding).
+# grand_total absent — value_of_goods is the summary column (the TWENTIETH _list_fields branch,
+# splicing BOTH pickup_from_type+pickup and delivery_to_type+delivery_to, doubling the
+# Quotation/Quality Inspection "type rides with its resolved value" precedent). GENUINE
+# DISCLOSURE: pickup/delivery_to are populated ONLY by shipment.js client-side events, never by
+# shipment.py — an API-created Shipment shows them blank regardless of the real gated Link
+# fields. company absent (the THIRD companyless doctype after Packing Slip/Supplier Scorecard
+# Period) — REG_UNPINNED only. date_field="pickup_date" (real, required, allow_on_submit=1) —
+# the TENTH date-fieldname pattern; pickup_from/pickup_to are Time fields, named and excluded.
+# Native ledger_preview UNCALLABLE, the SIMPLEST MRO in the category (Shipment(Document)
+# directly) — joins the skip tuple. on_submit's two throws (empty parcel table; value_of_goods
+# == 0) are doc-readable but ordinary guards, no new risk-flag function. on_cancel carries no
+# throw of its own. CASCADE LEAF: the only Link -> Shipment field anywhere in the tree is its own
+# self-referencing amended_from. CAVEAT: THREE read-only whitelisted methods (get_address_name/
+# get_contact_name/get_company_contact) — the widest all-read-only surface this campaign has
+# found, still zero mutation; nothing granted toward any of them.
+# Sales Forecast added 2026-07-21 (breadth campaign Wave 4, seventh row) — the twenty-ninth
+# governed doctype, same run_method submit/cancel surface; a demand-planning fixture
+# (party_field=None — zero customer/supplier/party fields anywhere across all 20 enumerated
+# fields; company is metadata only). status present (Planned/MPS Generated/Cancelled, read-only,
+# in_list_view) but carries NO schema default and NO code path ever writes "Planned" (only
+# on_discard writes "Cancelled", and that hook is draft-only — see below); an API-created Sales
+# Forecast may show a genuinely blank status. grand_total absent with no substitute of any kind
+# (the TWENTY-FIRST _list_fields branch, converging byte-for-byte with Request for Quotation's own
+# bare EIGHTH branch — a genuine convergence, never a reuse). date_field="posting_date", chosen
+# over the ALSO-real from_date (reqd but not in_list_view — a workflow-window input, never this
+# doc's own transactional column). Native ledger_preview UNCALLABLE, the CLEANEST case yet
+# (SalesForecast(Document) imports ZERO accounting/stock-controller-related names at all) — joins
+# the skip tuple. on_submit AND on_cancel are BOTH confirmed absent entirely (the THIRD doctype
+# after Cost Center Allocation/Supplier Scorecard Period) — a governed cancel through this broker
+# flips docstatus alone and touches this doctype's own status field not at all; only a DRAFT
+# discard (unreachable from this broker's own cancel path — frappe's own Document.discard()
+# refuses unless docstatus is a draft) ever writes "Cancelled" into status. CASCADE: exactly one
+# real external Link (Master Production Schedule.sales_forecast), but that doctype's own
+# is_submittable is None/falsy — it can never itself reach docstatus=1, so this edge can never
+# actually block a cancel on a real bench; cascade.py needed no changes. CAVEAT: two whitelisted
+# methods (generate_demand — in-memory items-table rewrite only; create_mps — returns an UNSAVED
+# Master Production Schedule draft, caller must save/submit separately) — this grant covers
+# submit/cancel/reads only; it does NOT extend to those methods, and no tool is built for either.
+# Project Update added 2026-07-21 (breadth campaign Wave 4, eighth row) — the thirtieth governed
+# doctype, same run_method submit/cancel surface; the NARROWEST schema yet (9 fields total).
+# party_field=None (only project/amended_from are Links, neither a party). status AND grand_total
+# BOTH confirmed absent — the ONLY in_list_view field anywhere is "project" itself (the
+# TWENTY-SECOND _list_fields branch); a real "sent" Check field exists but is deliberately not
+# spliced in (an unrelated reminder-email flag, never governance-relevant state). company
+# confirmed absent — the FOURTH companyless doctype after Packing Slip/Supplier Scorecard
+# Period/Shipment; REG_UNPINNED only. date_field="date" — a GENUINELY NEW combination: a REAL
+# declared field (never the date_field=None dateless pin) carrying reqd=0 AND no schema default,
+# so an API-authored draft can show a genuinely blank date; the EXISTING _posting_date_of/
+# check_red_line machinery already denies that case correctly (both at the plan-time disclosure
+# and the real execute-time gate), zero new code needed. class ProjectUpdate(Document) is a bare
+# "pass" body — no submit/cancel override, no validate(), no hook of any kind — the simplest class
+# body this campaign has found; neither on_submit nor on_cancel is defined at all (the FOURTH
+# hookless doctype after Cost Center Allocation/Supplier Scorecard Period/Sales Forecast). Native
+# ledger_preview UNCALLABLE, the same cleanest import shape as Sales Forecast — joins the skip
+# tuple. CASCADE LEAF: the only Link -> Project Update field anywhere in the tree is its own
+# self-referencing amended_from. CAVEAT, two layers: (1) daily_reminder() whitelist (manually
+# triggered only, confirmed absent from scheduler_events) calls the un-whitelisted email_sending()
+# -> synchronous frappe.sendmail(); (2) a GENUINELY NEW finding the dossier's own file-scoped read
+# never surfaced — Project's OWN module (project.py, a different doctype) auto-creates Project
+# Update drafts on a schedule (send_project_update_email_to_users, via hourly/hourly_maintenance)
+# and later mutates them from outside (collect_project_status appends users rows via a plain save,
+# draft-only in practice; send_project_status_email_to_users flips "sent" via a raw db_set that
+# bypasses docstatus entirely) — load-bearing context, not a gap this entry grants or withholds.
+# Maintenance Visit added 2026-07-21 (breadth campaign Wave 4, ninth row) — the thirty-first
+# governed doctype, same run_method submit/cancel surface; a real party_field="customer" (Link
+# reqd); status present (Draft/Cancelled/Submitted, read_only) alongside a SEPARATE
+# completion_status Select (Partially/Fully Completed) — the two are orthogonal, both in_list_view
+# (the TWENTY-THIRD _list_fields branch, alongside maintenance_type); no grand_total.
+# date_field="mntc_date" (Date, reqd, default "Today" — the twelfth date-fieldname pattern);
+# mntc_time is a separate Time field, named and excluded. Native ledger_preview UNCALLABLE
+# (MaintenanceVisit(TransactionBase(StatusUpdater(Document))), no make_gl_entries anywhere — joins
+# the skip tuple). TWO data-driven risk flags: submitting calls update_customer_issue(1), which
+# directly rewrites any linked Warranty Claim's resolution_date/resolved_by/resolution_details/
+# status via a raw db_update() bypass (Warranty Claim is NOT submittable — no docstatus lifecycle
+# exists on it to bypass, but validate/on_update hooks and version history are still skipped);
+# cancelling first runs check_if_last_visit(), a same-doctype PEER ordering constraint (throws
+# "Cancel Material Visits {0} before cancelling this Maintenance Visit" if a later-dated submitted
+# sibling shares the same prevdoc_docname) invisible to this broker's own blast-radius/cascade
+# machinery and needing a sibling read no flag can perform (prose-disclosed only, the Installation
+# Note validate_serial_no precedent) — a dossier correction: the gate matches on prevdoc_docname
+# STRING equality alone, NOT restricted to Warranty Claim by schema, despite its own docstring's
+# "same sales order/Warranty Claim" framing. Cascade LEAF (only its own amended_from links to it).
+# Zero whitelist surface — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Maintenance Schedule added 2026-07-21 (breadth campaign Wave 4, tenth and LAST row) — the
+# thirty-second governed doctype, same run_method submit/cancel surface; party_field="customer" —
+# the FIRST party field this whole campaign has spliced that carries NO "reqd" key at all (real,
+# static, singular header Link, still decided on its reality, never its reqd-ness). status present
+# (Draft/Submitted/Cancelled, read_only, default "Draft"); no grand_total; exactly ONE in_list_view
+# field, customer_name (the TWENTY-FOURTH _list_fields branch — the same shape Installation Note
+# established, its own distinct substitute). date_field="transaction_date" REJOINS the standing
+# SO/PO/MR/SQ/Q/RFQ set (its seventh member), zero new date plumbing. Native ledger_preview
+# UNCALLABLE (MaintenanceSchedule(TransactionBase(StatusUpdater(Document))), no make_gl_entries
+# anywhere — joins the skip tuple). TWO data-driven risk flags: submitting auto-creates one Event
+# document per schedules row (frappe.get_doc(...).insert(ignore_permissions=1); Event carries no
+# is_submittable key, never itself submitted) and, per items row carrying a
+# serial_and_batch_bundle, runs serial_no_doc.save() (a FULL document save — validate/hooks/
+# versioning all run, never db_set/raw SQL — the first cross-document mutation this campaign has
+# found that is not a bypass) setting its amc_expiry_date; cancelling reverses that same field via
+# the same full .save() mechanism and PERMANENTLY DELETES (frappe.delete_doc, not orphaned) every
+# Event the submit created, via delete_events() (also called a third time from on_trash). Verified
+# plainly: on_cancel carries ZERO gate against a linked Maintenance Visit (no
+# ignore_linked_doctypes, no throw of any kind) — but this doctype is GENUINELY NOT A CASCADE LEAF
+# (Maintenance Visit's own real, static maintenance_schedule Link, is_submittable=1, is fully
+# visible to get_submitted_linked_docs), so this broker's OWN blast-radius gate refuses a leaf
+# cancel where ERPNext's native path does not — stricter than ERPNext here, pinned by a real
+# blast-radius test. Five whitelisted callables, all draft-only or read-only — see
+# pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Asset Maintenance Log added 2026-07-21 (breadth campaign Wave 5, first row) — the thirty-third
+# governed doctype, same run_method submit/cancel surface; party_field=None (no party concept at
+# all — asset_maintenance/task are operational routing Links). maintenance_status CONFIRMED
+# PRESENT (Planned/Completed/Cancelled/Overdue, reqd, NO read_only/default — the FIRST campaign
+# doctype whose lifecycle Select is writable rather than hook-stamped, and the FIRST whose real
+# fieldname is not literally "status"); no grand_total. TWO real Date fields — due_date
+# (read-only scheduling reference) and completion_date (the operational date chosen as
+# date_field — the THIRTEENTH distinct date-fieldname pattern); completion_date is REQUIRED to be
+# blank for every submitted "Cancelled" log (validate()-enforced, the Project Update blank-date
+# precedent by construction rather than accident — the existing check_red_line/_posting_date_of
+# machinery already governs this correctly). company CONFIRMED ABSENT — the FIFTH companyless
+# doctype after Packing Slip/Supplier Scorecard Period/Shipment/Project Update. Native
+# ledger_preview UNCALLABLE (AssetMaintenanceLog(Document) directly, no make_gl_entries anywhere
+# — joins the skip tuple). Submit is doomed for every maintenance_status/completion_date
+# combination EXCEPT (Completed + a set completion_date) or (Cancelled + a blank one) — fully
+# deterministic from the draft's own fields; when it succeeds, on_submit's
+# update_maintenance_task() saves the linked Asset Maintenance Task conditionally AND
+# unconditionally saves the PARENT Asset Maintenance record too, re-triggering that parent's own
+# on_update (capable of creating/updating OTHER sibling Asset Maintenance Log documents). on_cancel
+# is CONFIRMED ABSENT ENTIRELY — cancelling never reverses either mutation. RED FLAG beyond the
+# dossier's own scope: TWO status-rewrite mechanisms outside validate/on_submit — the scheduler's
+# raw frappe.qb UPDATE (draft-only in practice, since on_submit's own gate means a submitted doc
+# can never read back "Planned") and the sharper, dossier-missed one: the parent's own on_update
+# calls maintenance_log.db_set("maintenance_status", "Cancelled") with NO status/docstatus filter
+# at all, so a SUBMITTED, Completed log CAN be silently flipped to Cancelled this way. Cascade
+# LEAF (only its own self-referencing amended_from). One whitelisted callable
+# (get_maintenance_tasks), read-only — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Bank Guarantee added 2026-07-21 (breadth campaign Wave 5, second row) — the thirty-fourth
+# governed doctype, same run_method submit/cancel surface — DOSSIER CORRECTION: the dossier called
+# this client_rpc citing "an on_submit override", but on_submit is a HOOK method, never a def
+# submit(self)/def cancel(self) override (confirmed absent by a full 74-line read of
+# bank_guarantee.py) — SUBMIT_VIA_CLIENT_RPC stays pinned to exactly Journal Entry/Stock
+# Reconciliation. party_field=None — but a genuine DUAL CONDITIONAL pair, not "no party concept at
+# all": customer/supplier are both real header Links, populated per bg_type/reference_doctype
+# (client-side only), spliced together on the list tier (the Blanket Order precedent). status
+# CONFIRMED ABSENT (docstatus only); no grand_total (amount, the sole in_list_view Currency field,
+# is the aggregate substitute). date_field="start_date" (Date, reqd) — REJOINS Supplier Scorecard
+# Period's own SEVENTH date-fieldname pattern, the second doctype on it, not a new one; its own
+# sibling end_date (read-only) is a genuine dossier gap settled from source — the "calculated from
+# start_date + validity" claim is CLIENT-SIDE JS ONLY (bank_guarantee.js:65-72), confirmed absent
+# from bank_guarantee.py entirely, so an API-created document never has it recomputed server-side
+# (display convenience, never governed here). company CONFIRMED ABSENT — the SIXTH companyless
+# doctype after Packing Slip/Supplier Scorecard Period/Shipment/Project Update/Asset Maintenance
+# Log. Native ledger_preview UNCALLABLE (BankGuarantee(Document) directly, no make_gl_entries
+# anywhere — joins the skip tuple). on_submit (lines 49-55) is a fully deterministic doomed-submit
+# gate: three throws in strict order (bank_guarantee_number, then name_of_beneficiary, then bank —
+# none reqd at the schema level), each stopping at the first failure; when all three are present,
+# submit succeeds with NO further side effect of any kind — the plainest "doomed-or-nothing"
+# submit story this campaign has found. on_cancel CONFIRMED ABSENT ENTIRELY — cancelling is a pure
+# docstatus flip; nothing to reverse either, since submit itself never mutates beyond its own three
+# throws. Cascade LEAF (only its own self-referencing amended_from, confirmed across both the
+# erpnext and frappe checkouts). One whitelisted callable (get_voucher_details), read-only — see
+# pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Asset Movement added 2026-07-21 (breadth campaign Wave 5, third row) — the thirty-fifth governed
+# doctype, same run_method submit/cancel surface — the SECOND Datetime-dated doctype (after Work
+# Order). party_field=None (a Dynamic Link provenance pair, reference_doctype/reference_name,
+# pointing at the seeding Purchase Receipt/Purchase Invoice — never a GL party). status CONFIRMED
+# ABSENT (docstatus only; purpose is a 4-way Select router — Issue/Receipt/Transfer/Transfer and
+# Issue — never a state transition); no grand_total and NO aggregate substitute of any kind — a
+# pure state-capture trail, no value on the document at all. date_field="transaction_date"
+# (Datetime, reqd, default "Now") — REJOINS the transaction_date FIELDNAME (now eight doctypes)
+# but is only the SECOND Datetime-typed date_field this campaign has found; the fieldname
+# collision with the seven Date-typed members is purely nominal (the datetime->date projection
+# keys on the value's own shape, never the fieldname). THE CENTRAL FINDING: on_submit and
+# on_cancel call the EXACT SAME method (set_latest_location_and_custodian_in_asset) — a live SQL
+# re-query of the freshest submitted movement trail per referenced asset, written onto the Asset
+# via raw frappe.db.set_value (no ORM triggers, no Document events, no version history — the
+# Maintenance Visit update_status_and_actual_date bypass grade), even though a document IS loaded
+# first (frappe.get_doc) purely to read current values for comparison, never to perform the
+# write. DOSSIER CORRECTION (its own §7): a cancel-to-empty rollback clears custodian to "" but
+# leaves location UNTOUCHED — update_asset_location_and_custodian only writes location when the
+# recomputed value is truthy, an asymmetric guard the dossier missed. Native ledger_preview
+# UNCALLABLE (AssetMovement(Document) directly, no make_gl_entries anywhere — joins the skip
+# tuple). Cascade LEAF for INCOMING links (only its own self-referencing amended_from, confirmed
+# across both the erpnext and frappe checkouts) — but Asset Movement Item's own "asset" field is
+# one of Asset's own 18 Link -> Asset edges, so a submitted Asset Movement DOES appear as a
+# dependent node inside an Asset's own plan_cascade_cancel graph; two directions of the same
+# relationship, not a contradiction. Zero whitelisted callables — see pacioli/erpnext.py's
+# SUPPORTED_DOCTYPES comment block.
+# Delivery Trip added 2026-07-21 (breadth campaign Wave 5, fourth row) — the thirty-sixth governed
+# doctype, same run_method submit/cancel surface — the THIRD Datetime-dated doctype (after Work
+# Order and Asset Movement), on a brand-new "departure_time" fieldname (no collision, unlike Asset
+# Movement's own nominal one). party_field=None — company IS present (reqd), NOT companyless.
+# status CONFIRMED REAL (a genuine Select, unlike Asset Movement) but maintained entirely by this
+# doctype's own db_set (update_status) — a lighter, self-document cousin of the cross-document
+# bypass grades, never disclosed as a runtime risk. No grand_total and no substitute of any kind.
+# Native ledger_preview UNCALLABLE (DeliveryTrip(Document) directly, no make_gl_entries anywhere —
+# joins the skip tuple). THE CENTRAL FINDING: on_cancel's update_delivery_notes(delete=True)
+# force-clears five fields on every linked Delivery Note via note_doc.save() with
+# ignore_validate_update_after_submit=True — read against frappe/model/document.py's own save
+# lifecycle, this is the SANCTIONED update_after_submit save path (permission checks, freshness,
+# link validation, hooks, and version history all still run; only the custom validate() hook and
+# the one allow_on_submit field-lock check are skipped), never a db_update/db_set/raw-SQL bypass.
+# THE SHARPEST FINDING (as corrected by supervisor verification, commit a031c8e): the cascade
+# fails at the NOTE step, not this Delivery Trip's own step — frappe's own
+# check_if_doc_is_linked(method="Cancel") walks child-table Link fields, so Delivery Stop's
+# delivery_note row (docstatus 1 under the still-submitted trip) blocks the dependents-first
+# note cancel with LinkExistsError (Delivery Note's own ignore_linked_doctypes tuple never
+# exempts Delivery Trip). A native LEAF cancel of the trip instead SUCCEEDS by design:
+# on_cancel runs BEFORE check_no_back_links_exist (document.py:1450-1452), so
+# update_delivery_notes(delete=True) self-unlinks the notes before the check fires. The
+# originally-claimed ValidationError("Cannot edit cancelled document") at the trip step survives
+# only as a hypothetical SECOND lock. NET (at landing): this broker had NO working cancel path
+# for a submitted Delivery Trip with submitted linked notes (leaf refused by the standing
+# blast-radius gate, cascade dead at frappe's own link check) — the design decision (self-
+# unlinking leaf exception vs target-first cascade reorder) was documented OPEN for John in
+# pacioli/tools.py's _delivery_trip_cancel_risk_flags. Cascade: GENUINELY NOT A LEAF — a
+# full-tree grep for "options": "Delivery Trip" over both checkouts finds Delivery Note's own
+# real, static, submittable delivery_trip Link. Five whitelisted
+# callables (process_route, notify_customers both carry a genuine submitted-state mutation
+# surface) — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# RULED 2026-07-21 (John's ruling 1, docs/plans/2026-07-21-cancel-truth-rulings.md): option (a),
+# belted. Delivery Trip now lives in pacioli.erpnext.SELF_UNLINKING_DOCTYPES; the leaf
+# plan_cancel gate treats its own submitted incoming links as non-blocking instead of refusing
+# outright, and a post-execute readback (self_unlink_readback) attests the self-unlink actually
+# happened, reporting any note still linked. plan_cascade_cancel is UNCHANGED, still structurally
+# dead at the note step above — no cascade-order exception (option (b)) was built.
+# Asset Value Adjustment added 2026-07-21 (breadth campaign Wave 5, fifth row) — the
+# thirty-seventh governed doctype, same run_method submit/cancel surface — the campaign's FIRST
+# SIBLING-DOCUMENT FACTORY. party_field=None — company IS present but NOT reqd (the THIRD such
+# row after Purchase Invoice/Quality Inspection, never before consequential: a blank company
+# dooms the synchronously-built sibling Journal Entry's own mandatory company field). No
+# status/grand_total. date_field="date" rejoins Project Update's own pattern. Native
+# ledger_preview UNCALLABLE (AssetValueAdjustment(Document) directly, no make_gl_entries anywhere
+# — joins the skip tuple) — but unlike every other UNCALLABLE row, this document's own empty
+# preview does NOT mean no GL posts: on_submit synchronously builds AND SUBMITS a sibling Journal
+# Entry (the revaluation entry, name written back via db_set before on_submit returns).
+# THE CENTRAL FINDING: on_cancel cancels that sibling JE via a PERMISSION-ONLY bypass —
+# revaluation_entry.flags.ignore_permissions = True short-circuits Document.has_permission for
+# ANY permission type (document.py:407-408), skipping ONLY the ACL/authorization gate; every
+# hook, validation, check_no_back_links_exist, and version-history write on the JE's own full
+# cancel() lifecycle runs normally — distinct in KIND (not degree) from every data-integrity
+# bypass this campaign has named (db_update/db_set/raw SQL all skip hooks and version history
+# too). update_asset() ALSO arms a THIRD sibling-document channel (reschedule_depreciation may
+# cancel an existing submitted Asset Depreciation Schedule, preserving its already-posted
+# depreciation Journal Entries, and submit a new one) plus raw db_update/db_set writes on the
+# linked Asset itself. Cascade: a leaf for INCOMING links (only its own self-referencing
+# amended_from, confirmed across both checkouts) — but its own "asset" field is one of Asset's
+# own 18 Link -> Asset edges, so a submitted Asset Value Adjustment DOES appear as a dependent
+# node inside an Asset's own plan_cascade_cancel graph — the Asset Movement precedent, two
+# directions of the same relationship. One whitelisted callable
+# (get_value_of_accounting_dimensions, read-only) — see pacioli/erpnext.py's SUPPORTED_DOCTYPES
+# comment block.
+# Payment Order added 2026-07-21 (breadth campaign Wave 5, sixth row) — the thirty-eighth
+# governed doctype, same run_method submit/cancel surface. party_field=None — a CORRECTION from
+# the dossier's own "party_field=party" claim: the party field carries a real depends_on
+# (payment_order_type=='Payment Request') and is never read or written anywhere in
+# payment_order.py's own code — the same "no single static fieldname is ever unconditionally the
+# party" rule this table's Blanket Order/Bank Guarantee entries already state, here for a SINGLE
+# (not dual) conditional field for the first time. company IS present and reqd (a genuine gap the
+# dossier never mentions at all) — NOT companyless. No status/grand_total, no substitute of any
+# kind. date_field="posting_date" rejoins the largest pattern in this table (14th member) rather
+# than forcing a new one. Native ledger_preview UNCALLABLE (PaymentOrder(Document) directly, no
+# make_gl_entries anywhere — joins the skip tuple, 22nd member). THE CENTRAL FINDING:
+# update_payment_status (fired from both on_submit and on_cancel) writes a status value directly
+# onto EVERY referenced Payment Request/Payment Entry via raw frappe.db.set_value — no validate,
+# hooks, version history, or permission check on the target (the Asset Movement/Asset
+# Maintenance Log bypass grade); on cancel the value written is UNCONDITIONALLY "Initiated",
+# never reading the target's current state first — a Payment Request whose own status has since
+# moved past "Initiated" (to "Paid"/"Partially Paid" via an unrelated Payment Entry) is stomped
+# back to "Initiated" regardless. Cascade: genuinely NOT A LEAF — three real incoming submittable
+# edges (Journal Entry/Payment Entry/Payment Request, all carrying a payment_order Link back to
+# this doctype, confirmed across both checkouts) — the OTHER direction from Asset Movement/Asset
+# Value Adjustment above: Payment Order is itself a real TARGET with real dependents, not a
+# dependent appearing in someone else's graph. The JE edge is created by this doctype's OWN
+# whitelisted make_payment_records as a DRAFT only (je.save(), never je.submit()) — a draft
+# dependent never gates a cancel. Three whitelisted callables (get_mop_query/get_supplier_query
+# read-only; make_payment_records MUTATES — builds and saves, never submits, a linked draft
+# Journal Entry, no dedup against a repeat call) — see pacioli/erpnext.py's SUPPORTED_DOCTYPES
+# comment block.
+# Share Transfer added 2026-07-21 (a full-attention landing, not a numbered wave row) — the
+# thirty-ninth governed doctype, same run_method submit/cancel surface. party_field=None — a
+# conditional dual pair (from_shareholder/to_shareholder); the pre-verification addendum's own
+# correction #1 reverses the ORIGINAL dossier's claimed depends_on directions (from_shareholder
+# hidden only on Issue, to_shareholder hidden only on Purchase). A genuinely NEW sub-variant of
+# the dual-conditional-pair shape: unlike Blanket Order's/Bank Guarantee's mutually-exclusive
+# pairs, both fields are populated simultaneously for a Transfer-type row. company IS present
+# and reqd — NOT companyless. No status/grand_total; amount is the correct stand-in.
+# date_field="date" rejoins the standing pattern (Project Update, Asset Value Adjustment) as its
+# THIRD member. Native ledger_preview UNCALLABLE (ShareTransfer(Document) directly, no
+# make_gl_entries anywhere — joins the skip tuple, 23rd member). Shareholder is NOT submittable
+# at all (addendum correction #2) — every write this doctype makes is an ordinary, hook-
+# respecting .save()/.insert(), never an auto-submit. THE SHARPEST FINDING, beyond the
+# addendum's own scope: a doomed-submit gate in basic_validations()'s Purchase branch
+# (share_transfer.py:170-177) — a from_folio_no/to_shareholder field mismatch in ERPNext's own
+# source throws frappe.DoesNotExistError, traced end to end through frappe.get_doc("Shareholder",
+# None) -> load_from_db() -> document.py:294-297, before any share_balance mutation runs.
+# folio_no_validation() (share_transfer.py:222-240) writes a Shareholder's folio_no on EVERY
+# save, not only submit. Cascade: a genuinely ISOLATED LEAF — no other doctype links to Share
+# Transfer, AND its own outgoing Links (Shareholder/Share Type/Account/Company) never point at a
+# submittable doctype this broker cascades through — it can never appear as a node in ANY
+# cascade graph. One whitelisted callable (make_jv_entry, builds an unsaved Journal Entry dict,
+# never inserted or submitted) — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# BOM Creator added 2026-07-21 (a full-attention landing, John's ruling 2 — two-phase PROVE,
+# "truth always" — built first as its own machinery) — the fortieth governed doctype, same
+# run_method submit/cancel surface. party_field=None (no party concept at all). status CONFIRMED
+# REAL (Draft/Submitted/In Progress/Completed/Failed/Cancelled); no grand_total —
+# raw_material_cost is the stand-in, alongside item_code/currency. company IS present and reqd —
+# NOT companyless. date_field=None — THE THIRD DATELESS doctype (after BOM/Packing Slip), zero
+# Date/Datetime fields across all 40 enumerated. THE CENTRAL FINDING: on_submit enqueues
+# create_boms() on frappe's "short" queue (timeout 600s) — the BOM tree is built by a background
+# worker, after this broker's own submit response already answered, so the outcome this submit
+# records is deliberately NOT a plain "committed": it narrows to "committed_pending_async"
+# (pacioli.tools._QueuedConsequenceEffects) until a later prove_verify sweep
+# (_sweep_queued_consequences) attests the real Completed (with the built BOM names, cross-
+# checked by a real BOM count) or Failed (with error_log) result, or reports it still pending.
+# create_bom()'s own idempotency guard is keyed to self.name, so an AMENDED draft builds a FULL
+# SECOND BOM tree with nothing detecting the duplication — disclosed at plan_submit. on_cancel is
+# synchronous (no enqueue) but does NOT cascade to any BOMs already built. Cascade: NOT a leaf —
+# a full two-checkout grep for '"options": "BOM Creator"' finds exactly one real incoming edge,
+# BOM's own bom_creator Link — once any submitted BOM exists, this broker's own blast-radius gate
+# refuses a leaf cancel of the creator (it is NOT registered self-unlinking); plan_cascade_cancel
+# is the governed path. Native ledger_preview UNCALLABLE (BOMCreator(Document) directly, no
+# make_gl_entries anywhere — joins the skip tuple, 24th member); posts no GL of any kind, ever.
+# CAVEAT: 8 whitelisted callables (enqueue_create_boms is an UNGOVERNED re-trigger of
+# create_boms(), gated only by submit permission; edit_bom_creator/add_item/add_sub_assembly/
+# delete_node all mutate a submitted document's rows via save() with no docstatus check;
+# add_boms forces a submit(); get_default_bom/get_children are read-only) — this grant covers
+# submit/cancel/reads only; it does NOT extend to those methods, and no tool is built for any of
+# them — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Budget added 2026-07-21 (a full-attention landing off the pre-verification addendum,
+# docs/plans/dossiers/budget.verify.md) — the forty-first governed doctype, same run_method
+# submit/cancel surface (zero submit/cancel/on_submit/on_cancel hooks of any kind — the SIXTH
+# "hookless" member, but by far its richest: validate() spans 8 sub-validations plus a separate
+# before_save()/on_update() distribution-regeneration pair). party_field=None — cost_center/
+# project is a dual conditional pair gated on budget_against, spliced WHOLE. No status/
+# grand_total, no substitute. company IS present and reqd — NOT companyless. date_field=
+# "budget_start_date" — THE CAMPAIGN'S FIRST HIDDEN date_field (hidden:1, schema-optional, but
+# validate()-FORCED non-blank via the reqd from_fiscal_year Link on every persisted document).
+# Native ledger_preview UNCALLABLE (Budget(Document) directly, no make_gl_entries anywhere —
+# joins the skip tuple, 25th member); Budget posts no GL of any kind, ever — it is a control/
+# validation document. Cascade: a genuine LEAF (one hit across both checkouts, its own
+# self-referencing amended_from; revision_of is fieldtype Data, not a Link). THE CONTROL-PLANE
+# FINDING: submitting a Budget ARMS a belt governing FUTURE submits of OTHER documents (PO/MR
+# through either enforcement engine, per Accounts Settings.use_legacy_budget_controller — BOTH
+# engines live simultaneously, BOTH synchronous, never async); cancelling DISARMS it immediately
+# (both engines filter on docstatus == 1). Whitelist count: exactly 1 (module-level
+# revise_budget — cancel + copy + insert, a CLEAN mutation grade) — nothing granted toward it —
+# see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Timesheet added 2026-07-21 (a Sonnet landing agent off the pre-verification addendum,
+# docs/plans/dossiers/timesheet.verify.md) — the forty-second governed doctype. party_field=
+# "customer" — a plain, singular, header-level Link. submit_via=run_method — the dossier's own
+# "client_rpc" conclusion was WRONG (SUBMIT_VIA_CLIENT_RPC needs a genuine submit()/cancel()
+# override; Timesheet's on_submit is an ordinary throwing hook, 25-def class body, zero
+# overrides). status PRESENT (set_status() is three sequential unconditional ifs, not if/elif —
+# sales_invoice truthy always wins "Completed" last, overriding per_billed>=100 "Billed"). No
+# grand_total, no substitute. company PRESENT BUT OPTIONAL — the FOURTH such row (after Purchase
+# Invoice/Quality Inspection/Asset Value Adjustment); the 0fdf91d _locks_for guard already covers
+# a blank instance, so NOT companyless-tallied and NOT REG_UNPINNED-gated. date_field=
+# "start_date" — joins the existing start_date exclusivity set (Supplier Scorecard Period/Bank
+# Guarantee) as its THIRD member. Native ledger_preview UNCALLABLE (Timesheet(Document) directly,
+# no make_gl_entries anywhere incl. timesheet_detail.py — joins the skip tuple, 26th member).
+# THE SECOND WRITER (the sharpest finding): a Sales Invoice's own submit OR cancel calls
+# update_time_sheet(), which recalculates this Timesheet's billing fields and calls
+# timesheet.db_update_all() — a RAW WHOLE-DOCUMENT write (parent + every time_logs child row,
+# zero validate()/hooks/permission re-check), the first case in this campaign where a document
+# rewrites ITS OWN submitted state from outside another doctype's own lifecycle. Cascade: NOT a
+# leaf — the campaign's first confirmed INCOMING child-table Link (Sales Invoice Timesheet.
+# time_sheet, istable=1 inside submittable Sales Invoice) blocks a leaf cancel exactly like a
+# header-level Link would; plan_cascade_cancel is the governed path. Whitelist count: exactly 7
+# module-level (6 read-only + make_sales_invoice, which only builds a NEW unsaved Sales Invoice)
+# — nothing granted toward it — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Contract added 2026-07-21 (a Sonnet landing agent off the pre-verification addendum,
+# docs/plans/dossiers/contract.verify.md) — the forty-third governed doctype. party_field=None —
+# a Dynamic Link pair (party_type Select Customer/Supplier/Employee reqd + party_name Dynamic
+# Link reqd), the Quotation/Quality Inspection shape. status PRESENT AND DOUBLED (status +
+# fulfilment_status, both allow_on_submit) but a WRITABILITY ILLUSION post-submit —
+# before_update_after_submit recomputes both from start_date/end_date/is_signed on every
+# subsequent save, discarding a direct write; is_signed is the real lever. grand_total ABSENT, no
+# substitute. company CONFIRMED ABSENT — the SEVENTH companyless doctype (signed_by_company/
+# signee_company are decoy fieldnames, neither is the registry company); REG_UNPINNED is the only
+# registry shape this doctype can ever govern through. date_field="signed_on" (Datetime,
+# allow_on_submit=1, genuinely blank-capable — this broker is STRICTER than ERPNext here: a blank
+# signed_on discloses at plan and REFUSES at execute, even though ERPNext itself would submit it).
+# THE SCHEDULER: update_status_for_contracts (daily_maintenance, hooks.py:473) filters
+# is_signed=True AND docstatus=1 EXPLICITLY — the campaign's FIRST CONFIRMED SUBMITTED-STATE
+# scheduler mutator, flipping status only between Active/Inactive via a raw frappe.db.set_value.
+# THE STATUS/DOCSTATUS DISCONNECT: "Cancelled" is structurally unreachable once a Contract has
+# ever been submitted (on_discard is the only writer, hard-guarded to drafts by frappe itself).
+# Ledger preview UNCALLABLE (Contract(Document) directly, no make_gl_entries anywhere) — joins
+# the skip tuple, 27th member. Cascade: a CASCADE LEAF (only self-referencing amended_from
+# anywhere in either checkout). Whitelist count: 0 — not a first — see pacioli/erpnext.py's
+# SUPPORTED_DOCTYPES comment block.
+# Pick List added 2026-07-21 (a Sonnet landing agent off the pre-verification addendum,
+# docs/plans/dossiers/pick_list.verify.md) — the forty-fourth governed doctype. party_field=
+# "customer" — a plain, always-real header Link (depends_on is a pure Desk-form display
+# directive, never a data-model condition). status PRESENT (hidden=1, reqd=1, 6 options) but
+# grand_total ABSENT with no substitute. DATELESS — the FOURTH NO_DATE_FIELD member (after
+# BOM/Packing Slip/BOM Creator). company reqd=1 — NOT companyless, standard wrong-books belt
+# applies. THE CASCADE QUESTION (the row's decisive fact — both the dossier and the addendum
+# concluded LEAF and were WRONG): Delivery Note and Sales Invoice are BOTH is_submittable=1; their
+# own child tables (Delivery Note Item/Sales Invoice Item) carry real Link fields to Pick List
+# (against_pick_list) — frappe's own linked_with.py resolves a child-table hit back to its
+# submittable PARENT (the exact mechanism Timesheet's own landing already proved). Stock Entry.
+# pick_list is a THIRD, simpler, direct header-level Link on submittable Stock Entry. Pick List is
+# NOT a cascade leaf on three independent, confirmed counts; plan_cascade_cancel is the governed
+# path. Ledger preview UNCALLABLE (PickList -> TransactionBase -> StatusUpdater -> Document, the
+# addendum's own MRO correction, 4-deep) — joins the skip tuple, 28th member. THE SUBMIT-THROW
+# SURFACE IS 12 SITES, NOT 2 (the dossier's own severe undercount, corrected): 4 deterministic-
+# from-draft (validate_for_qty, validate_warehouses missing-warehouse, validate_picked_items
+# scan_mode, the on_submit-called legacy-serial-batch throw) + 8 cross-document/live-state,
+# staying prose. THE TWO-JAW TRAP: on_update_after_submit throws if has_reserved_stock() (100%
+# draft-deterministic) but on_cancel never throws and explicitly preserves Serial and Batch
+# Bundle/Stock Reservation Entry/Delivery Note — can't edit once reserved, CAN cancel-and-orphan.
+# THE RESERVATION MACHINERY: create_stock_reservation_entries/cancel_stock_reservation_entries
+# (whitelisted, callable on a submitted doc) are a multi-hop delegation through Sales Order's own
+# method into stock_reservation_entry.create_stock_reservation_entries_for_so_items (typed
+# Literal["Pick List", "Purchase Receipt"] — Purchase Receipt shares this path TODAY) — a FOURTH
+# cross-document mutation honesty grade, nothing granted. Whitelist count: exactly 10 (3 instance +
+# 7 module) — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Asset Repair added 2026-07-21 (a Sonnet landing agent off the pre-verification addendum,
+# docs/plans/dossiers/asset_repair.verify.md) — the forty-fifth governed doctype. party_field=
+# None (asset is a fixed-asset reference, never a GL party). status="repair_status" PRESENT (3
+# options); grand_total ABSENT, total_repair_cost stand-in. date_field="completion_date" — the
+# GL-posting-date field, NOT the unconditionally-reqd failure_date; genuinely empty-capable on a
+# SUBMITTED Cancelled-status document (check_repair_status blocks submit only for "Pending"),
+# refused by the existing "no posting_date" machinery, zero new code. Ledger preview CALLABLE
+# (make_gl_entries is its own method, the Asset precedent) — NOT the skip tuple; honest-empty per
+# TWO independent causes (capitalize_repair_cost falsy; OR truthy but total_repair_cost <= 0).
+# THE STOCK ENTRY AUTO-SUBMIT: unconditional (no capitalize_repair_cost gate), no try/except — a
+# failed Stock Entry submit fails the whole Asset Repair submit with it. THE ASSET-STATUS
+# SIDE-WRITE (the addendum's sharpest catch): validate()'s own update_status() raw-writes the
+# linked Asset's status via frappe.db.set_value/Asset.set_status()'s own db_set, ungated by
+# capitalize_repair_cost — but LANDED SUBMIT-ONLY: frappe's own run_before_save_methods() only
+# calls run_method("validate") for _action in ("save", "submit"), never "cancel"
+# (document.py:1402-1409) — overturning the addendum's own "fires ... on cancel alike" framing.
+# Cascade: genuinely NOT a leaf — the simplest non-leaf shape this campaign has found: Stock
+# Entry.asset_repair is a direct, header-level, read_only Link on submittable Stock Entry (a full
+# two-checkout grep returns exactly 2 hits: that edge + this doctype's own self-referencing
+# amended_from); plan_cascade_cancel orders the Stock Entry first, zero cascade.py changes.
+# company present but NOT reqd (fetch_from asset.company) — the FIFTH such row, but genuinely
+# CONSEQUENTIAL under two independent conditions (armed GL gate; non-empty stock_items), the AVA
+# honesty grade rather than Timesheet's zero-consequence one. Whitelist: exactly 4, all read-only,
+# nothing granted. IS in period_closing_doctypes (hooks.py:339) — natively EQUAL to this broker's
+# own check, the Asset precedent — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Invoice Discounting added 2026-07-21 (a Sonnet landing agent off the pre-verification addendum,
+# docs/plans/dossiers/invoice_discounting.verify.md — its own Correction 1 wrongly called
+# reference_name "the free Data field"; it is a real Dynamic Link, caught by the supervisor before
+# dispatch) — the forty-sixth governed doctype. party_field=None (child-table party, Discounted
+# Invoice.customer per row). status="status" PRESENT (JSON read_only:1, three runtime write
+# paths); grand_total ABSENT, total_amount stand-in. date_field="posting_date" — rejoins the large
+# existing set, no new pattern. Ledger preview CALLABLE (make_gl_entries is its own method, the
+# THIRD such row) — NOT the skip tuple; honest-empty PER INVOICE ROW when that row's own
+# outstanding_amount is zero/blank. NOT A CASCADE LEAF: a submitted Journal Entry naming this
+# document via Journal Entry Account's reference_type Select/reference_name Dynamic Link pair is
+# discovered by this broker's own get_submitted_linked_docs (the SAME live-distinct-value Dynamic
+# Link mechanism the Landed Cost Voucher/Dunning landings already proved) AND by frappe's own
+# native check_no_back_links_exist — both independently refuse a leaf cancel, plan_cascade_cancel
+# orders the Journal Entry first, zero cascade.py changes. THE INCOMING MUTATOR (disclosed in both
+# directions, consistent with the Journal Entry retrofit, commit 3fa3303): a governed Journal
+# Entry submit/cancel elsewhere can flip this document's own status via a raw db_set
+# (invoice_discounting.py:101-108) this document's own hooks never reach, cascading into every
+# linked Sales Invoice's status too — the SAME db_set-via-target's-own-method family as
+# Asset/Asset Repair's "Asset-status raw side-write," a chained, third-party-triggered variant.
+# company PRESENT AND reqd:1. Whitelist: exactly 3 (create_disbursement_entry/close_loan both
+# return unsaved Journal Entries, get_invoices a pure read), nothing granted. IS in
+# period_closing_doctypes (7th entry) — natively EQUAL to this broker's own check, the THIRD such
+# row — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Asset Capitalization added 2026-07-21 (a Sonnet landing agent off the pre-verification addendum,
+# docs/plans/dossiers/asset_capitalization.verify.md — whose own headline RED FLAG, a target-asset
+# cost double-count on re-submit, is ITSELF REFUTED from source) — the forty-seventh governed
+# doctype. party_field=None (no party concept at all). status/grand_total ABSENT, total_value
+# stand-in. date_field="posting_date" — rejoins the large existing set, paired with a separate
+# posting_time field. Ledger preview CALLABLE (make_gl_entries is its own method) — the FOURTH such
+# row — NOT the skip tuple. CASCADE LEAF for incoming links (full two-checkout grep for
+# '"options": "Asset Capitalization"' returns only its own amended_from), though a dependent node
+# (two edges) inside an Asset's own cascade graph. THE DEPRECIATION SIBLING-DOCUMENT FACTORY: the
+# SECOND confirmed instance of Asset Value Adjustment's own reschedule_depreciation factory,
+# reached via consumed-asset depreciation. THE ASYNC CHANNEL: repost_future_sle_and_gle can arm a
+# "Repost Item Valuation" document ERPNext's own scheduler processes (a retroactive gap was found
+# and flagged, not silently fixed, across Stock Entry/Stock Reconciliation/Delivery Note/Purchase
+# Receipt, which call the identical mechanism with no disclosure of their own). company PRESENT AND
+# reqd:1. Whitelist: exactly 9, nothing granted. IS in period_closing_doctypes (hooks.py:338, the
+# 12th entry — the addendum's own "13th" was off by one) — natively EQUAL to this broker's own
+# check, the FOURTH such row — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Production Plan added 2026-07-21 (a Sonnet landing agent off the pre-verification addendum,
+# docs/plans/dossiers/production_plan.verify.md — unusually strong, re-verified every dossier line
+# cite, but whose own "26 branches" tally was stale) — the forty-eighth governed doctype.
+# party_field=None (customer is a conditional UI filter, never a GL party). status PRESENT (8
+# options incl. Closed/Material Requested) but NOT in_list_view; grand_total ABSENT, no
+# substitute. date_field="posting_date" — a plain Date, rejoins the large existing set. Ledger
+# preview UNCALLABLE (no make_gl_entries anywhere) — the skip tuple's 29th member. GENUINELY NOT A
+# LEAF: a full two-checkout grep for '"options": "Production Plan"' finds THREE real external
+# edges (Work Order's own direct header Link; Purchase Order Item's/Material Request Item's own
+# child-table Links resolving to submittable parents) — the dossier's own "leaf" claim overturned.
+# THE CANCEL-ORDERING WRINKLE: on_cancel runs BEFORE check_no_back_links_exist — this broker's own
+# blast-radius gate refuses before any side effect runs. TWO AUTO-SUBMIT CHANNELS: Material
+# Request via a caller-supplied non-persisted flag (prose); Stock Reservation Entry, UNCONDITIONAL
+# once the real reserve_stock field is set (the dossier's own "auto-submitted: NO" overturned).
+# THE FORWARD CHECK: reserve_stock propagates onto every Work Order this plan creates — Work
+# Order's OWN landing (21st doctype) never discloses this channel — a CONFIRMED RETROACTIVE GAP,
+# reported not silently fixed. Whitelist: 17 (9 instance + 8 module, corrected on both tiers and
+# membership), nothing granted. company PRESENT AND reqd:1. NOT in period_closing_doctypes — see
+# pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Subcontracting Order added 2026-07-21 (a Sonnet landing agent off the pre-verification
+# addendum, docs/plans/dossiers/subcontracting_order.verify.md — its own center, THE SEVEN-PATH
+# MUTATOR MAP, re-verified byte-for-byte) — the forty-ninth governed doctype. party_field=
+# "supplier" (Link, reqd:1, label "Job Worker"). status PRESENT (8 options); total (NOT
+# grand_total — a genuine stand-in fieldname) PRESENT. date_field="transaction_date" — rejoins
+# the existing set. Ledger preview CALLABLE, honest-empty (the SO/PO shape, NOT the skip tuple —
+# make_gl_entries genuinely exists in the MRO but on_submit never posts a Stock Ledger Entry
+# under this voucher's own name). GENUINELY NOT A LEAF on TWO independent submittable-referencer
+# families — Stock Entry's own direct header Link, AND Subcontracting Receipt Item's/Supplied
+# Item's child-table Links resolving to submittable Subcontracting Receipt — a correction to the
+# dossier's/addendum's own "non-submittable, never appears" framing. THE SEVEN-PATH MUTATOR MAP:
+# six of seven paths that rewrite this order's own status/supplied items carry ZERO
+# write-permission check, firing as ordinary submit/cancel side effects of Subcontracting Receipt
+# and Stock Entry — including a RAW module-level frappe.db.set_value into the child table with no
+# Document instantiation at all, and a status path that deliberately bypasses the whitelisted
+# boundary per an upstream source comment quoted verbatim. reserve_raw_materials fires as an
+# on_submit side effect and auto-submits Stock Reservation Entries unconditionally via the SAME
+# StockReservation class Production Plan's own landing already proved does so — but cancel is NOT
+# symmetric (an orphan-reservation risk this landing names). Whitelist: exactly 4 (2 instance + 2
+# module), nothing granted. company PRESENT AND reqd:1. NOT in period_closing_doctypes
+# (hooks.py:326-345) — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
+# Subcontracting Inward Order added 2026-07-22 (a Sonnet landing agent off the pre-verification
+# addendum, docs/plans/dossiers/subcontracting_inward_order.verify.md — its own center, THE
+# ELEVEN-ROW MUTATOR MAP plus THE NEW BYPASS CLASS, re-verified byte-for-byte) — the fiftieth
+# governed doctype. party_field="customer" (Link, reqd:1). status PRESENT (8 options,
+# read_only:1 AND reqd:1); NO grand_total/total substitute — six in_list_view:1 per_* Percent
+# columns are the entire operational picture. date_field="transaction_date" — rejoins the
+# existing set as its TENTH member. Ledger preview CALLABLE-but-unconditionally-EMPTY — the POS
+# Invoice false-positive shape (make_gl_entries genuinely exists in the MRO, 7 nodes, but this
+# voucher never writes its own Stock Ledger Entry; all real movement is deferred onto four
+# spawned Stock Entry documents). NOT a cascade leaf — two DIRECT header-level Links (Work
+# Order, Stock Entry), no child-table resolution needed. THE ELEVEN-ROW MUTATOR MAP: four other
+# doctypes (Stock Entry across five purposes, Work Order, Sales Invoice, Sales Order) rewrite
+# this order's own status/child rows through five mechanisms — db_set, bulk_update, raw
+# querybuilder UPDATE (twice, two different doctypes), and a cross-document status force-close —
+# only the whitelisted status API carries any write-permission check. THE NEW BYPASS CLASS:
+# three call sites (frappe.delete_doc of docstatus=1 received_items/secondary_items rows) are
+# legal only because neither child doctype sets is_submittable — a genuinely new taxonomy slot.
+# Whitelist: exactly 6 (5 instance + 1 module), nothing granted. company PRESENT AND reqd:1. NOT
+# in period_closing_doctypes (hooks.py:326-345) — see pacioli/erpnext.py's SUPPORTED_DOCTYPES
+# comment block.
+# Subcontracting Receipt added 2026-07-22 (a Sonnet landing agent off the pre-verification
+# addendum, docs/plans/dossiers/subcontracting_receipt.verify.md — 2 corrections + 5 landing
+# risks, all re-verified byte-for-byte) — THE ROOF ROW, the fifty-first and FINAL governed
+# doctype. party_field="supplier" (Link, reqd:1, label "Job Worker"). status PRESENT (6 real
+# options + a leading blank, read_only:1 AND reqd:1 but backend-writable via a RAW
+# frappe.db.set_value); total (NOT grand_total) PRESENT. date_field="posting_date" — zero
+# Datetime fields on the doctype at all. Ledger preview CALLABLE, genuine BOTH-LEDGERS — but
+# confirmed ABSENT from ERPNext's own native-preview SLE-seeding whitelist
+# (stock_controller.py:2109), a conditional live-crash risk under perpetual inventory, THE SIXTH
+# ledger-preview shape this campaign has found. NOT a cascade leaf — Purchase Receipt.
+# subcontracting_receipt is a real Link, one of 3 total edges (the other two self-referencing).
+# THE CANCEL BACK-LINK GATE: cancelling is refused at the framework layer if a submitted
+# Purchase Receipt still references this SCR — this broker's own blast-radius gate already
+# catches the same edge first, in ordinary sequential use. THE SCO WRITEBACK: FOUR channels
+# reach back into the linked Subcontracting Order's own status/child rows/Bin state, zero
+# permission-checked. Whitelist: exactly 6, nothing granted, plus the inherited
+# get_current_stock scoping note. company PRESENT AND reqd:1. IS in period_closing_doctypes
+# (hooks.py:344, the list's own LAST entry) — natively EQUAL to this broker's own closed-books
+# check — see pacioli/erpnext.py's SUPPORTED_DOCTYPES comment block.
 Sales Invoice
 Purchase Invoice
 Payment Entry
 Journal Entry
+Sales Order
+Purchase Order
+Material Request
+Delivery Note
+Purchase Receipt
+Stock Entry
+Supplier Quotation
+Quotation
+POS Invoice
+Dunning
+Stock Reconciliation
+Landed Cost Voucher
+Request for Quotation
+Blanket Order
+Job Card
+BOM
+Work Order
+Asset
+Packing Slip
+Cost Center Allocation
+Supplier Scorecard Period
+Quality Inspection
+Installation Note
+Shipment
+Sales Forecast
+Project Update
+Maintenance Visit
+Maintenance Schedule
+Asset Maintenance Log
+Bank Guarantee
+Asset Movement
+Delivery Trip
+Asset Value Adjustment
+Payment Order
+Share Transfer
+BOM Creator
+Budget
+Timesheet
+Contract
+Pick List
+Asset Repair
+Invoice Discounting
+Asset Capitalization
+Production Plan
+Subcontracting Order
+Subcontracting Inward Order
+Subcontracting Receipt
 Workflow
 GL Entry
 Period Closing Voucher

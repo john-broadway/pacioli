@@ -6,6 +6,56 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.31.0 — 2026-07-22 — the breadth roof: 51 governed doctypes, 265 tools, live-proven
+
+MINOR (a large, backwards-compatible surface growth + one fix; no grant widened, deny-bias
+unchanged everywhere). The breadth campaign, complete: every remaining GOVERN row landed —
+**51 governed doctypes, 30 → 265 tools** — each one dossiered from v16 source, landed with its
+own risk-flag disclosures, closed-books date pin, cascade shape, and tests (3,108 broker green).
+The whole surface then **live-proven on a real ERPNext v16 bench as a guard-scoped seat**: 20+
+full governed verticals (draft → plan → mint → submit → replay-refused → cancel), the armed-
+Budget control-plane probe (belt disclosed at plan, bench refuses the PO, cancel disarms, same
+PO passes), the Timesheet second-writer probe (a Sales Invoice's submit rewriting a submitted
+Timesheet, disclosed before consent, confirmed live both directions), and a 3-node Asset
+cascade under one consent. Run records: `docs/plans/2026-07-21-liveprove-batch-38.md` +
+`docs/plans/2026-07-22-liveprove-batches-bcd.md` (internal day-books).
+
+- **New governed doctypes: 47 since 0.30.x** (which shipped the founding four — Sales
+  Invoice, Purchase Invoice, Journal Entry, Payment Entry — as 30 tools). The surface now
+  spans the order stage (Sales/Purchase Order, Quotation, Supplier Quotation, Material
+  Request, RFQ, Blanket Order…), the stock rows (Stock Entry, Delivery Note, Purchase
+  Receipt, Stock Reconciliation, Pick List, Packing Slip, Landed Cost Voucher…), assets and
+  maintenance (Asset and its movement/adjustment/repair/capitalization family, the
+  maintenance rows), manufacturing and subcontracting (BOM, Work Order, Job Card, Production
+  Plan, the Subcontracting trio), and the control-plane rows (Budget, Timesheet, Contract,
+  Dunning…). The exact list and each row's findings live in `pacioli/erpnext.py`'s own
+  SUPPORTED_DOCTYPES comment block — the source of truth this file deliberately doesn't
+  restate.
+- **FIX — the Asset cascade was structurally dead (live-prove find, closed same-arm):**
+  Asset's own submit auto-creates a submitted Asset Depreciation Schedule sibling, and that
+  unmodeled graph node — a doctype with ZERO date fields in its schema — hit the unmodeled
+  `posting_date` default and the period-lock gate's non-ISO deny killed every Asset
+  `cascade_cancel` at preflight. New `GRAPH_NODE_DATE_FIELDS` (the BOM declared-dateless pin
+  extended to graph participants, source-verified three ways) unblocks it; deny-bias unchanged
+  for every unpinned node. The unit fakes now refuse non-ISO dates exactly like the real
+  client (nine tests reshaped to the live-true plan-stage refusal).
+- **Debt pass — disclosures the earliest rows predated:** the four founding stock rows (Stock
+  Entry, Stock Reconciliation, Delivery Note, Purchase Receipt) now disclose the Repost Item
+  Valuation scheduler channel both directions, with the source-verified asymmetry (cancel arms
+  it UNCONDITIONALLY; submit only for back-dated postings); Work Order now discloses its
+  reserve_stock machinery (transfer-vs-create dispatch, the silent partial reservation, the
+  live-state throws, the sibling Stock Reservation Entry cancels riding a cancel's consent).
+- **Deploy kit hardened from the live-prove findings:** `govern.sh` gains g3b (full-verb seat
+  DocPerms for every governed doctype + RBAC-transitive grants — `Item`/`Asset Depreciation
+  Schedule`/`Asset Maintenance`, all three live-caught — with frappe's first-custom-row trap
+  handled and documented in DEPLOY.md) and now GENERATES the per-doctype `.submit`/`.cancel`
+  guard patterns from the doctypes list (the twice-live-confirmed stale-methods gap, closed
+  structurally). New data files: `scope-graph-doctypes.list`, `seat-transitive-grants.list`.
+- **Known limitation (disclosed, decision pending):** a Timesheet billed by a Sales Invoice
+  links back to it, so the pair forms a cycle the cascade planner refuses and each leaf cancel
+  names the other — no governed cancel path exists for that pair yet (ERPNext's own native SI
+  cancel handles it; modeling the self-unlinking edge is a design decision, not a patch).
+
 ## 0.30.2 — 2026-07-17 — cleaner wheel: test suite out, SPDX license
 
 PATCH (packaging + metadata; no API or behavior change). The distributed wheel no longer ships the

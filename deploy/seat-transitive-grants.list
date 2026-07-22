@@ -1,0 +1,21 @@
+# RBAC-TRANSITIVE Frappe grants for the seat — doctypes the seat never calls directly but which
+# ERPNext's OWN validate/on_submit machinery touches UNDER THE SEAT'S PERMISSIONS while
+# processing a governed doctype. The guard still refuses direct HTTP calls to these (they are
+# not in the seat's resource scope unless separately listed) — this file feeds ONLY the Frappe
+# permission layer, which in-process code checks. Format: <DocType>: <verb>[,<verb>...]
+#
+# All three live-proven 2026-07-22 (lab CT 31340, live-prove batches B/C —
+# docs/plans/2026-07-22-liveprove-batches-bcd.md §Product findings):
+#
+# Stock Reconciliation's validate calls frappe.has_permission("Item","read",throw=True)
+# (erpnext stock/utils.py:111 via get_stock_balance) — without it the seat cannot even DRAFT
+# an SR (403 at insert).
+Item: read
+# Asset's validate creates-and-later-submits its Asset Depreciation Schedule sibling under the
+# seat (the disclosed sibling factory); the schedule is cancelled on asset cancel. Full verbs.
+Asset Depreciation Schedule: read,write,create,submit,cancel,amend
+# Asset Maintenance Log's on_submit ALWAYS saves its PARENT Asset Maintenance record in full
+# (asset_maintenance_log.py:76-77) — exactly as the landed row's risk flag discloses; the save
+# runs as the seat and needs read+write on the parent (the refusal surfaced as "Please specify
+# a valid parent DocType for Asset Maintenance Task").
+Asset Maintenance: read,write

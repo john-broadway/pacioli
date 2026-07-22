@@ -27,9 +27,31 @@ Two hosts (one is allowed but not the posture this road paves):
    generated on-target, root-only 600, never echoed. Ends: API 200 by name AND by IP.
 2. **`govern.sh`** *(target)* — guard installed **before any credential exists** → company
    (with the wizard-less fixture) → the tight seat (dedicated read-role, api keys, **no
-   manager roles**) → deny-by-default scope from the data lists → the SoD workflow
+   manager roles**) → **the governed-row + transitive Frappe grants (g3b, see the trap
+   below)** → deny-by-default scope from the data lists **with the per-doctype
+   `.submit`/`.cancel` method patterns GENERATED from `scope-doctypes.list`** (the guard
+   resolves every item-URL `run_method` call to `<DocType>.<verb>` — a hand-kept methods
+   file went stale twice on the lab; generated-from-data cannot) → the SoD workflow
    (masters first, self-approval OFF). The seat's secret lands frappe-owned 600; **carry
    it to the broker host, don't paste it anywhere.**
+
+   **⚠️ THE FIRST-CUSTOM-ROW TRAP (live-caught 2026-07-21, lab CT 31340):** the moment ONE
+   `Custom DocPerm` row exists for a doctype, frappe drops that doctype's ENTIRE standard
+   permission set — every role's access to it now comes from custom rows alone. The interim
+   state on the lab 403'd 37 of 38 doctypes INCLUDING previously-working ones. g3b therefore
+   (a) materializes the standard rows as custom via `setup_custom_perms()` BEFORE inserting
+   any seat row, and (b) runs only after g3 has already granted the role to the seat — never
+   create the rows for a role the seat doesn't hold yet. If you hand-edit permissions later,
+   honor the same two rules.
+
+   **Beyond the governed rows, ERPNext's own machinery needs transitive grants**
+   (`seat-transitive-grants.list`, all three live-proven 2026-07-22): `Item` read (Stock
+   Reconciliation's validate permission-checks it), `Asset Depreciation Schedule` full-verb
+   (Asset's submit auto-creates its schedule sibling UNDER THE SEAT), `Asset Maintenance`
+   read+write (Asset Maintenance Log's on_submit saves its parent in full). The guard still
+   refuses direct HTTP calls to these — the grants feed frappe's in-process layer only.
+   Cascade-graph participants (`scope-graph-doctypes.list`) get guard read + `.cancel` so
+   `plan_cascade_cancel` can plan and execute the graphs the sibling factories create.
 3. **`perimeter.sh`** *(target)* — nginx static front on :80 (Debian seams pre-fixed) +
    nftables contain (`:80` ← your TLS proxy only; `:8000/:9000/:22` ← the broker host).
    **TLS terminates at the proxy of YOUR house** — any door; this road doesn't pick one.

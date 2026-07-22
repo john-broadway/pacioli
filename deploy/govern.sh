@@ -26,7 +26,8 @@ console(){ su - frappe -c "cd $BENCH && bench --site $SITE console"; }
 
 # lists -> frappe-readable staging (console runs as frappe; /root is closed to it)
 STAGEDIR=/home/frappe/.pacioli-deploy; mkdir -p "$STAGEDIR"
-for f in scope-methods.list scope-doctypes.list seat-read-doctypes.list; do
+for f in scope-methods.list scope-doctypes.list seat-read-doctypes.list \
+         scope-graph-doctypes.list seat-transitive-grants.list; do
   [ -f "$f" ] || { echo "XX missing $f (scope is data — ship it next to this script)"; exit 2; }
   grep -v '^\s*#' "$f" | grep -v '^\s*$' > "$STAGEDIR/$f"
 done
@@ -105,12 +106,63 @@ PY
   done_mark g3-seat
 fi
 
+# ---- g3b: governed-row + transitive Frappe RBAC (the 2026-07-22 live-prove fold-in) ----
+# The 07-21 lab lesson made law: at 51 doctypes spanning stock/assets/manufacturing, "Accounts
+# User" standard perms do NOT cover the governed rows — every governed doctype needs a full-verb
+# Pacioli Seat DocPerm, and ERPNext's own machinery needs the transitive grants (see
+# seat-transitive-grants.list). THE FIRST-CUSTOM-ROW TRAP, handled here and documented in
+# DEPLOY.md: the moment ONE Custom DocPerm row exists for a doctype, frappe DROPS that doctype's
+# ENTIRE standard permission set — setup_custom_perms() materializes the standard rows as custom
+# FIRST, so nothing existing is lost; and the role was already granted to the seat in g3, so the
+# interim 403 window (37/38 doctypes dark on the lab, 2026-07-21) cannot occur.
+if ! skip g3b-governed-perms; then mark g3b-governed-perms
+  console <<PY
+from frappe.permissions import setup_custom_perms
+read_set = {l.strip() for l in open("$STAGEDIR/seat-read-doctypes.list")}
+governed = [l.strip() for l in open("$STAGEDIR/scope-doctypes.list") if l.strip() not in read_set]
+FULL = {"read": 1, "write": 1, "create": 1, "submit": 1, "cancel": 1, "amend": 1}
+def grant(dt, verbs):
+    if not frappe.db.exists("Custom DocPerm", {"parent": dt}):
+        setup_custom_perms(dt)   # materialize standard rows BEFORE the first custom row
+    if not frappe.db.exists("Custom DocPerm", {"parent": dt, "role": "Pacioli Seat"}):
+        frappe.get_doc({"doctype": "Custom DocPerm", "parent": dt, "parenttype": "DocType",
+                        "parentfield": "permissions", "role": "Pacioli Seat", "permlevel": 0,
+                        **verbs}).insert()
+for dt in governed:
+    grant(dt, FULL)
+for line in open("$STAGEDIR/seat-transitive-grants.list"):
+    dt, _, verbs = line.partition(":")
+    grant(dt.strip(), {v.strip(): 1 for v in verbs.split(",") if v.strip()})
+frappe.db.commit()
+n = frappe.db.count("Custom DocPerm", {"role": "Pacioli Seat"})
+print("GOVERNED_PERMS_SET | governed", len(governed), "| seat DocPerm rows", n)
+PY
+  echo "ok GOVERNED_PERMS_APPLIED (full-verb governed rows + transitive grants; trap handled)"
+  done_mark g3b-governed-perms
+fi
+
 # ---- g4: the scope (deny-by-default floor bound to the seat; data-driven) ----
 if ! skip g4-scope; then mark g4-scope
   console <<PY
 user = "$SEAT_USER"
 methods = [l.strip() for l in open("$STAGEDIR/scope-methods.list")]
 doctypes = [l.strip() for l in open("$STAGEDIR/scope-doctypes.list")]
+graph = [l.strip() for l in open("$STAGEDIR/scope-graph-doctypes.list")]
+read_set = {l.strip() for l in open("$STAGEDIR/seat-read-doctypes.list")}
+# THE SCOPE-METHODS RIPPLE, closed structurally (the twice-live-confirmed gap: the allowlist
+# "never grew past the founding-four snapshot" — 2026-07-21 run-1, then Budget.submit refused
+# 2026-07-22): the guard resolves every item-URL run_method call to "<DocType>.<verb>"
+# (pacioli_guard scope.py, _classify_full), so every governed doctype needs its own
+# .submit/.cancel pattern. GENERATED from the doctypes list here — landings ripple by data,
+# never by hand-editing a methods file. Graph participants get .cancel ONLY (the cascade
+# executor's vector; never .submit — a participant is not a governed row).
+for dt in doctypes:
+    if dt not in read_set:
+        methods += [dt + ".submit", dt + ".cancel"]
+for dt in graph:
+    methods.append(dt + ".cancel")
+seen = set()
+methods = [m for m in methods if not (m in seen or seen.add(m))]
 if frappe.db.exists("API Key Scope", {"user": user}):
     s = frappe.get_doc("API Key Scope", {"user": user})
     s.set("methods", []); s.set("resource_doctypes", [])
@@ -120,7 +172,7 @@ s.enabled = 1
 s.allow_resource = 1   # the master Check DEFAULTS 0 — without it every resource call refuses
 s.verb_read = 1; s.verb_create = 1; s.verb_write = 0; s.verb_delete = 0
 for m in methods:  s.append("methods", {"pattern": m})
-for d in doctypes: s.append("resource_doctypes", {"ref_doctype": d})
+for d in doctypes + graph: s.append("resource_doctypes", {"ref_doctype": d})
 s.save() if s.name else s.insert()
 frappe.db.commit()
 s.reload()

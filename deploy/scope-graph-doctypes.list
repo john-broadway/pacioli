@@ -1,0 +1,12 @@
+# Cascade-graph PARTICIPANTS — doctypes the broker does NOT govern (no tools, no verticals)
+# but which ride a plan_cascade_cancel graph as dependent nodes, so the SEAT's guard scope
+# must let the cascade planner READ them and the executor CANCEL them (the item-URL
+# run_method=cancel vector resolves to "<DocType>.cancel" at the guard — scope.py's
+# _classify_full; govern.sh generates that pattern from this list).
+#
+# Live-proven 2026-07-22 (lab CT 31340, the first real Asset cascade): the guard refused the
+# cascade plan outright at ('Asset Depreciation Schedule', 'read') until ADS entered the seat's
+# resource scope — Asset's own submit auto-creates the ADS sibling, so EVERY depreciating
+# Asset's documented cancel path (plan_cascade_cancel) dies at the guard without this row.
+# One doctype per line. NOT a grant of submit — a graph participant is read+cancel only.
+Asset Depreciation Schedule

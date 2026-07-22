@@ -5,15 +5,20 @@
 
 # Pacioli — the ERPNext agent broker you can hand the books, governed (MCP · A2A)
 
-**Status: four doctypes — Sales Invoice, Purchase Invoice, Payment Entry, Journal Entry — are
-live-proven end-to-end on a real ERPNext v16 bench: governed submit / cancel / amend, cascade
-cancel, the workflow-SoD gate, and governed Payment Reconciliation (PHASE X, 2026-07-09), all as a
-scoped non-Administrator seat under [`pacioli_guard`](../guard/README.md). A certified
-least-privilege reference seat (Accounts User + a custom "Pacioli Seat" role) is proven live on the
-Sales Invoice submit/cancel vertical and certified by `doctor` across the broker's whole read
-surface (PHASE X, T-P1/T-P2); the other three doctypes' full write path was live-proven under the
-broader scoped seat, and rides native `Accounts User` grants under the tight seat by source-derived
-recipe, not yet re-run there.** The current version lives in `pyproject.toml`/`CHANGELOG.md` — this README deliberately
+**Status: 51 governed doctypes, 265 tools — the full submittable transaction surface of an
+ERPNext company: accounts, stock, assets, manufacturing, subcontracting, maintenance, and the
+control-plane rows (Budget, Timesheet, Contract, Pick List, Production Plan). Every row landed
+from a v16 source walk with its own risk-flag disclosures, closed-books date pin, and cascade
+shape. 38 of the 51 are live-proven end-to-end on a real ERPNext v16 bench as a scoped
+non-Administrator seat under [`pacioli_guard`](../guard/README.md) — the full governed vertical
+each time (draft as the seat → plan → out-of-band marker → submit → replay refused → cancel),
+including a 3-node Asset cascade under one consent, the armed-Budget control-plane probe (the
+belt disclosed at plan, the bench refusing the Purchase Order with the literal BudgetError,
+cancel disarming it, the same PO then passing), and the Timesheet second-writer probe (a Sales
+Invoice's submit rewriting a submitted Timesheet — disclosed before consent, confirmed live,
+reversed on cancel). Governed Payment Reconciliation rides the same spine (PHASE X,
+2026-07-09). A certified least-privilege reference seat (Accounts User + a custom "Pacioli
+Seat" role) is proven live and certified by `doctor` across the broker's whole read surface.** The current version lives in `pyproject.toml`/`CHANGELOG.md` — this README deliberately
 does not restate it (restated versions rot). The proof trail is `../SCOPED-TOKEN-PROOF.md`; the
 early gates in brief — Gate 6:
 `plan_submit` returned the real projected GL (Cost of Goods Sold / Creditors), a minted marker took
@@ -65,20 +70,24 @@ JE submit 0→1 landed verbatim as `frappe.client.submit` in the bench request l
 raw body-doctype submit naming a never-granted doctype was 403'd before frappe dispatched (PHASE M).
 
 Pacioli is a standalone, pip-installable **MCP server** that gives an AI agent a governed way to
-touch ERPNext. Slice-one governs exactly one write — **submitting a Sales Invoice** — through the
-full shape PLAN → CONSENT → execute → PROVE, plus a minimal read tier. Everything else is
-deny-by-default: there is no generic `delete`, no raw REST passthrough, no `confirm`-flag the
-agent can set on its own call. It is not a bench app — that's [`pacioli_guard`](../guard/README.md), the
-credential-scope floor this broker sits on and binds itself to.
+touch ERPNext. Every write — submit, cancel, amend, cascade, reconcile, across all 51 governed
+doctypes — rides one spine: PLAN → CONSENT → execute → PROVE, plus a permission-scoped read
+tier. Everything else is deny-by-default: there is no generic `delete`, no raw REST passthrough,
+no `confirm`-flag the agent can set on its own call. It is not a bench app — that's
+[`pacioli_guard`](../guard/README.md), the credential-scope floor this broker sits on and binds
+itself to.
 
-## The trust spine in slice-one
+## The trust spine
 
-| Pillar | What ships in slice-one | Deferred |
+(The table below narrates each pillar on the founding doctype, Sales Invoice — the shape is
+identical for every governed doctype.)
+
+| Pillar | What ships | Deferred |
 |---|---|---|
 | **PLAN** | Load the draft, run ERPNext's native `show_accounting_ledger_preview`, return the projected GL impact + risk flags, record the plan bound to the doc's `modified` version (so a stale plan can't be replayed after the doc changes underneath it). | Linked-master drift (credit limit, tax template, FX) is not covered — documented, not silently covered. |
 | **CONSENT** | Two gates now. The **marker**: a single-use, out-of-band, human-minted grant the agent cannot derive or self-issue — state machine `live → reserved → consumed` (or back to `live` on a failed submit), CAS-claimed before execute. **Workflow-SoD** (`pacioli/workflow.py`, **live-proven against a real ERPNext v16 bench**, Gate 5): when a company has configured an active ERPNext Workflow on the doctype, `submit`/`cancel` refuse outright whenever that workflow governs the op — naming the workflow and the approving role — and the broker may still perform non-approving transitions itself (`request_workflow_transition`). No workflow configured = unchanged, marker-governed exactly as before this build. | Bench-side (guard-side) enforcement of Workflow against every calling path, not just the broker's — frappe does not enforce Workflow on a direct `docstatus` change, so this gate governs only the agent's own path through the broker. |
 | **PROVE** | An append-only, hash-chained receipt of every mutation: an **intent** receipt is written before the irreversible submit, then a **committed** or **failed** outcome after. Plus the **off-box head anchor**: `pacioli anchor write` emits a pin (target, head hmac, receipt count, timestamp — and, since 0.21.0/0.26.0, the seal and close-record heads+counts riding the same record) for the operator to carry off this host; `pacioli anchor check` verifies the live chain against a recorded pin, deny-biased (a count that went down, or a head that moved, is tampering — exit 1). With a **disciplined off-box pin**, PROVE upgrades from an on-box hash chain to **tamper-evident against host-level truncation or rewrite of the chain since the last pin** — exactly that, no more. | Receipts appended **after the last pin** are unprotected until the next pin, and the seal key is still on-box — a key-holder can forge post-pin receipts (pre-pin history stays fixed by the pinned hmac even against a key-holder). The tool cannot make the pin off-box for you: a copy on this host proves nothing; carrying it off (another machine, a git remote, paper) and rotating it is operator discipline, not code. |
-| **DIAGNOSE** | A minimal read tier: get / list Sales Invoice, permission-scoped under the caller's own ERPNext role. | A broader read tier, health/evidence tools. |
+| **DIAGNOSE** | A read tier (get / list, every governed doctype), permission-scoped under the caller's own ERPNext role; `pacioli doctor` certifies the seat and the chain end-to-end. | Broader health/evidence tools. |
 | **UNDO** | **Governed cancel** (`plan_cancel` → human marker → `cancel_sales_invoice`, docstatus 1 → 2, **live-proven**): the plan shows the posting's live GL rows (what the cancel unwinds), the **linked-submitted-documents blast radius refuses** a non-leaf cancel (an unreadable graph refuses too — never reads as empty), the same closed-books check blocks unwinding into a locked period, and a cancel marker **never authorizes a submit** (nor vice versa — plans are op-bound). ERPNext's own cancel-blocks are honored, never bypassed. **The settling-PE disclosure (F-R1, every supported doctype):** the plan also names, PRE-consent, every settling voucher (a Payment Entry, most commonly) a cancel would touch — one flag per voucher, either "cancelling will SILENTLY UNLINK `<voucher_type>` `<voucher_no>`'s allocation of `<amount>`…" (the unlink setting is ON) or "ERPNext will REFUSE this cancel (LinkExistsError)…" (it's OFF) — closing the gap where ERPNext's own blast-radius check structurally cannot see a settling Payment Entry (it's `auto_cancel_exempted`); an unreadable settling-reference or unlink-setting read refuses the whole plan, deny-biased. **Amend** (`amend_sales_invoice`, **live-proven** — the full submit → cancel → amend → resubmit arc, 8 receipts on one ledger, proof record PHASE F): the corrected re-draft, a new DRAFT copied from the cancelled document with `amended_from` set. It takes **no marker** — it creates a reversible draft (nothing posts; deleting the draft undoes it), and demanding consent for a reversible act would dilute what the marker means; the irreversible step stays `submit`, behind its own plan + marker. It **does** write the intent+outcome receipt pair (op `amend`, transition `2->0(draft)`) so the book shows the full arc cancel → amend → submit. Under an active Workflow the draft is **seated at the workflow's initial state** (frappe's own `states[0]` convention, written to the workflow's configured state field, disclosed as `workflow_seat` in result and receipts, and `confirmed` against the bench's answer, never just the request) — found by the first dogfood drive: an unseated amendment has no legal transition and is stuck. The seat is **live-proven** (2026-07-17 lab pin, `docs/plans/2026-07-17-amend-seat-pin.md`): amend under a live workflow seated the draft on the real bench, and the non-approving transition ran from it end-to-end. Gated: refuses an uncancelled source, a source that already has an amendment (any docstatus — named in the refusal), a wrong-books company, ambiguous/malformed/unseatable workflow configuration, and a state field that would re-enter the amend strip-list's protected keys (deny-biased, before the intent receipt — a refusal never leaves an orphan). **Cascade cancel** (`plan_cascade_cancel` → human marker → `cascade_cancel`, **live-proven** — discovery/fail-stop/happy path PHASE J, a real JE-dependent graph cancelled 2/2 in Gate 10 M-12): governs the cancel of a document AND its full submitted-dependent graph in one consent. The plan enumerates the topologically ordered graph (dependents first, target last, any doctype, each node labeled modeled/generic) and discloses per-node risk the same way the single-op plan would (`risk_flags`, each flag docname-prefixed: the Journal-Entry EG auto-cancel note, the unlink setting, the physical-stock reversal, a Payment Entry's settled references), and one marker authorizes exactly that frozen set. Non-atomic by nature (each cancel commits individually): preflight checks freshness + period-locks on every node before any cancel, then executes in order, **confirms each node's transition against the document's real docstatus** (a response that doesn't show docstatus 2 — a queued write, a failed readback — records `unconfirmed`, never `committed`: the E1 rule, per node), and **fail-stops** on the first failure or unconfirmed node — the result names exactly what was cancelled and where it stopped; the marker is spent iff at least one document was cancelled **or the stopping node came back unconfirmed** (an act may already be in motion server-side — one grant must never initiate two acts). Bounded by `PACIOLI_CASCADE_MAX` (default 25). | The 0.9.3 per-node confirm + per-node cascade disclosures are code-proven, bench proof staged (envelope E3). **0.10.4 closed the transport-taxonomy residual** (single-op and cascade alike; code-closed and unit-proven — bench pins T1–T5 staged for the next window): an exception from the *mutating call itself* is now classified — an **answered refusal** (the bench definitely saw and refused the call: an int HTTP status whose JSON body carries frappe's OWN error envelope, `exc_type`/`_server_messages`, or a pre-processing rejection, 429/413) still releases the marker exactly as before; everything else — a raw connection failure, a proxy-shaped response (HTML **or generic JSON** — proxies speak JSON too, and `{"error": "Bad Gateway"}` is not frappe), any unconverted exception — is **no answer**, and the marker is now **spent, never released**, resolved by a governed readback of the document's real docstatus (`confirmed_via: "post_failure_readback"` on a match, `"unconfirmed"` + `readback_error` on a mismatch or a failed readback; the durable receipt always carries the original error too). Deny-biased by construction: this closure only ever moves release→spend, never the reverse. Honest residual: the "answered ⇒ rolled back" premise is source-verified for frappe core + erpnext mainline flows; a CUSTOM doctype hook calling `frappe.db.commit()` mid-flow before a later failure would break it — outside the broker's reach, recorded. |
 
 **The closed books.** Closing the ledger is Pacioli's own operation — rule off the book, carry the
@@ -746,8 +755,9 @@ before any network call, naming what is supported.
 
 **Two allowlists, doing different jobs — belt-and-suspenders, not redundant:**
 - **The broker's own `SUPPORTED_DOCTYPES`** (`pacioli/erpnext.py`) is "I've been built and tested
-  for these" — the four doctypes above (e.g. Sales Invoice with `party_field="customer"`;
-  Journal Entry carries no header-level party at all). A doctype outside it is a structured deny
+  for these" — today all 51 governed doctypes, each with its own source-verified descriptor
+  (e.g. Sales Invoice with `party_field="customer"`; Journal Entry carries no header-level party
+  at all; BOM and Pick List are declared dateless). A doctype outside it is a structured deny
   at the tool layer, regardless of what the credential itself could reach.
 - **`pacioli_guard`'s per-credential `resource_doctypes` grant** is "this credential may touch
   these ERPNext DocTypes at all" — an operator-configured scope on the bench side. Either layer
@@ -921,7 +931,7 @@ live-proven before it has actually run against a real bench.
 Multi-site/company routing (`pacioli_target=`) is plumbed from day one so that wrong-company books
 are **designed to be unreachable** — a plan records the target it was built against and refuses a
 replay at a different target, and a target pinned to a company refuses to plan a document from any
-other company. That routing is proven against one target in slice-one; it has not been exercised
+other company. That routing is proven against one target at a time; it has not been exercised
 against more than one.
 
 That wrong-books pin is re-checked at **execute**, too, not just at plan — for a single submit/

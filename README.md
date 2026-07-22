@@ -58,8 +58,9 @@ bench --site <your-site> install-app pacioli_guard
 
 A standalone, pip-installable broker (`pip install pacioli`) that gives an AI agent a
 governed way to touch ERPNext — through the door of your choosing: **MCP or A2A**, one spine
-behind both. Slice-one governs one write — submitting a Sales Invoice — through
-PLAN → CONSENT → execute → PROVE, deny-by-default beyond that. The door admits; the spine decides.
+behind both. **51 governed doctypes, 265 tools** — the full submittable transaction surface of
+an ERPNext company — every write through PLAN → CONSENT → execute → PROVE, deny-by-default
+beyond that. The door admits; the spine decides.
 
 ```bash
 pip install pacioli
@@ -70,8 +71,9 @@ pip install pacioli
 **Guard is the floor; the broker is one consumer that binds itself to it.** Guard scopes and
 enforces *any* credential on the site — you don't need to run an agent to need it. The broker
 is the agent-facing front door, and its own ERPNext credential must itself be
-`pacioli_guard`-scoped to exactly the calls it uses (read Sales Invoice, the ledger-preview
-method, submit on Sales Invoice). Without that scoping, anything holding the broker's raw
+`pacioli_guard`-scoped to exactly the calls it makes (the governed doctypes and their
+submit/cancel vectors — shipped as data lists the deploy kit applies). Without that scoping,
+anything holding the broker's raw
 credential can call ERPNext's REST API directly and bypass PLAN, CONSENT, and PROVE entirely —
 so the broker's own README states that scoping as a hard precondition, not an optional
 hardening step.
@@ -176,12 +178,15 @@ Guard — deny-by-default credential scoping with the **deny-unknown** posture (
 unrecognized generic RPC is denied even if granted; per-doctype grants + three curated safe
 methods are the whole surface), live-proven on a real Frappe v16 bench (Gates 1, 7, 10).
 
-Broker — **four doctypes live-proven end-to-end** on a real ERPNext v16 bench (Sales
-Invoice, Purchase Invoice, Payment Entry, Journal Entry; Gates 2–10 and envelopes E1–E8):
-governed submit/cancel/amend, Workflow-SoD consent, cascade cancel with dependent graphs,
-**governed Payment Reconciliation** (stricter than ERPNext itself — the closed-books belt ERPNext
-skips for reconciliation, proven live, PHASE X), the off-box anchor, a certified least-privilege
-reference seat, and the founding refusals (no debit without a credit — live). The whole arc is
+Broker — **51 governed doctypes, 265 tools; 38 of the 51 live-proven end-to-end** on a real
+ERPNext v16 bench as a guard-scoped seat (Gates 2–10, envelopes E1–E8, and the 2026-07
+live-prove sweep): governed submit/cancel/amend across accounts, stock, assets, manufacturing,
+and subcontracting; Workflow-SoD consent; cascade cancel with dependent graphs (a 3-node Asset
+graph under one consent, live); **governed Payment Reconciliation** (stricter than ERPNext
+itself — the closed-books belt ERPNext skips for reconciliation, proven live, PHASE X); the
+armed-Budget control-plane probe (arm → the bench refuses the PO → disarm → the same PO
+passes, every step disclosed pre-consent); the off-box anchor; a certified least-privilege
+reference seat; and the founding refusals (no debit without a credit — live). The whole arc is
 written up leg-by-leg in [`SCOPED-TOKEN-PROOF.md`](./SCOPED-TOKEN-PROOF.md) (PHASES A–X). See
 [`broker/README.md`](./broker/README.md#honest-scope) for exactly what ships and what doesn't.
 

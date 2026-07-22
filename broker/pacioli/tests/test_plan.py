@@ -10,7 +10,7 @@ Run: `python3 -m unittest pacioli.tests.test_plan` from the broker app root. No 
 """
 import unittest
 
-from pacioli.plan import Plan, check_fresh, check_red_line, new_plan
+from pacioli.plan import NO_DATE_FIELD, Plan, check_fresh, check_red_line, new_plan
 
 PLAN = new_plan(
     plan_id="p1", target="acme/Acme Corp", doc_version="2026-06-30 11:00:00",
@@ -180,6 +180,60 @@ class TestFalsyBoundaryStillRefuses(unittest.TestCase):
     def test_absent_key_is_no_lock(self):
         ok, _ = check_red_line("2026-05-15", "2026-07-01", {})
         self.assertTrue(ok)
+
+
+class TestRedLineDateless(unittest.TestCase):
+    """The declared-dateless pass (BOM breadth, 2026-07-21). NO_DATE_FIELD is set ONLY by the
+    glue's _posting_date_of, ONLY when SUPPORTED_DOCTYPES declares date_field=None — a
+    source-verified pin, never an empty read. See check_red_line's own docstring for the
+    three-way source proof that passing it equals ERPNext exactly."""
+
+    def test_sentinel_passes_with_no_locks(self):
+        self.assertEqual(check_red_line(NO_DATE_FIELD, "2026-07-01", {}), (True, None))
+
+    def test_sentinel_passes_even_with_live_locks(self):
+        # Deliberate, documented: a dateless doctype has no posting date for any boundary to
+        # bite on, and ERPNext itself never period-checks it (BOM absent from
+        # period_closing_doctypes; check_freezing_date is GL-path-only) — refusing would deny
+        # every submit/cancel of the doctype forever while protecting nothing ERPNext protects.
+        # In every real flow locks is {} anyway (_locks_for never reads locks for the sentinel);
+        # this pins that the answer doesn't secretly depend on that.
+        ok, _ = check_red_line(NO_DATE_FIELD, "2026-07-01",
+                               {"frozen_until": "2026-12-31", "pcv_until": "2026-12-31",
+                                "closed_period_until": "2026-12-31"})
+        self.assertTrue(ok)
+
+    def test_sentinel_passes_with_no_now_date(self):
+        # The future-dating belt needs a "now" to compare against; with no date on the document
+        # there is nothing to compare, so an unreadable clock cannot block a dateless doctype.
+        self.assertEqual(check_red_line(NO_DATE_FIELD, "", {}), (True, None))
+
+    def test_empty_date_still_refused_datelessness_is_never_inferred(self):
+        # The load-bearing asymmetry: an EMPTY read on a doctype that declares a date field is
+        # unverifiable (deny), not dateless (pass) — only the explicit sentinel passes.
+        ok, reason = check_red_line("", "2026-07-01", {})
+        self.assertFalse(ok)
+        self.assertIn("no posting_date", reason)
+
+    def test_sentinel_is_not_a_valid_iso_date(self):
+        # Backstop property: if a bug ever leaks the sentinel into a slot that validates ISO
+        # shape (get_period_locks' own gate, a lock boundary), it must REFUSE, never parse.
+        from pacioli.plan import _is_iso_date
+        self.assertFalse(_is_iso_date(NO_DATE_FIELD))
+
+    def test_sentinel_sorts_after_every_iso_date(self):
+        # Backstop property two (documented on the constant): an UNBRANCHED call site comparing
+        # the sentinel against a date fires loudly ("in the future") rather than silently
+        # passing a range check — wrong-but-loud, never wrong-and-quiet. The glue's flag sites
+        # branch explicitly; this pins the failure MODE if one ever forgets.
+        self.assertGreater(NO_DATE_FIELD, "9999-12-31")
+
+    def test_sentinel_survives_a_store_round_trip_by_equality(self):
+        # The Plan's posting_date channel persists through the store's TEXT column — the branch
+        # must hold for an equal COPY of the string, never rely on interning/identity.
+        rehydrated = "".join(NO_DATE_FIELD)
+        self.assertIsNot(rehydrated, NO_DATE_FIELD)
+        self.assertEqual(check_red_line(rehydrated, "2026-07-01", {}), (True, None))
 
 
 class TestCheckOp(unittest.TestCase):

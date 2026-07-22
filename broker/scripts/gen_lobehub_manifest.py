@@ -33,8 +33,8 @@ BASE = {
     "identifier": "john-broadway-pacioli",
     "name": "Pacioli — the governed front door to your ERPNext books",
     "description": (
-        "Governed agent access to your ERPNext books — Sales/Purchase Invoices, "
-        "Payments, Journal Entries: every write PLANNED, CONSENTED, PROVEN, and "
+        "Governed agent access to your ERPNext books — 51 doctypes across accounts, "
+        "stock, assets, and manufacturing: every write PLANNED, CONSENTED, PROVEN, and "
         "UNDOable. No debit without a credit. MCP + A2A doors, one spine."
     ),
 }
