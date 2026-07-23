@@ -53,6 +53,8 @@ DENY_PREFIXES: tuple[str, ...] = (
 # (README/CHANGELOG/LICENSE/DESIGN/TWO-DOORS/SCOPED-TOKEN-PROOF/assets/site/deploy + the packages).
 DENY_BASENAMES: tuple[str, ...] = (
     "CLAUDE.md", "CULTURE.md", "GO-LIVE.md", "RESEARCH-VERDICT.md", "DISTRIBUTION.md",
+    "COMPETITORS.md",  # competitor landscape — INTERNAL ONLY, never public (2026-07-23)
+    "DESIGN.md",       # design/strategy sketch (named competitor table, market bets) — INTERNAL ONLY (2026-07-23)
 )
 
 # Site-specific internal identifiers (bare node/host names with no generic leak-shape) that must
