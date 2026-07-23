@@ -6,6 +6,38 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.31.1 — 2026-07-23 — live-prove batch E: 48 of 51 proven, three bench-caught fixes
+
+PATCH (bug fixes plus an honest count correction; no new capability, no grant widened, deny-bias
+unchanged). More of the breadth surface met the real bench, and three fixes were live-caught on
+real drafts the same session.
+
+**48 of the 51 governed doctypes are now live-proven end-to-end.** Batch E added 9 new full
+verticals and completed the Sales Order cascade. The three not yet bench-pinned are named plainly,
+not hidden: two design-complete builds awaiting a bench window, and one disclosed upstream ERPNext
+core limitation.
+
+Three fixes, each caught on a first real plan against the bench (lab CT 31340):
+
+- **Payment Request joins the dated-graph participants** (`GRAPH_NODE_DATE_FIELDS`), pinned on its
+  real `transaction_date`. A blank or NULL `transaction_date` degrades to the dateless sentinel for
+  a participant, because ERPNext submits a dateless Payment Request happily and never period-checks
+  it. A present date still gets the full closed-books check, and governed rows' blank-date refusal
+  is unchanged.
+- **POS Invoice joins the ledger-preview skip tuple** (its 31st member). ERPNext's own preview RPC
+  loads a POS Invoice as a `LazyPOSInvoice` proxy whose inherited `make_precision_loss_gl_entry`
+  reads a field the proxy lacks, raising AttributeError on every draft preview. The plan now skips
+  that broken upstream preview, and the deferral flag carries the real reason: POS posts via a POS
+  Closing Entry consolidation, not its own submit.
+- **Invoice Discounting cancel disclosure.** ERPNext's `on_cancel` omits `ignore_linked_doctypes`,
+  so frappe refuses the cancel with `LinkExistsError` against the document's own GL Entries before
+  `on_cancel` runs. The cancel plan now warns that the refusal will come from the bench, not this
+  broker.
+
+Docs: the public README live-proven count corrected to 48, and the consent boundary is now an
+explicit precondition (the broker's state dir and `mint` CLI must be unreachable by the agent:
+own container, or own OS user with a `0700` state dir). Broker green throughout: **3,111 passed**.
+
 ## 0.31.0 — 2026-07-22 — the breadth roof: 51 governed doctypes, 265 tools, live-proven
 
 MINOR (a large, backwards-compatible surface growth + one fix; no grant widened, deny-bias

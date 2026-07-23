@@ -2495,6 +2495,15 @@ GRAPH_NODE_DATE_FIELDS = {
     # Asset's auto-created sibling (asset.py's make_depreciation_schedule): zero Date/Datetime
     # fields in its own schema, not in period_closing_doctypes, posts no GL under its own name.
     "Asset Depreciation Schedule": None,
+    # Sales Order's payment-collection sibling (live-caught 2026-07-23, the SO cascade's own
+    # preflight — the SECOND instance of the ADS find): a submitted Payment Request rides the
+    # SO's cancel graph, has no "posting_date" (the unmodeled default read ""), and DOES carry
+    # a real Date field — transaction_date (payment_request.json, its only date-typed field) —
+    # so this is the pin table's first DATED participant: the real fieldname, never the
+    # dateless sentinel. Not in period_closing_doctypes (hooks.py:323-341, all 18 read); no
+    # make_gl_entries anywhere (PaymentRequest -> Document directly); the period-lock check
+    # runs against the date the document actually carries.
+    "Payment Request": "transaction_date",
 }
 
 
@@ -2575,6 +2584,18 @@ def _posting_date_of(doc, doctype):
     if date_field is None:
         return NO_DATE_FIELD
     value = str(doc.get(date_field) or "")
+    if not value and doctype in GRAPH_NODE_DATE_FIELDS:
+        # THE BLANK-VALUED DATED PARTICIPANT (live-caught 2026-07-23, the SO cascade's second
+        # stop): Payment Request's transaction_date is not reqd — ERPNext submits it happily
+        # blank — and the live fixture carried NULL. For a GOVERNED row a blank read on a dated
+        # shape stays refused below (unverifiable, the standing deny-bias). A graph PARTICIPANT
+        # is different by construction: its pin's own admission receipts (not in
+        # period_closing_doctypes, no make_gl_entries) prove ERPNext never period-checks the
+        # doctype AT ALL, so there is no lock a date could be verified against — a blank here
+        # degrades to the sentinel (no lock read, the companyless shape's own reasoning), while
+        # a PRESENT date still gets the full check above this branch: stricter when checkable,
+        # never refusing over a comparison ERPNext itself does not make.
+        return NO_DATE_FIELD
     if len(value) > 10 and value[10] in (" ", "T") and _is_iso_date(value[:10]):
         return value[:10]
     return value
@@ -3028,14 +3049,17 @@ def _pos_invoice_ledger_deferral_flag(doctype):
     if doctype != POS_INVOICE:
         return []
     return [
-        "PROJECTED GL ABOVE WILL NOT POST: POS Invoice's own submit never calls make_gl_entries() "
-        "or update_stock_ledger() — on_submit fully overrides SalesInvoice.on_submit without "
-        "calling it, so no GL Entry or Stock Ledger Entry is created for THIS document at all; the "
-        "projected_gl shown here comes only from ERPNext's preview RPC calling make_gl_entries() "
-        "directly (bypassing on_submit) — a real simulation, but of a posting that will never "
-        "happen for this voucher. GL/SL truth is deferred until a POS Closing Entry consolidates "
-        "this invoice into a separate, genuinely-submitted Sales Invoice — govern THAT document's "
-        "own submit to see real postings"]
+        "PROJECTED GL IS EMPTY BECAUSE THE PREVIEW WAS NOT CALLED — AND EVEN A WORKING PREVIEW "
+        "WOULD DESCRIBE A POSTING THAT NEVER HAPPENS: ERPNext's own preview RPC loads a POS "
+        "Invoice as a LazyPOSInvoice proxy and the inherited make_precision_loss_gl_entry "
+        "(accounts_controller.py:1653) reads use_company_roundoff_cost_center, an attribute the "
+        "proxy does not carry — AttributeError on EVERY draft preview, live-confirmed 2026-07-23, "
+        "so this broker does not call it for a POS Invoice at all (the Subcontracting Receipt "
+        "callable-but-broken class). Independently, POS Invoice's own submit never posts: "
+        "on_submit fully overrides SalesInvoice.on_submit without calling it — no GL Entry or "
+        "Stock Ledger Entry is created for THIS document at all. GL/SL truth is deferred until a "
+        "POS Closing Entry consolidates this invoice into a separate, genuinely-submitted Sales "
+        "Invoice — govern THAT document's own submit to see real postings"]
 
 
 def _dunning_ledger_preview_unavailable_flag(doctype):
@@ -6290,6 +6314,14 @@ def _invoice_discounting_cancel_risk_flags(doc):
         "point, a submitted Journal Entry already naming this document is exactly what makes it "
         "NOT a cascade leaf (see the blast-radius gate above) — this cancel is refused outright "
         "while one exists")
+    flags.append(
+        "ERPNEXT CORE GAP, LIVE-CONFIRMED 2026-07-23: on_cancel (invoice_discounting.py:96-99) "
+        "never sets ignore_linked_doctypes — unlike Sales Invoice (:658) and every other "
+        "GL-posting doctype — so frappe's own generic back-link check refuses this cancel with "
+        "LinkExistsError against the document's OWN GL Entries, BEFORE on_cancel ever runs. An "
+        "Invoice Discounting that posted GL at submit cannot be cancelled through ANY normal "
+        "path (this broker's, or the desk's) until ERPNext adds the ignore declaration; expect "
+        "this cancel to be refused by the bench itself, not by this broker's gates")
     return flags
 
 
@@ -8154,7 +8186,20 @@ class PacioliBroker:
                        # broker refuses to call a preview upstream broke — supervisor's ruling
                        # 2026-07-22, closing the landing's own owed decision; see
                        # _subcontracting_receipt_ledger_preview_gap_flag.
-                       SUBCONTRACTING_RECEIPT):
+                       SUBCONTRACTING_RECEIPT,
+                       # POS Invoice is the tuple's THIRTY-FIRST member, the SCR cause-class's
+                       # second instance (CALLABLE but STRUCTURALLY BROKEN UPSTREAM), live-caught
+                       # 2026-07-23 on the first real POS Invoice plan ever run (lab CT 31340):
+                       # ERPNext's own preview RPC loads the doc as a LazyPOSInvoice proxy, and
+                       # SI's inherited get_gl_entries -> make_precision_loss_gl_entry
+                       # (accounts_controller.py:1653) reads self.use_company_roundoff_cost_center
+                       # — an attribute the lazy proxy does not carry — AttributeError on EVERY
+                       # draft preview. The landed row's "callable, false-positive-empty" read
+                       # was itself source-true but bench-false: callable in the MRO, broken in
+                       # the RPC's own loading path. The broker refuses to call a preview
+                       # upstream broke; the POS deferral flag (below) already tells the reader
+                       # the preview describes the wrong moment for POS anyway.
+                       POS_INVOICE):
             preview = {"gl_data": []}
         else:
             preview = client.ledger_preview(company=company, doctype=doctype, docname=name)

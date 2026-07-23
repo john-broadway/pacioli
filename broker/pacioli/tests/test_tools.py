@@ -6280,18 +6280,23 @@ class TestPOSInvoiceLedgerDisclosure(unittest.TestCase):
     the new deferral risk flag fires ALONGSIDE the non-empty preview, naming the divergence
     plainly rather than letting it pass silently."""
 
-    def test_plan_submit_surfaces_non_empty_projected_gl_and_the_deferral_warning(self):
+    def test_plan_submit_skips_the_broken_preview_and_carries_the_dual_disclosure(self):
+        # LIVE-TRUE RESHAPE (2026-07-23, lab CT 31340 — the first real POS Invoice plan ever
+        # run): ERPNext's preview RPC loads a LazyPOSInvoice proxy and the inherited
+        # make_precision_loss_gl_entry reads use_company_roundoff_cost_center, which the proxy
+        # does not carry — AttributeError on EVERY draft preview. POS Invoice is now the skip
+        # tuple's 31st member (the SCR callable-but-broken class, second instance); the old
+        # "non-empty projected_gl + deferral warning" shape was fake-only (the FakeClient's
+        # preview succeeds where the real bench crashes). The flag now carries BOTH truths: the
+        # skip's cause, and the consolidation deferral that was always the deeper point.
         broker, client, _ = make_broker()
         out = broker.dispatch("plan_submit", {"name": "POSI-1", "pacioli_doctype": "POS Invoice"})
         self.assertTrue(out["ok"], out)
-        self.assertTrue(out["projected_gl"], "POS Invoice's projected_gl is non-empty because "
-                                             "ERPNext's preview RPC calls make_gl_entries() "
-                                             "directly, inherited unmodified from Sales Invoice")
-        self.assertTrue(
-            any("PROJECTED GL ABOVE WILL NOT POST" in f for f in out["risk_flags"]),
-            "the non-empty preview above must NEVER go out without the deferral warning — a real "
-            "POS Invoice submit posts no GL of its own at all")
-        flag = next(f for f in out["risk_flags"] if "PROJECTED GL ABOVE WILL NOT POST" in f)
+        self.assertEqual(out["projected_gl"], [])  # the preview is never called
+        flag = next((f for f in out["risk_flags"]
+                     if "THE PREVIEW WAS NOT CALLED" in f), None)
+        self.assertIsNotNone(flag, out["risk_flags"])
+        self.assertIn("LazyPOSInvoice", flag)
         self.assertIn("POS Closing Entry", flag)
 
     def test_plan_cancel_needs_no_deferral_flag_the_real_read_is_already_honest(self):
@@ -8147,6 +8152,42 @@ class TestGraphNodeDatelessPin(unittest.TestCase):
         # The sentinel node's lock read was SKIPPED (only T's own real date was lock-checked).
         self.assertTrue(all(pd != NO_DATE_FIELD and pd for (_, _, pd) in client.lock_calls),
                         client.lock_calls)
+
+    def test_cascade_with_a_dated_graph_participant_reads_its_real_date_field(self):
+        # Payment Request (live-caught 2026-07-23, the SO cascade): the first DATED pin — the
+        # node's posting_date comes from its declared transaction_date, so the period-lock read
+        # runs against a real date and the cascade proceeds; nothing sentinel about it.
+        cc = self._client_with_dependent("Payment Request")
+        cc.docs["S"]["transaction_date"] = "2026-07-01"
+        broker, client, store_provider = make_broker(client=cc)
+        plan = broker.dispatch("plan_cascade_cancel",
+                               {"name": "T", "pacioli_doctype": "Sales Invoice"})
+        self.assertTrue(plan["ok"], plan)
+        self.assertEqual(plan["graph"][0]["posting_date"], "2026-07-01")
+        store_provider("prod").mint_marker("casc-token", plan["plan_id"], expires_at=2_000.0)
+        out = broker.dispatch("cascade_cancel",
+                              {"name": "T", "plan_id": plan["plan_id"], "marker": "casc-token"})
+        self.assertTrue(out["ok"], out)
+        # The PR node's lock read used ITS date, not "" and not the sentinel.
+        self.assertIn(("Example Corp", "Payment Request", "2026-07-01"), client.lock_calls)
+
+    def test_cascade_with_a_blank_dated_participant_degrades_to_the_sentinel(self):
+        # The live find's second half (2026-07-23): the bench's real Payment Request carried
+        # transaction_date NULL (not reqd — ERPNext submits it blank). A blank on a PARTICIPANT
+        # degrades to the sentinel (its pin's receipts prove ERPNext never period-checks the
+        # doctype, so there is no lock to verify against); the cascade proceeds. A governed
+        # row's blank date stays refused — pinned by the projection classes above.
+        cc = self._client_with_dependent("Payment Request")  # doc "S" has NO transaction_date
+        broker, client, store_provider = make_broker(client=cc)
+        plan = broker.dispatch("plan_cascade_cancel",
+                               {"name": "T", "pacioli_doctype": "Sales Invoice"})
+        self.assertTrue(plan["ok"], plan)
+        self.assertEqual(plan["graph"][0]["posting_date"], NO_DATE_FIELD)
+        store_provider("prod").mint_marker("casc-token", plan["plan_id"], expires_at=2_000.0)
+        out = broker.dispatch("cascade_cancel",
+                              {"name": "T", "plan_id": plan["plan_id"], "marker": "casc-token"})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual([n["docname"] for n in out["cancelled"]], ["S", "T"])
 
     def test_cascade_with_an_unpinned_dateless_node_still_refuses(self):
         # CONTROL — deny-bias unchanged: an unmodeled, unpinned dependent with no readable date
@@ -18532,6 +18573,21 @@ class TestInvoiceDiscountingCancelRiskFlags(unittest.TestCase):
         self.assertIsNotNone(flag, out["risk_flags"])
         self.assertIn("journal_entry.py:460-467", flag)
         self.assertIn("NOT a cascade leaf", flag)
+
+    def test_cancel_discloses_the_core_ignore_linked_doctypes_gap(self):
+        # Live-caught 2026-07-23 (lab CT 31340, the first real ID cancel ever attempted): the
+        # bench itself refused with LinkExistsError against the ID's OWN GL Entries —
+        # on_cancel never sets ignore_linked_doctypes (invoice_discounting.py:96-99), unlike
+        # every other GL-posting doctype. The flag warns before consent that the refusal will
+        # come from ERPNext core, not this broker's gates.
+        broker, client, _ = make_broker()
+        out = broker.dispatch("plan_cancel",
+                              {"name": "ID-9", "pacioli_doctype": "Invoice Discounting"})
+        self.assertTrue(out["ok"], out)
+        flag = next((f for f in out["risk_flags"] if "ERPNEXT CORE GAP" in f), None)
+        self.assertIsNotNone(flag, out["risk_flags"])
+        self.assertIn("ignore_linked_doctypes", flag)
+        self.assertIn("LinkExistsError", flag)
 
 
 class TestInvoiceDiscountingWrongBooks(unittest.TestCase):

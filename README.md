@@ -178,7 +178,7 @@ Guard — deny-by-default credential scoping with the **deny-unknown** posture (
 unrecognized generic RPC is denied even if granted; per-doctype grants + three curated safe
 methods are the whole surface), live-proven on a real Frappe v16 bench (Gates 1, 7, 10).
 
-Broker — **51 governed doctypes, 265 tools; 38 of the 51 live-proven end-to-end** on a real
+Broker — **51 governed doctypes, 265 tools; 48 of the 51 live-proven end-to-end** on a real
 ERPNext v16 bench as a guard-scoped seat (Gates 2–10, envelopes E1–E8, and the 2026-07
 live-prove sweep): governed submit/cancel/amend across accounts, stock, assets, manufacturing,
 and subcontracting; Workflow-SoD consent; cascade cancel with dependent graphs (a 3-node Asset

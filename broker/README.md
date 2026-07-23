@@ -9,7 +9,7 @@
 ERPNext company: accounts, stock, assets, manufacturing, subcontracting, maintenance, and the
 control-plane rows (Budget, Timesheet, Contract, Pick List, Production Plan). Every row landed
 from a v16 source walk with its own risk-flag disclosures, closed-books date pin, and cascade
-shape. 38 of the 51 are live-proven end-to-end on a real ERPNext v16 bench as a scoped
+shape. 48 of the 51 are live-proven end-to-end on a real ERPNext v16 bench as a scoped
 non-Administrator seat under [`pacioli_guard`](../guard/README.md) — the full governed vertical
 each time (draft as the seat → plan → out-of-band marker → submit → replay refused → cancel),
 including a 3-node Asset cascade under one consent, the armed-Budget control-plane probe (the
@@ -536,14 +536,24 @@ REST API directly and post an invoice with zero PLAN, CONSENT, or PROVE. **If yo
 against an unscoped credential, say so plainly: the trust spine is bypassable by anyone holding
 that raw credential until `pacioli_guard` is installed and it is scoped.**
 
-**2. The seal key must be protected.** `PACIOLI_SEAL_KEY_FILE` (or its default location under
+**2. The consent boundary: the broker's state dir and `mint` CLI must be unreachable by the agent.**
+CONSENT rests on a human minting the marker out of band. `pacioli mint` is a CLI, not an MCP tool, on
+purpose, and it opens the marker store **keyless** so the seal key never comes near the consent step.
+But that boundary is only real if the agent cannot run `mint` itself or read/write
+`PACIOLI_STATE_DIR`. If the agent's shell shares a host and OS user with the broker's state, it can
+mint its own consent and PLAN → CONSENT is theatre. Run the broker in its **own container — or at
+minimum its own OS user with a `0700` state dir** — separate from wherever the agent's shell lives.
+This is the single placement decision that makes the trust story real; every other precondition here
+assumes it.
+
+**3. The seal key must be protected.** `PACIOLI_SEAL_KEY_FILE` (or its default location under
 `PACIOLI_STATE_DIR`) holds the HMAC key that seals every PROVE receipt. It is generated on first
 use, written `0600`, and refused at load if it is group- or world-readable. Anyone who can read
 that file — including the broker process's own host account — can forge receipts. That is the
 precondition PROVE's on-box guarantee rests on, and it is the reason PROVE is not called
 tamper-evident against the host itself without the anchor below.
 
-**3. The anchor pin only counts if it actually lives off-box.** `pacioli anchor write` emits the
+**4. The anchor pin only counts if it actually lives off-box.** `pacioli anchor write` emits the
 pin; it cannot move it off this host for you. A pin the broker host can read or rewrite proves
 nothing — carry it to another machine, a git remote, or paper. Run `pacioli anchor check` against
 the *old* pin before rotating to a new one (rotating over an unchecked pin would launder tampering
@@ -902,8 +912,11 @@ Two more advisory disclosures (never a gate):
   whole submitted-dependent graph in one consent — PHASE J + Gate 10 M-12) are all
   **live-proven**; the 0.9.3 per-node confirm + disclosure additions await their bench window
   (envelope E3).
-- **Doctypes** — four now. Sales Invoice, Purchase Invoice, and Payment Entry are **live-proven**
-  (Gates 2/3/6/8). Journal Entry's **governance legs are live-proven** (Gate 9 — the
+- **Doctypes** — the full governed surface is **51** (see *Supported doctypes* below and
+  `SCOPED-TOKEN-PROOF.md` for the 48-of-51 live-proof status; the three not yet bench-pinned are named
+  there, not hidden — two design-complete builds awaiting a bench window and one disclosed upstream
+  ERPNext core limitation). The four called out here carry the deepest per-pillar detail: Sales
+  Invoice, Purchase Invoice, and Payment Entry are **live-proven** (Gates 2/3/6/8). Journal Entry's **governance legs are live-proven** (Gate 9 — the
   Exchange-Gain-Or-Loss refusal and the independent balance check both fired against the bench),
   and its **submit/cancel are live-proven too** (2026-07-07, Gate 10 close-out — the
   `frappe.client.submit`/`.cancel` transport exercised end-to-end on the real bench, 0→1→2,
