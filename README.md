@@ -52,7 +52,7 @@ env/bin/pip install pacioli-guard
 bench --site <your-site> install-app pacioli_guard
 ```
 
-### The Broker — the governed front door
+### The Broker — hand it the books
 
 *The clerk may propose; only the merchant disposes.*
 

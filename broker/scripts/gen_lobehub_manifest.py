@@ -31,7 +31,7 @@ MANIFEST = REPO_ROOT / "lhm.plugin.json"
 # (the Proximo/Proxmox 2026-07-10 lesson — invisible in the domain search otherwise).
 BASE = {
     "identifier": "john-broadway-pacioli",
-    "name": "Pacioli — the governed front door to your ERPNext books",
+    "name": "Pacioli — the ERPNext broker you can hand the books",
     "description": (
         "Governed agent access to your ERPNext books — 51 doctypes across accounts, "
         "stock, assets, and manufacturing: every write PLANNED, CONSENTED, PROVEN, and "
