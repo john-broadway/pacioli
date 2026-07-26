@@ -2,7 +2,7 @@
   "identifier": "john-broadway-pacioli",
   "name": "Pacioli — the ERPNext broker you can hand the books",
   "description": "Governed agent access to your ERPNext books — 51 doctypes across accounts, stock, assets, and manufacturing: every write PLANNED, CONSENTED, PROVEN, and UNDOable. No debit without a credit. MCP + A2A doors, one spine.",
-  "version": "0.31.1",
+  "version": "0.33.3",
   "tools": [
     {
       "name": "get_sales_invoice",
@@ -68,6 +68,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -97,6 +101,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -194,6 +202,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -223,6 +235,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -320,6 +336,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -349,6 +369,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -446,6 +470,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -475,6 +503,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -572,6 +604,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -601,6 +637,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -698,6 +738,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -727,6 +771,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -824,6 +872,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -853,6 +905,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -950,6 +1006,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -979,6 +1039,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -1076,6 +1140,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -1105,6 +1173,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -1202,6 +1274,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -1231,6 +1307,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -1328,6 +1408,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -1357,6 +1441,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -1454,6 +1542,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -1483,6 +1575,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -1580,6 +1676,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -1609,6 +1709,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -1706,6 +1810,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -1735,6 +1843,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -1832,6 +1944,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -1861,6 +1977,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -1958,6 +2078,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -1987,6 +2111,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -2084,6 +2212,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -2113,6 +2245,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -2210,6 +2346,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -2239,6 +2379,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -2336,6 +2480,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -2365,6 +2513,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -2462,6 +2614,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -2491,6 +2647,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -2588,6 +2748,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -2617,6 +2781,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -2714,6 +2882,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -2743,6 +2915,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -2840,6 +3016,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -2869,6 +3049,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -2966,6 +3150,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -2995,6 +3183,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -3092,6 +3284,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -3121,6 +3317,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -3218,6 +3418,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -3247,6 +3451,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -3344,6 +3552,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -3373,6 +3585,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -3470,6 +3686,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -3499,6 +3719,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -3596,6 +3820,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -3625,6 +3853,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -3722,6 +3954,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -3751,6 +3987,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -3848,6 +4088,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -3877,6 +4121,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -3974,6 +4222,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -4003,6 +4255,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -4100,6 +4356,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -4129,6 +4389,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -4226,6 +4490,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -4255,6 +4523,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -4352,6 +4624,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -4381,6 +4657,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -4478,6 +4758,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -4507,6 +4791,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -4604,6 +4892,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -4633,6 +4925,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -4730,6 +5026,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -4759,6 +5059,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -4856,6 +5160,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -4885,6 +5193,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -4982,6 +5294,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -5011,6 +5327,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -5108,6 +5428,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -5137,6 +5461,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -5234,6 +5562,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -5263,6 +5595,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -5360,6 +5696,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -5389,6 +5729,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -5486,6 +5830,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -5515,6 +5863,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -5612,6 +5964,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -5641,6 +5997,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -5738,6 +6098,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -5767,6 +6131,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -5864,6 +6232,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -5893,6 +6265,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -5990,6 +6366,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -6019,6 +6399,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -6116,6 +6500,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -6145,6 +6533,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -6242,6 +6634,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -6271,6 +6667,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",
@@ -6368,6 +6768,10 @@
             "type": "string",
             "description": "The single-use consent token a human handed you."
           },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
+          },
           "pacioli_target": {
             "type": "string",
             "description": "Registry target to route to (omit to use the default target)."
@@ -6397,6 +6801,10 @@
           "marker": {
             "type": "string",
             "description": "The single-use consent token a human handed you."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`), minted on the books box by a different principal for this exact document and act, and spent on use. Required by benches that enforce consent at the floor; harmless on benches that do not. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",

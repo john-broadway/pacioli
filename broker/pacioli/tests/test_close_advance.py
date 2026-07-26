@@ -732,3 +732,52 @@ class TestByteIdenticalWithoutAdvance(_CloseAdvanceFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAPeriodClosedOverAnOrphanRecordsItself(unittest.TestCase):
+    """Redteam 2026-07-26 — the durable close record said a gapped period closed clean.
+
+    `gapped` was `bool(response["gate_required"])`, i.e. floor level >= 2. Every DEFAULT floor in
+    `response._FLOOR` is 0, 1 or 3, so **no default finding reached 2** except `chain_broken`, which
+    also sets `seal_required`. An orphan is floor 1 — `_FLOOR`'s own comment calls it "Pacioli's own
+    unbalanced entry; the confession".
+
+    So the attestation gate was unreachable by default, the confession lived only in that one run's
+    stdout, and on the next default-`--since` advance the orphan sat behind the cursor and never
+    surfaced again. `record_close`'s docstring names `gapped` as "the ONLY thing that can later
+    latch the gate"; the CLI help calls this "the close that finds the gap records itself".
+
+    `reason` was hardcoded `""` too, so even the row carried no prose.
+    """
+
+    def test_gapped_reason_names_the_orphan(self):
+        from pacioli.cli import _close_gap_reason
+        st = {"summary": {"by_class": {"orphan": 2, "committed": 5}, "unconfirmed": 0},
+              "chain": {"verified": True, "anchor_matches": None}, "balanced": False}
+        self.assertIn("2 orphan", _close_gap_reason(st, None))
+
+    def test_gapped_reason_names_an_unverifiable_chain(self):
+        from pacioli.cli import _close_gap_reason
+        st = {"summary": {"by_class": {"orphan": 0}, "unconfirmed": 0},
+              "chain": {"verified": False, "anchor_matches": None}, "balanced": False}
+        self.assertIn("does not verify", _close_gap_reason(st, None))
+
+    def test_gapped_reason_names_an_unconfirmed_act(self):
+        from pacioli.cli import _close_gap_reason
+        st = {"summary": {"by_class": {"orphan": 0}, "unconfirmed": 1},
+              "chain": {"verified": True, "anchor_matches": None}, "balanced": False}
+        self.assertIn("1 unconfirmed", _close_gap_reason(st, None))
+
+    def test_the_reason_is_never_empty_when_a_gap_was_found(self):
+        # The row must never again carry "" for a gapped close, whatever the shape of the input.
+        from pacioli.cli import _close_gap_reason
+        self.assertTrue(_close_gap_reason({}, None))
+        self.assertTrue(_close_gap_reason({"summary": {}, "chain": {}}, None))
+
+    def test_the_reason_counts_and_never_leaks_contents(self):
+        from pacioli.cli import _close_gap_reason
+        st = {"summary": {"by_class": {"orphan": 1}, "unconfirmed": 0},
+              "chain": {"verified": True, "anchor_matches": None}, "balanced": False,
+              "acts": [{"docname": "SI-SECRET-0001", "doctype": "Sales Invoice"}]}
+        reason = _close_gap_reason(st, None)
+        self.assertNotIn("SI-SECRET-0001", reason)

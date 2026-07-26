@@ -11,4 +11,8 @@ frappe.desk.form.linked_with.get_submitted_linked_docs
 frappe.model.workflow.apply_workflow
 run_doc_method
 User.get_roles
+# doctor probe_consent — the floor answering whether THIS credential is
+# consent-gated. No arguments, reports only the caller, leaks nothing across
+# seats. Without this grant doctor cannot tell an operator the bypass is open.
+pacioli_guard.api.consent_status
 Journal Entry.submit

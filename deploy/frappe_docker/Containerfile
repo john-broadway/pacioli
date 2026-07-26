@@ -16,7 +16,7 @@
 # Build FROM A frappe_docker CHECKOUT (the COPY resources/core/* lines need it):
 #   docker build \
 #     --build-arg=FRAPPE_BRANCH=version-16 \
-#     --build-arg=PACIOLI_GUARD_VERSION=0.6.3 \
+#     --build-arg=PACIOLI_GUARD_VERSION=0.9.1 \
 #     --secret=id=apps_json,src=apps.json \
 #     --tag=<your-registry>/pacioli-erpnext:16 \
 #     --file=<pacioli-checkout>/deploy/frappe_docker/Containerfile \

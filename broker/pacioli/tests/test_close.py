@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from pacioli.cli import build_parser, cmd_close, main
-from pacioli.close import build_statement, render_statement
+from pacioli.close import _in_window, build_statement, render_statement
 from pacioli.prove import GENESIS, Receipt
 from pacioli.runtime import open_store
 
@@ -675,3 +675,48 @@ class TestCloseRespond(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestABareUntilCoversItsWholeDay(unittest.TestCase):
+    """Redteam 2026-07-26 — `close --until <bare date>` silently dropped the final day.
+
+    `clock.expand_bare_date_end_of_day` is "ONE implementation" of the bare-date-upper-bound
+    semantic, and it was applied in exactly two places: the CLI's site-timezone conversion, which
+    only runs when the target DECLARES `site_tz`, and the GL sweep, which always runs. A target
+    without `site_tz` is the documented default, so for those the statement's `until` reached
+    `_in_window` unexpanded and a plain string compare did the rest:
+
+        "2026-07-31T14:00:00Z" > "2026-07-31"   ->  excluded
+
+    The CLI's own help says, unconditionally, that a bare date covers the whole day. Closing
+    month by month therefore made the last day of EVERY period invisible in **both** adjacent
+    statements, permanently, with no flag. `_in_window` already refuses to silently drop a receipt
+    with no timestamp at all; a correctly-timestamped act falling outside a mis-normalized bound
+    got no such care.
+
+    Worse with `--reconcile`: the GL sweep DID get `23:59:59`, so July 31's GL rows were swept
+    while July 31's acts were excluded — the two halves of one statement disagreeing about what
+    the period is.
+    """
+
+    def test_an_act_late_on_the_final_day_is_inside_a_bare_until(self):
+        self.assertTrue(_in_window("2026-07-31T14:00:00Z", "2026-07-01", "2026-07-31"))
+
+    def test_the_last_instant_of_the_final_day_is_inside(self):
+        self.assertTrue(_in_window("2026-07-31T23:59:59Z", "2026-07-01", "2026-07-31"))
+
+    def test_the_next_day_is_still_outside(self):
+        self.assertFalse(_in_window("2026-08-01T00:00:00Z", "2026-07-01", "2026-07-31"))
+
+    def test_an_until_that_already_carries_a_time_is_left_alone(self):
+        # Only a BARE date expands. An explicit bound means exactly what it says.
+        self.assertFalse(_in_window("2026-07-31T14:00:00Z", None, "2026-07-31T09:00:00Z"))
+        self.assertTrue(_in_window("2026-07-31T08:00:00Z", None, "2026-07-31T09:00:00Z"))
+
+    def test_since_is_not_expanded_it_is_a_lower_bound(self):
+        # A bare `since` already covers its whole day by being the smallest string for that date;
+        # expanding it would push the boundary forward and drop the first day instead.
+        self.assertTrue(_in_window("2026-07-01T00:00:01Z", "2026-07-01", None))
+
+    def test_a_receipt_with_no_timestamp_is_still_never_dropped(self):
+        self.assertTrue(_in_window(None, "2026-07-01", "2026-07-31"))

@@ -2104,6 +2104,21 @@ def _schema_write(name_desc, plan_desc):
                            "plan_id": {"type": "string", "description": plan_desc},
                            "marker": {"type": "string",
                                       "description": "The single-use consent token a human handed you."},
+                           "consent_token": {
+                               "type": "string",
+                               "description": (
+                                   # Deliberately names NO version. This string is generated into
+                                   # 34 places in the published manifest, and the one time it
+                                   # carried a minimum version it went stale within hours — it
+                                   # said "0.9.2 or later" while 0.9.2 was the build with three
+                                   # consent bypasses. A version floor belongs in SECURITY.md,
+                                   # which is maintained deliberately and read once.
+                                   "Optional. The floor-side consent marker "
+                                   "(`API Key Scope.require_consent`), minted on the books box by "
+                                   "a different principal for this exact document and act, and "
+                                   "spent on use. Required by benches that enforce consent at the "
+                                   "floor; harmless on benches that do not. See the guard's "
+                                   "SECURITY.md for supported versions.")},
                            **_TARGET_PROP},
             "required": ["name", "plan_id", "marker"]}
 
@@ -2394,6 +2409,34 @@ def tool_names():
 # Derived from the same descriptor/verb tables the tool surface itself is generated from — never
 # hand-listed — so this can never silently drift from the real get_*/list_* names as doctypes are
 # added (a 5th DESCRIPTOR row automatically grows this set, no second edit required).
+LIMIT_MIN, LIMIT_MAX, LIMIT_DEFAULT = 1, 200, 20
+
+
+def _bounded_limit(raw):
+    """The declared `limit` bounds, ENFORCED (redteam 2026-07-26).
+
+    Every `list_*` tool publishes ``{"type": "integer", "minimum": 1, "maximum": 200}`` and neither
+    door validates it: the MCP SDK does not check `inputSchema`, and the A2A door passes params
+    through as given. So the declaration was a promise nothing kept.
+
+    Two concrete escapes. ``limit=0`` reached frappe as ``limit_page_length="0"``, which this same
+    client uses DELIBERATELY elsewhere to mean "all rows" — so a tool whose schema says the minimum
+    is 1 became an unbounded dump of the doctype. And a non-integer raised `ValueError`/`TypeError`
+    straight out of `dispatch`, which catches neither, producing a traceback instead of the
+    structured refusal this surface promises and leaving no receipt.
+
+    Clamped rather than refused: a caller asking for more than the cap gets the cap, which is
+    ordinary pagination behaviour, and an unreadable value falls back to the published default.
+    """
+    if raw is None:
+        return LIMIT_DEFAULT
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return LIMIT_DEFAULT
+    return max(LIMIT_MIN, min(LIMIT_MAX, value))
+
+
 READ_ONLY_TOOLS = frozenset(
     {_MECHANICAL_VERBS["get"][0](d) for d in DESCRIPTORS}
     | {_MECHANICAL_VERBS["list"][0](d) for d in DESCRIPTORS}
@@ -7902,6 +7945,21 @@ class PacioliBroker:
             # from either the seal gate's own resolution (a governed tool) or a handler's `_route`
             # (a read-only tool) — one clause, one stage, regardless of which side of the gate hit it.
             return _deny(str(exc), stage="store")
+        except Exception as exc:  # noqa: BLE001 — the backstop; see below
+            # LAST RESORT, and it exists because the promise above was not kept (redteam
+            # 2026-07-26). Neither door validates `inputSchema`: the MCP SDK does not, and the A2A
+            # door passes `params` through as given. So schema-illegal-but-JSON-legal values reach
+            # the handlers and raised straight out of here — a `plan_id` that is not a string hit
+            # `sqlite3.ProgrammingError` (NOT OperationalError, so the clause above missed it), and
+            # a non-string `expected_head` hit `TypeError` inside `hmac.compare_digest`. Each
+            # produced a traceback where this surface promises a structured refusal, and left NO
+            # receipt — which contradicts the claim that hostile enumeration is a ledger entry
+            # rather than an invisible transport error.
+            #
+            # Deliberately LAST, so every clause above keeps its own precise stage; this one only
+            # catches what none of them named. The message carries the exception TYPE, never a
+            # traceback, so an operator can still tell a bad argument from a broken store.
+            return _deny(f"{type(exc).__name__}: {exc}", stage="request")
 
     def _seal_gate(self, args):
         """The seal check for every GOVERNED tool, run from :meth:`dispatch` before its handler is
@@ -7992,7 +8050,7 @@ class PacioliBroker:
         _, client, _ = self._route(args)
         cfg = SUPPORTED_DOCTYPES[doctype]
         rows = client.list_documents(doctype, filters=args.get("filters"),
-                                     limit=int(args.get("limit", 20)),
+                                     limit=_bounded_limit(args.get("limit")),
                                      party_field=cfg["party_field"],
                                      date_field=_date_field_for(doctype))
         return {"ok": True, "rows": rows}
@@ -9294,6 +9352,7 @@ class PacioliBroker:
         governance as Sales Invoice."""
         target, client, store = self._route(args)
         name, plan_id, token = args.get("name"), args.get("plan_id"), args.get("marker")
+        consent_token = args.get("consent_token")
 
         plan = store.get_plan(plan_id)
         if plan is None:
@@ -9368,8 +9427,26 @@ class PacioliBroker:
         # reads no locks ({}) and check_red_line (in governed_submit, against the plan's own
         # stored sentinel) passes by its explicit branch; an unreadable date on a DATED doctype
         # still denies exactly as before.
+        live_posting_date = _posting_date_of(doc, doctype)
         locks = _locks_for(client, doc.get("company"), doctype,
-                           _posting_date_of(doc, doctype))  # unreadable → deny
+                           live_posting_date)  # unreadable → deny
+        # Closed-books TOCTOU belt (redteam 2026-07-26): VALIDATE-ONE, USE-ANOTHER.
+        # The locks above are read for the LIVE posting date, but `governed_submit` runs
+        # `check_red_line` against `plan.posting_date` (spine.py). Two different dates, one set of
+        # locks. If the live date drifted out of the plan's without bumping `modified` — the exact
+        # evasion the wrong-books belt twenty lines up already exists for, since
+        # `db_set(update_modified=False)`/raw SQL does not bump it — the broker reads locks for a
+        # date inside a closed period, checks a date outside it, and permits the write. The live
+        # date is the one that actually posts, so it gets checked too, against the locks that were
+        # read for it. The plan-date check stays where it is and answers a different question
+        # ("is what the human consented to still legal"); this one answers "is what will actually
+        # land legal". Stage stays "red_line", the pre-existing label for a closed-books refusal —
+        # a caller must get the same stage whichever of the two checks fires, or the taxonomy would
+        # say the reason depends on which date happened to be wrong. Runs BEFORE the marker is
+        # fetched, so a refusal here never touches consent.
+        ok, reason = check_red_line(live_posting_date, self._now_date(), locks)
+        if not ok:
+            return _deny(reason, stage="red_line")
         marker = store.get_marker(token)
 
         def execute():
@@ -9380,10 +9457,16 @@ class PacioliBroker:
             # never a fresh re-read, or a write could land against a doc state those gates never
             # saw. cancel_document takes no doc (frappe.client.cancel loads fresh from the DB
             # itself), so its call shape is unchanged.
+            # `consent_token` is the guard-side marker (guard 0.7.0 `require_consent`), minted
+            # on the BOOKS box by a different principal than this credential and handed to the
+            # agent for one act on one document. The broker never mints it — a broker that could
+            # mint its own consent would be signing its own permission slip, which is the exact
+            # bypass this gate exists to close. Absent it, a bench with the gate on refuses and
+            # says so; a bench with the gate off behaves exactly as before.
             if op == "submit":
-                result = client.submit_document(doctype, name, doc=doc)
+                result = client.submit_document(doctype, name, doc=doc, consent=consent_token)
             else:
-                result = client.cancel_document(doctype, name)
+                result = client.cancel_document(doctype, name, consent=consent_token)
             out = {"name": str(result.get("name") or name),
                    "docstatus": int(result.get("docstatus", -1)),
                    "modified": str(result.get("modified") or ""),
@@ -9565,6 +9648,28 @@ class PacioliBroker:
         ok, reason = self._cascade_books_gate(target, rebuilt["graph"])
         if not ok:
             return _deny(reason, stage="plan")
+
+        # Closed-books TOCTOU belt for the CASCADE path (redteam 2026-07-26, second pass).
+        # `run_cascade` preflights `check_red_line` against `plan.graph`'s stored posting_date and
+        # reads its locks for that SAME stored date — so the live date is never looked at, and a
+        # node whose posting_date drifted into a closed period without bumping `modified` reverses
+        # its GL entries there while the broker reports ok. This is the IDENTICAL defect closed for
+        # the single-op path earlier today (see `_governed_write`), and it was simply not carried to
+        # the sibling: the wrong-COMPANY belt directly above me got a live re-read, the date did
+        # not, and `_cascade_node_meta` had already fetched the live value only for it to be thrown
+        # away by a comparison that keeps only (doctype, docname).
+        #
+        # Same stage label as every other closed-books refusal, and BEFORE the marker is fetched, so
+        # a refusal here never touches consent. Cancelling reverses entries, so a locked period
+        # matters at least as much on this path as on the submit one.
+        for node in rebuilt["graph"]:
+            live_date = node.get("posting_date")
+            ok, reason = check_red_line(
+                live_date, self._now_date(),
+                _locks_for(client, node.get("company"), node["doctype"], live_date))
+            if not ok:
+                return _deny(f"{node['doctype']} {node['docname']}: the document's CURRENT posting "
+                             f"date is refused: {reason}", stage="red_line")
 
         marker = store.get_marker(token)
 
@@ -10075,14 +10180,49 @@ class PacioliBroker:
                              f"be recorded either ({rexc}); no state was moved on the bench; the "
                              "intent is an orphan, reconcile by hand (prove_orphans)", stage="execute")
             return _deny(f"workflow transition failed: {exc}", stage="execute")
+        # The LANDED state, reported truthfully. This used to fall back to `next_state` when the
+        # bench did not report one — substituting the PREDICTION for the observation in the very
+        # field an operator would use to check the prediction (redteam 2026-07-26).
+        landed_state = str(result.get(state_field) or "")
+        landed_docstatus = result.get("docstatus")
         out_result = {"name": str(result.get("name") or name),
-                      state_field: str(result.get(state_field) or next_state or ""),
+                      state_field: landed_state,
+                      "approved_next_state": str(next_state or ""),
                       "modified": str(result.get("modified") or ""),
                       "doctype": doctype}
+        if landed_docstatus is not None:
+            out_result["docstatus"] = landed_docstatus
         confess = _record_committed_or_confess(store, intent, out_result, out_result["name"],
                                                "workflow transition")
         if confess is not None:
             return confess
+
+        # VALIDATE-ONE / USE-ANOTHER, closed (redteam 2026-07-26). `check_transition` approves the
+        # action against the state we READ; `apply_workflow` sends only {doctype, name, action} and
+        # frappe re-resolves the transition from the document's LIVE state (`erpnext.py`'s own note:
+        # the server does `get_doc(...)` then `load_from_db()`). Nothing compared the two.
+        #
+        # The exploit is ordinary, not exotic: a two-level approval workflow reuses one action label
+        # ("Approve") for a non-approving hop (Pending L1 -> Pending L2, docstatus 0) and an
+        # APPROVING one (Pending L2 -> Approved, docstatus 1). Ask for "Approve" at L1, have someone
+        # move the doc to L2 in the window, and frappe performs the approving transition — a real
+        # docstatus 0->1 submit with GL entries, through the one tool that by design takes NO plan
+        # and NO marker. `workflow.py` states this belt must hold even if the credential could
+        # technically call `apply_workflow` and succeed, so this is the load-bearing check.
+        #
+        # Cannot be prevented from here — the act has already landed — so it is CONFESSED. The
+        # outcome above is recorded first, carrying the state that actually landed, so the ledger
+        # tells the truth even though the pre-wire intent recorded the prediction.
+        if landed_state and next_state and landed_state != next_state:
+            return _deny(
+                f"the bench performed a DIFFERENT transition than the one approved: this broker "
+                f"validated {current_state!r} -> {next_state!r} for action {action!r}, and the "
+                f"document is now in state {landed_state!r}"
+                + (f" at docstatus {landed_docstatus}" if landed_docstatus is not None else "")
+                + ". The document's state moved between the check and the call, and frappe "
+                "re-resolves the action against the live state. The move HAS happened and is "
+                "recorded; review it, and re-read `workflow_status` before acting again.",
+                stage="workflow")
         return {"ok": True, "result": out_result,
                 "next": "call workflow_status to see the legal next transitions from here"}
 
@@ -10097,9 +10237,30 @@ class PacioliBroker:
         # the LEDGER's own integrity, unaffected by whether a queued consequence has landed yet.
         # Only runs when the chain verified clean — a corrupt chain has nothing trustworthy to
         # sweep. See _sweep_queued_consequences's own docstring.
-        out["queued_consequences"] = (
-            _sweep_queued_consequences(client, store) if ok
-            else {"pending": [], "resolved": [], "skipped": "chain did not verify"})
+        #
+        # AND ONLY WHEN UNSEALED (redteam 2026-07-26). `prove_verify` is in READ_ONLY_TOOLS so
+        # dispatch's seal gate deliberately skips it — a sealed or corrupt store must stay
+        # READABLE, or the seal would hide the very books that explain it (Global constraint #6).
+        # But this sweep is not a read: it calls `store.record_outcome`, which advances the chain
+        # head and finalizes an open intent. So the one tool exempted from the gate so it could
+        # read was also the one tool that could write THROUGH it, one indirection down, and an
+        # agent under CONTAIN could still move the audit book and clear its own orphan. The
+        # exemption is right; it just has to cover reads only. Verify still runs and still
+        # reports; the write half stands down and SAYS SO, because a silently skipped sweep
+        # reads exactly like a sweep that found nothing.
+        if not ok:
+            out["queued_consequences"] = {"pending": [], "resolved": [],
+                                          "skipped": "chain did not verify"}
+        else:
+            try:
+                sealed = store.seal_state()["sealed"]
+            except Exception as exc:  # noqa: BLE001 — deny-biased, same posture as _seal_gate
+                sealed, why = True, f"seal state unreadable ({exc}) — refusing to write, fail-closed"
+            else:
+                why = "store is sealed (CONTAIN): the chain verifies but no receipt may be written"
+            out["queued_consequences"] = (
+                {"pending": [], "resolved": [], "skipped": why} if sealed
+                else _sweep_queued_consequences(client, store))
         return out
 
     def _tool_prove_orphans(self, args):

@@ -169,7 +169,10 @@ if frappe.db.exists("API Key Scope", {"user": user}):
 else:
     s = frappe.get_doc({"doctype": "API Key Scope", "user": user})
 s.enabled = 1
-s.allow_resource = 1   # the master Check DEFAULTS 0 — without it every resource call refuses
+s.allow_resource = 1   # the master Check DEFAULTS 0 — without it every resource call refuses.
+# Since guard 0.8.0 the Check is necessary and NOT sufficient: an EMPTY resource_doctypes table
+# now denies too (it used to mean every DocType on the site). The explicit rows appended below
+# are what actually grants. A literal "*" row is the stated opt-in to site-wide access.
 s.verb_read = 1; s.verb_create = 1; s.verb_write = 0; s.verb_delete = 0
 for m in methods:  s.append("methods", {"pattern": m})
 for d in doctypes + graph: s.append("resource_doctypes", {"ref_doctype": d})

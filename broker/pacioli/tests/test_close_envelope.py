@@ -690,3 +690,46 @@ class TestCmdCloseReconcileEnvelopeAutoSeal(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheTimeGateBlindSpotIsVisible(unittest.TestCase):
+    """Redteam 2026-07-26 — the second-generation detector's blind spot was invisible.
+
+    `_row_governed` returns `structural_only` when a voucher's only matching act carried no server
+    `modified` stamp: the time gate cannot be applied, so a LATER generation of those rows cannot be
+    distinguished from the governed one. That reached the operator as a sentence in
+    `reconciliation["flags"]`, and `build_response` classifies findings, not prose — so a voucher
+    the detector was structurally blind on rendered identically to one it had actually cleared:
+    governed, complete, no finding, exit 0.
+
+    Now reported by name. RECORD floor, not alert, chosen by measurement: an outcome without a
+    server stamp is ordinary, so alerting would fire on normal operation and train the operator to
+    ignore it. The defect was invisibility, not severity.
+    """
+
+    def test_blind_vouchers_are_emitted_as_findings_not_just_prose(self):
+        from pacioli.response import build_response
+        rc = {"complete": True, "posture": "mixed_door", "target": "prod",
+              "time_gate_blind": [{"voucher_type": "Sales Invoice", "voucher_no": "SI-9",
+                                   "gl_row_count": 2}],
+              "governed_ungoverned_generation": [], "ungoverned": []}
+        st = {"target": "prod", "acts": [], "chain": {"verified": True},
+              "summary": {"by_class": {}, "unconfirmed": 0}, "balanced": True}
+        resp = build_response(st, rc, posture="mixed_door")
+        kinds = [f.get("class") for f in resp["findings"]]
+        self.assertIn("time_gate_blind", kinds, f"blind spot must be a finding: {resp['findings']}")
+
+    def test_it_records_rather_than_alerts(self):
+        # Never over-accuse: nothing here says those rows WERE rewritten.
+        from pacioli.response import _FLOOR
+        self.assertEqual(_FLOOR["time_gate_blind"], 0)
+
+    def test_a_malformed_entry_is_still_reported(self):
+        from pacioli.response import build_response
+        rc = {"complete": True, "posture": "mixed_door", "target": "prod",
+              "time_gate_blind": ["not-a-dict"],
+              "governed_ungoverned_generation": [], "ungoverned": []}
+        st = {"target": "prod", "acts": [], "chain": {"verified": True},
+              "summary": {"by_class": {}, "unconfirmed": 0}, "balanced": True}
+        resp = build_response(st, rc, posture="mixed_door")
+        self.assertIn("time_gate_blind", [f.get("class") for f in resp["findings"]])

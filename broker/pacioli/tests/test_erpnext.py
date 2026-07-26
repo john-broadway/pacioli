@@ -41,7 +41,7 @@ from pacioli.erpnext import (ASSET_CAPITALIZATION, ASSET_MAINTENANCE_LOG, ASSET_
                              SUPPLIER_QUOTATION,
                              SUPPLIER_SCORECARD_PERIOD, SUPPORTED_DOCTYPES, TIMESHEET,
                              WORK_ORDER, ASSET,
-                             ErpnextClient, ErpnextError)
+                             ErpnextClient, ErpnextError, default_transport)
 
 PREVIEW_METHOD = "erpnext.controllers.stock_controller.show_accounting_ledger_preview"
 
@@ -3600,7 +3600,7 @@ class TestDefaultTransportConnectionFailures(unittest.TestCase):
     def test_connection_reset_becomes_no_answer_erpnext_error(self):
         import unittest.mock as mock
         c = self._client()
-        with mock.patch("urllib.request.urlopen",
+        with mock.patch("pacioli.erpnext._OPENER.open",
                         side_effect=ConnectionResetError("connection reset by peer")):
             with self.assertRaises(ErpnextError) as ctx:
                 c.get_document(SALES_INVOICE, "SI-1")
@@ -3612,7 +3612,7 @@ class TestDefaultTransportConnectionFailures(unittest.TestCase):
         # must still convert exactly as before now that the clause is broadened to OSError.
         import unittest.mock as mock
         c = self._client()
-        with mock.patch("urllib.request.urlopen",
+        with mock.patch("pacioli.erpnext._OPENER.open",
                         side_effect=urllib.error.URLError("nodename nor servname provided")):
             with self.assertRaises(ErpnextError) as ctx:
                 c.get_document(SALES_INVOICE, "SI-1")
@@ -3622,7 +3622,7 @@ class TestDefaultTransportConnectionFailures(unittest.TestCase):
     def test_timeout_error_still_becomes_no_answer_erpnext_error(self):
         import unittest.mock as mock
         c = self._client()
-        with mock.patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+        with mock.patch("pacioli.erpnext._OPENER.open", side_effect=TimeoutError("timed out")):
             with self.assertRaises(ErpnextError) as ctx:
                 c.get_document(SALES_INVOICE, "SI-1")
         self.assertIsNone(ctx.exception.status)
@@ -3639,7 +3639,7 @@ class TestDefaultTransportConnectionFailures(unittest.TestCase):
             url="https://erp.example.com/api/resource/Sales%20Invoice/SI-1", code=500,
             msg="Internal Server Error", hdrs=None, fp=io.BytesIO(body))
         c = self._client()
-        with mock.patch("urllib.request.urlopen", side_effect=http_error):
+        with mock.patch("pacioli.erpnext._OPENER.open", side_effect=http_error):
             with self.assertRaises(ErpnextError) as ctx:
                 c.get_document(SALES_INVOICE, "SI-1")
         self.assertEqual(ctx.exception.status, 500)
@@ -4954,3 +4954,110 @@ class TestReconcileShape(unittest.TestCase):
                        allocations=self._allocations())
         self.assertTrue(ctx.exception.answered)
         self.assertIn("Payment already fully allocated", str(ctx.exception))
+
+
+class TestTheTransportNeverFollowsARedirect(unittest.TestCase):
+    """Redteam 2026-07-26 — the credential followed 3xx to any host.
+
+    `default_transport` used bare `urllib.request.urlopen`, i.e. the DEFAULT opener, which installs
+    `HTTPRedirectHandler`. Python's `redirect_request` strips only `content-length` and
+    `content-type` — **`Authorization` is re-sent** — and its permitted schemes are
+    `('http','https','ftp','')`, so an https bench can redirect to plain http.
+
+    That defeats `registry.py`'s refusal of a plain-http `base_url`, which exists precisely because
+    it "sends the credential in cleartext". And it is not diagnostic-only: this is the transport for
+    EVERY call, including submit.
+
+    The redteam demonstrated a bench that 302s every probe to a second host: `doctor` printed
+    `ready.`, and the credential had already left 65 times. Every `ok` in that report was the
+    attacker's own self-report — `status == 200 and a username-shaped payload` is a PROXY for "the
+    configured bench authenticated this", and any host can produce it.
+
+    Refusing is the right answer, not stripping the header: the registry pinned a base_url, so an
+    API call that redirects is either misconfigured or hostile, and following it silently is how the
+    operator never finds out.
+    """
+
+    def _serve(self, handler_cls):
+        """A real local HTTP server, because the property under test is 'the bytes did not leave'."""
+        import http.server
+        import threading
+        srv = http.server.HTTPServer(("127.0.0.1", 0), handler_cls)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_address[1]}"
+
+    def test_a_redirect_is_refused_and_the_credential_never_reaches_the_second_host(self):
+        import http.server
+        harvested = []
+
+        class Sink(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                harvested.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"message":"attacker@evil.example"}')
+
+            def log_message(self, *a):
+                pass
+
+        sink_url = self._serve(Sink)
+
+        class Redirector(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", f"{sink_url}/api/method/frappe.auth.get_logged_user")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        bench_url = self._serve(Redirector)
+
+        with self.assertRaises(ErpnextError) as caught:
+            default_transport("GET", f"{bench_url}/api/method/frappe.auth.get_logged_user",
+                              {"Authorization": "token REAL_KEY:REAL_SECRET"}, timeout=10)
+        self.assertIn("redirect", str(caught.exception).lower())
+        self.assertEqual(harvested, [],
+                         "the credential must not reach the redirect target, ever")
+
+    def test_an_ordinary_response_is_unaffected(self):
+        import http.server
+
+        class Ok(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"message":"broker@bench.example"}')
+
+            def log_message(self, *a):
+                pass
+
+        url = self._serve(Ok)
+        status, payload = default_transport("GET", f"{url}/api/method/frappe.auth.get_logged_user",
+                                            {"Authorization": "token k:s"}, timeout=10)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["message"], "broker@bench.example")
+
+    def test_an_answered_http_error_still_classifies_normally(self):
+        # The refusal must not swallow ordinary 4xx/5xx, which `_call` classifies on status+body.
+        import http.server
+
+        class Denied(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"exception":"PermissionError"}')
+
+            def log_message(self, *a):
+                pass
+
+        url = self._serve(Denied)
+        status, payload = default_transport("GET", f"{url}/api/method/x",
+                                            {"Authorization": "token k:s"}, timeout=10)
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["exception"], "PermissionError")

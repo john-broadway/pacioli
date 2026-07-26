@@ -1,0 +1,107 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-07-25 00:00:00.000000",
+ "description": "A single-use proof that a human consented to ONE docstatus-changing act on ONE document. Minted OFF this box (pacioli mint) and landed here as a HASH only \u2014 reading every row on this site must not yield a token anyone can spend. The guard refuses a submit/cancel/amend from a require_consent credential unless a live, matching, unburned marker exists, and burns it on use. This exists because scoping a credential to exactly the calls it makes does not stop whoever holds that credential from making those calls: the broker must be allowed to submit invoices, so its key can submit invoices. Possession of the key was permission to post; now it is not.",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "ref_doctype",
+  "ref_docname",
+  "ref_action",
+  "token_hash",
+  "expires_at",
+  "burned",
+  "minted_by"
+ ],
+ "fields": [
+  {
+   "fieldname": "ref_doctype",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Document Type",
+   "reqd": 1,
+   "description": "The DocType this consent is bound to. Named ref_doctype because 'doctype' is reserved on every frappe document."
+  },
+  {
+   "fieldname": "ref_docname",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Document",
+   "reqd": 1,
+   "description": "The one document this consent authorises. Consent for one document is never consent for another."
+  },
+  {
+   "fieldname": "ref_action",
+   "fieldtype": "Select",
+   "options": "\nsubmit\ncancel",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Act",
+   "reqd": 1,
+   "description": "The one act this consent authorises. Cancel reverses GL entries, so consent to post is not consent to reverse: a submit marker never spends on a cancel. Required \u2014 a marker that names no act binds to nothing and always refuses."
+  },
+  {
+   "fieldname": "token_hash",
+   "fieldtype": "Data",
+   "label": "Token Hash",
+   "reqd": 1,
+   "read_only": 1,
+   "description": "SHA-256 of the consent token. The token itself is shown once, to a human, on the broker host, and is never stored here."
+  },
+  {
+   "fieldname": "expires_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Expires At",
+   "reqd": 1,
+   "description": "Hard expiry. An unreadable or absent expiry is treated as expired \u2014 a marker whose lifetime cannot be established is never spendable."
+  },
+  {
+   "fieldname": "burned",
+   "fieldtype": "Check",
+   "default": "0",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Burned",
+   "description": "Set when the marker is spent. Single-use: an unburned marker is a replay waiting to happen."
+  },
+  {
+   "fieldname": "minted_by",
+   "fieldtype": "Data",
+   "label": "Minted By",
+   "read_only": 1,
+   "description": "The principal that landed this marker. Must NOT be the credential the marker authorises \u2014 if the broker's own key can mint markers, a stolen key mints its own permission."
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-07-25 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Scoping",
+ "name": "Pacioli Consent Marker",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 0,
+   "export": 0,
+   "print": 0,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 0,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -2,7 +2,8 @@
 
 > **Status: LAB-PROVEN 2026-07-20, from blank.** A throwaway Debian 13 host (docker 29 in an
 > unprivileged LXC, `nesting=1` alone — no keyctl needed): image built from these exact files
-> (frappe 16.27.1 + erpnext 16.28.0 via apps.json secret, pacioli-guard 0.6.3 pinned via pip),
+> (frappe 16.27.1 + erpnext 16.28.0 via apps.json secret, pacioli-guard 0.6.3 pinned via pip —
+> the version proven on that date, **not** the version to install today; see the pin note below),
 > stack up, `bench new-site --install-app pacioli_guard` clean, site serving HTTP 200, and the
 > guard's chokepoint enforcing live — in-scope read 200, out-of-scope read **403**, out-of-verb
 > write **403** (unscoped credentials are a documented no-op; bind every credential you mint, same
@@ -43,7 +44,7 @@ git clone --depth 1 https://github.com/frappe/frappe_docker
 cp deploy/frappe_docker/apps.json.example apps.json   # erpnext (and any other GIT apps) go here
 docker build \
   --build-arg=FRAPPE_BRANCH=version-16 \
-  --build-arg=PACIOLI_GUARD_VERSION=<pin, e.g. 0.6.3> \
+  --build-arg=PACIOLI_GUARD_VERSION=<pin, e.g. 0.9.1> \
   --secret=id=apps_json,src=apps.json \
   --tag=<your-registry>/pacioli-erpnext:16 \
   --file=<pacioli-checkout>/deploy/frappe_docker/Containerfile \
@@ -52,6 +53,11 @@ docker build \
 
 `PACIOLI_GUARD_VERSION` has no default and the build refuses without it. An unpinned governance
 layer is an unaccountable one; pin it, and record the pin next to your site.
+
+**Pin 0.9.1 or later.** 0.6.3 and earlier treat an `allow_resource` grant with an empty DocType
+allowlist as permitting every DocType on the site, so a grant saved before its child table is
+filled is site-wide resource access rather than none. Fixed in 0.8.0 (empty denies; a `"*"` row is
+the explicit opt-in) and hardened further in 0.9.x. See `guard/CHANGELOG.md` and the advisory.
 
 Note apps.json rides a BuildKit `--secret`, not a build-arg. frappe_docker moved to this in
 2026-04 because the old `APPS_JSON_BASE64` build-arg leaked into `docker image history`. If a

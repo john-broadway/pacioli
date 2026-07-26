@@ -10497,6 +10497,34 @@ def _extract_server_reason(payload):
     return ": ".join(parts)
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse every 3xx rather than following it with the credential attached.
+
+    The default opener installs ``HTTPRedirectHandler``, whose ``redirect_request`` strips only
+    ``content-length`` and ``content-type`` — **``Authorization`` is re-sent**, to whatever host the
+    response names — and whose permitted schemes include plain ``http``. So an https bench could
+    redirect to http, and any bench could redirect to anywhere, and the broker's credential would
+    follow. That defeats ``registry.py``'s refusal of a plain-http ``base_url``, which exists for
+    exactly that reason, and it applies to EVERY call this transport makes, submit included.
+
+    Refusing beats stripping the header. The registry pinned a base_url; an API call that redirects
+    is misconfigured or hostile, and quietly following it is how an operator never finds out. A
+    redirect is also not a thing frappe's REST API does in normal operation.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ErpnextError(
+            f"refusing an HTTP {code} redirect to {newurl!r}: this request carries the broker's "
+            f"credential, and following a redirect would send it to a host the registry never "
+            f"pinned (and possibly over plain http). Point `base_url` at the real bench instead."
+        )
+
+
+# Built once. `build_opener` REPLACES the default handler of the same class, so this opener has no
+# redirect following at all.
+_OPENER = urllib.request.build_opener(_RefuseRedirects)
+
+
 def default_transport(method, url, headers, params=None, body=None, timeout=30):
     """The real (urllib) transport. Returns ``(status, parsed_json_or_None)``."""
     if params:
@@ -10508,7 +10536,7 @@ def default_transport(method, url, headers, params=None, body=None, timeout=30):
     req = urllib.request.Request(url, data=data, headers={**headers, "Accept": "application/json"},
                                  method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — scheme validated by registry
+        with _OPENER.open(req, timeout=timeout) as resp:  # noqa: S310 — scheme validated by registry
             return resp.status, _parse_json(resp.read())
     except urllib.error.HTTPError as exc:
         # An answered HTTP error response — handled FIRST and separately from the broadened
@@ -10534,6 +10562,10 @@ def _parse_json(raw):
         return None
 
 
+# Guard 0.7.0's consent header. One definition; the guard names the same string.
+CONSENT_HEADER = "X-Pacioli-Consent"
+
+
 class ErpnextClient:
     """Shape-pinned REST calls for slice-one, authenticated as the scoped broker user."""
 
@@ -10543,9 +10575,17 @@ class ErpnextClient:
         self._transport = transport
 
     # --- plumbing ------------------------------------------------------------------
-    def _call(self, method, path, params=None, body=None):
+    def _call(self, method, path, params=None, body=None, consent=None):
+        # CONSENT RIDES PER-CALL, never on the client. Guard 0.7.0 (`require_consent`) refuses a
+        # docstatus-changing call unless it carries a live marker minted for that exact document
+        # and act by a DIFFERENT principal, and the marker is spent on use. Attaching it here
+        # rather than to the session means a read never burns one, and the broker holds a token
+        # only for the single act a human consented to.
+        headers = {"Authorization": self._auth}
+        if consent:
+            headers[CONSENT_HEADER] = consent
         status, payload = self._transport(
-            method, f"{self._base}{path}", {"Authorization": self._auth},
+            method, f"{self._base}{path}", headers,
             params=params, body=body,
         )
         if not 200 <= status < 300:
@@ -10618,7 +10658,7 @@ class ErpnextClient:
         return payload["message"]
 
     # --- execute -------------------------------------------------------------------
-    def submit_document(self, doctype, name, doc=None):
+    def submit_document(self, doctype, name, doc=None, consent=None):
         """One of the two state-changing verbs, for any doctype in :data:`SUPPORTED_DOCTYPES`.
 
         Branches on the doctype's configured ``submit_via`` (module docstring / dict comment):
@@ -10644,15 +10684,16 @@ class ErpnextClient:
                 raise ErpnextError(
                     f"{doctype} submits via frappe.client.submit and requires the already-"
                     "fetched document body — none was supplied")
-            payload = self._call("POST", f"/api/method/{_CLIENT_SUBMIT_METHOD}", body={"doc": doc})
+            payload = self._call("POST", f"/api/method/{_CLIENT_SUBMIT_METHOD}",
+                                 body={"doc": doc}, consent=consent)
             if "message" not in payload:
                 raise ErpnextError("frappe.client.submit response has no 'message' envelope")
             return payload["message"]
         payload = self._call("POST", self._doc_path(doctype, name),
-                             params={"run_method": "submit"})
+                             params={"run_method": "submit"}, consent=consent)
         return self._data(payload)
 
-    def cancel_document(self, doctype, name):
+    def cancel_document(self, doctype, name, consent=None):
         """The UNDO verb.
 
         * ``SUBMIT_VIA_RUN_METHOD`` (SI/PI/PE, unchanged, live-proven) — the same guard-scopeable
@@ -10671,12 +10712,12 @@ class ErpnextClient:
         submit_via = SUPPORTED_DOCTYPES.get(doctype, {}).get("submit_via", SUBMIT_VIA_RUN_METHOD)
         if submit_via == SUBMIT_VIA_CLIENT_RPC:
             payload = self._call("POST", f"/api/method/{_CLIENT_CANCEL_METHOD}",
-                                 body={"doctype": doctype, "name": name})
+                                 body={"doctype": doctype, "name": name}, consent=consent)
             if "message" not in payload:
                 raise ErpnextError("frappe.client.cancel response has no 'message' envelope")
             return payload["message"]
         payload = self._call("POST", self._doc_path(doctype, name),
-                             params={"run_method": "cancel"})
+                             params={"run_method": "cancel"}, consent=consent)
         return self._data(payload)
 
     # --- UNDO inputs -----------------------------------------------------------------

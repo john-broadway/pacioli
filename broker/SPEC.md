@@ -48,8 +48,33 @@ PLAN, CONSENT or PROVE — the exact bypass Pacioli's whole pitch is against. So
   spine is bypassable by anyone holding the raw credential until `pacioli_guard` is installed and scoping it.*
 
 This is composition-by-law, not product coupling: the broker honours the same floor it sits on. `pacioli_guard`
-remains independently useful for any credential (agent, Zapier, cron, vendor); the broker is one
-consumer that chooses to bind itself.
+remains independently useful for any **api-key** credential (agent, Zapier, vendor integration); the broker
+is one consumer that chooses to bind itself.
+
+**NECESSARY AND NOT SUFFICIENT — proven on a live bench 2026-07-25.** Scoping the broker's credential
+correctly does not stop whoever holds it from making the calls it is scoped *for*. The broker must be
+allowed to submit invoices, so its key can submit invoices: a direct `run_doc_method` submitted one with
+no plan and no receipt, and the ledger moved. That is not a scoping bug — the allowlist was exactly right,
+and no allowlist can close it, because the call being made IS the call the broker exists to make. It is
+closed by consent at the floor (`API Key Scope.require_consent`), enforced on the document. Never restate
+the precondition above as though scoping alone closed it.
+
+### Coverage, as a composition with a published residual
+
+The floor is **two gates at two altitudes**, and neither is a wall on its own:
+
+- **Credential scope** (`auth_hooks`) governs **api-key** credentials — a `token` or `Basic`
+  Authorization header. It does **not** see OAuth2 `Bearer`, desk/cookie sessions, background jobs,
+  the scheduler, server scripts, or the bench console. "Which credential is this" only exists at
+  authentication time, which is the only reason that gate lives there.
+- **Consent** (`doc_events` `before_submit`/`before_cancel`) is a property of an act on a document, so
+  it is enforced on the document and covers the paths the credential gate cannot see.
+
+**Residual, stated:** writes that skip the document lifecycle entirely (raw SQL, `db_update`-style
+field writes, which ERPNext core performs itself when reposting), and an actor who can break the grant
+read, since a `doc_events["*"]` handler must not crash a site. No single Frappe extension point observes
+all of it. Publishing the coverage table is stronger than claiming totality, because totality is
+something the platform cannot give.
 
 ## 3. The five pillars in slice-one — pattern shape → ERPNext mechanism → what's deferred
 
@@ -370,7 +395,14 @@ the build proceeds bench-free until then.)
 3. `store.py`'s serialised append (`BEGIN IMMEDIATE`) + atomic CAS-claim/settle are built and
    race-tested; the remaining live check is the deployment's SQLite config (`busy_timeout`, WAL vs
    journal) under true multi-process load, plus the off-box key handling of increment 2.
-4. The broker's own credential is `pacioli_guard`-scoped to exactly its calls (else the whole spine is bypassable, §2).
+4. The broker's own credential is `pacioli_guard`-scoped to exactly its calls (§2). **Necessary and
+   NOT sufficient** — proven on the live bench 2026-07-25: the broker must be allowed to submit
+   invoices, so its correctly-scoped key can submit invoices, and a direct `run_doc_method` posted
+   one with no plan and no receipt. No allowlist can close that. Closed by verifying consent
+   (`API Key Scope.require_consent`) with the marker minted by a different principal than the
+   credential it authorises. First landed in guard 0.7.0 at the credential hook; **moved to the
+   document layer in 0.9.0** (`doc_events` `before_submit`/`before_cancel`), so coverage no longer
+   depends on the transport. Never restate scoping alone as the closing condition.
 
 ## 8. Build sequence
 

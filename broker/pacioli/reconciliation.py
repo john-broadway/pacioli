@@ -159,9 +159,18 @@ def _row_governed(row, matching, tolerance_seconds, seat_owner):
     row IS governed but ONLY via a matching transition that carried no ``expected_time`` (no server
     ``modified`` stamp — e.g. a cascade cancel confirmed by readback, ``cascade.py``): the time gate
     could not be applied, so a later second generation of this row cannot be distinguished, and the
-    caller flags it. A time-corroborated match is PREFERRED over a structural one — a row that fails
-    every time-gated transition is not silently rescued by a co-present structural one — but a
-    genuinely stamp-less act still governs its own rows (never over-accused), just flagged.
+    caller flags it.
+
+    A time-corroborated match is PREFERRED: every time-gated transition is tried first, and one that
+    matches wins outright. If NONE matches and a stamp-less transition is also present, the row IS
+    governed structurally and returned with ``structural_only`` set — a genuinely stamp-less act
+    still governs its own rows, and refusing that would over-accuse. This docstring previously said
+    such a row "is not silently rescued by a co-present structural one", which described neither the
+    code nor the intent; the rescue is real and deliberate, and the honesty lives in the flag rather
+    than in withholding it (redteam 2026-07-26). The word that matters is **silently**: the caller
+    now reports those vouchers by name in ``time_gate_blind``, so the envelope can raise them instead
+    of leaving a sentence in ``flags`` that nothing classifies.
+
     Deny-biased throughout: an unreadable time is NOT a match.
     """
     # Seat corroboration (Fork III): when a seat owner is asserted, a row stamped by a different
@@ -238,6 +247,7 @@ def build_reconciliation(receipts, snapshot, *, target, company=None, since=None
     flags = []
     time_uncorroborated = False
     structural_only_count = 0  # governed vouchers whose match had no time gate (F2 blind spot)
+    time_gate_blind = []       # ...and WHICH ones, structured, so the envelope can classify them
 
     for (vt, vn), rows in groups.items():
         matching = [t for t in transitions if t["doctype"] == vt and t["docname"] == vn]
@@ -258,6 +268,18 @@ def build_reconciliation(receipts, snapshot, *, target, company=None, since=None
             rep = matching[0]
             if any(structural for _, _, structural in results):
                 structural_only_count += 1
+                # Structured, not just prose. This used to reach the operator ONLY as a sentence in
+                # `flags`, which `response.build_response` never classifies — so a voucher the
+                # second-generation detector is structurally BLIND on rendered identically to one it
+                # had actually cleared: `governed`, `complete`, no finding, exit 0 (redteam
+                # 2026-07-26). Naming the vouchers is what lets the envelope raise it.
+                time_gate_blind.append({
+                    "voucher_type": vt, "voucher_no": vn,
+                    "gl_row_count": len(rows),
+                    "note": "governed by a structural match only — the act's outcome carried no "
+                            "server `modified` stamp, so the time gate could not be applied and a "
+                            "second generation of these rows cannot be distinguished",
+                })
             governed.append({
                 "voucher_type": vt, "voucher_no": vn,
                 "doctype": vt, "docname": vn,
@@ -336,6 +358,7 @@ def build_reconciliation(receipts, snapshot, *, target, company=None, since=None
         "governed": governed,
         "ungoverned": ungoverned,
         "governed_ungoverned_generation": generation,
+        "time_gate_blind": time_gate_blind,
         "reposts_in_window": reposts_in_window,
         "summary": {
             "gl_rows_total": gl_rows_total,
@@ -343,6 +366,7 @@ def build_reconciliation(receipts, snapshot, *, target, company=None, since=None
             "governed": len(governed),
             "ungoverned": len(ungoverned),
             "governed_ungoverned_generation": len(generation),
+            "time_gate_blind": len(time_gate_blind),
         },
         "posture": {
             "enable_immutable_ledger": immutable,

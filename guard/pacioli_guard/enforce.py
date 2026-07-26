@@ -9,6 +9,7 @@ try/except around the hook loop, so a ``frappe.PermissionError`` raised here bec
 """
 from __future__ import annotations
 
+import datetime
 import json
 import time
 
@@ -20,6 +21,10 @@ from pacioli_guard.scope import (
     api_key_from_auth_header,
     body_scoped_target,
     classify,
+    # NOTE: `consent_verdict`, `docstatus_action` and `docstatus_target_docname` are no longer
+    # imported here. They were the transport layer's way of inferring the consented act out of a
+    # request shape; the document layer reads it off the document instead (`pacioli_guard.act`).
+    # They remain part of the pure core's tested surface, they are simply no longer load-bearing.
     docstatus_target_doctype,
     is_docstatus_changing,
     is_permitted,
@@ -34,6 +39,11 @@ from pacioli_guard.scope import (
 # the pure core — ``scope.py`` is untouched.
 SCOPE_DOCTYPE = "API Key Scope"
 LEGACY_SCOPE_FIELD = "api_scope"
+# The consent floor. A marker is minted off-box by a human hand and lands here as a hash bound
+# to one document; the gate spends it once. See `consent_verdict` in scope.py for why credential
+# scope alone cannot close the direct-submit bypass.
+CONSENT_DOCTYPE = "Pacioli Consent Marker"
+CONSENT_HEADER = "X-Pacioli-Consent"
 
 
 def _scope_for_request():
@@ -100,6 +110,11 @@ def _scope_from_doctype(user):
         # not an opt-in), so a pre-Workflow-gate install keeps working through the upgrade with
         # the new gate silently off until turned on per-credential.
         enforce_workflow=getattr(doc, "enforce_workflow", None),
+        # The consent gate, threaded exactly like enforce_workflow above and for the same reason:
+        # a doc loaded before `bench migrate` added the column has no attribute at all, and the
+        # pure core must read that absence as OFF. A gate that switched itself on during an
+        # upgrade would start refusing every submit a live broker makes.
+        require_consent=getattr(doc, "require_consent", None),
     )
 
 
@@ -238,10 +253,27 @@ def check_scope():
       ``"Sales Invoice.submit"`` can no longer submit a Journal Entry through
       ``frappe.client.submit``, and a credential granted only ``"Sales Invoice.get_pdf"`` can no
       longer reach ANY other doctype's ``get_pdf`` (or any other method) through bare
-      ``run_doc_method``. HARD-DENIED regardless of grant or resolution: any method target whose
-      doctype-part is ``"Bulk Update"`` (the 2-hop laundering vector — its own instance method reads
-      the target doctype from the SAVED RECORD, never the request). STILL OPEN: other
-      container-DocType vectors of that same 2-hop shape are un-audited — a post-Gate-10 follow-up.
+      ``run_doc_method``. HARD-DENIED regardless of grant or resolution, checked BEFORE the grant
+      and folded case-and-accent (see ``_fold_doctype``), in two sets:
+        * ``_UNGRANTABLE_METHOD_DOCTYPES`` (method branch only) — the 2-hop laundering vectors whose
+          own instance method reads its target doctype from the SAVED RECORD or the body, never the
+          classifiable request: ``Bulk Update``, ``Data Import``, ``Bank Statement Import``,
+          ``Unreconcile Payment``, ``Repost Accounting Ledger`` (John's ruling 2026-07-10). STILL
+          DISCLOSED, not closed: ``Payment Reconciliation`` is NOT in that set because the broker's
+          own reconcile needs it and its hostile use is byte-identical to the legitimate one — it
+          stays an operator rule (grant only to the broker's credential).
+        * ``_UNGRANTABLE_DOCTYPES`` (BOTH branches) — this app's own control plane:
+          ``API Key Scope`` + its two child tables, and ``Pacioli Consent Marker``. A credential
+          that can write its own grant is not scoped (it can widen ``methods`` or untick
+          ``require_consent``, and the grant doc autonames ``field:user`` so its name is guessable),
+          and one that can insert a marker mints its own consent. Ungrantable, not merely ungranted
+          — an operator cannot hand these out by listing them (floor audit F2, 2026-07-26).
+    - RESOURCE branch semantics: an EMPTY ``resource_doctypes`` allowlist DENIES, matching
+      ``methods``. It previously granted every DocType on the site, so ticking the master
+      ``allow_resource`` Check and saving before filling the table was the widest grant this app
+      could express. Site-wide access is still expressible but must be stated with one literal
+      ``"*"`` row (``RESOURCE_DOCTYPE_WILDCARD``), and that row does not reach the hard-denied
+      control plane above (floor audit F1, 2026-07-26).
       The ``enforce_workflow`` gate below judges the SAME body-doctype-rewritten target (since
       0.5.1 — see the ``wf_kind``/``wf_target`` note at that gate), so a workflow-governed submit/
       cancel on a doctype named only in the request body (Journal Entry rides EXCLUSIVELY on this
@@ -299,6 +331,18 @@ def check_scope():
             return
     req = getattr(frappe.local, "request", None)
     if req is None:
+        # Floor audit F6 (2026-07-26). This used to `return`, which skipped the scope allowlist,
+        # the workflow gate and the consent gate entirely — after the kill switch and rate limit
+        # had already run and passed. Almost certainly unreachable (a scope only exists here
+        # because an Authorization header was readable, which needs a request), but a fail-OPEN
+        # inside a fail-closed file must not rest on that inference: if it ever does become
+        # reachable, an unclassifiable call from a scoped credential is a refusal.
+        _deny(
+            "no request context",
+            "This credential is scoped, but the request context could not be read, so this call "
+            "could not be classified against its allowlist. A scoped credential fails closed "
+            "rather than skip its own gates.",
+        )
         return
     form = frappe.form_dict or {}
     run_method = form.get("run_method")
@@ -358,3 +402,108 @@ def check_scope():
                 f"{APPLY_WORKFLOW_METHOD} instead of a direct submit/cancel or docstatus write.",
             )
             return
+    # ---- consent: MOVED to the document layer (2026-07-26) ------------------------------------
+    # The consent gate used to live right here, and this is the wrong altitude for it. Consent is a
+    # property of an ACT ON A DOCUMENT; this hook only ever sees an api-key HTTP request. Enforced
+    # here it (a) could not cover OAuth Bearer, desk/cookie sessions, background jobs, the scheduler,
+    # server scripts or the bench console — every one of which reaches the ledger without passing
+    # this function at all — and (b) had to infer "is this a submit, and of what document" from a
+    # request shape, which is the whole reason the classifier carries `?cmd=` dominance, five
+    # body-carrying RPC rewrites, a `savedocs` action map and a disclosed residual on raw `docstatus`
+    # writes. It now lives in `pacioli_guard.act`, on `doc_events` `before_submit`/`before_cancel`,
+    # where the same question is `doc.doctype`, `doc.name` and the event name.
+    #
+    # There is deliberately no consent check left in this function. Two gates cannot both hold the
+    # single-use marker: whichever ran first would spend it and the second would correctly refuse a
+    # marker that was already burned. One act, one claim, one place.
+    #
+    # What stays here is what this altitude CAN see and the document layer cannot: which credential
+    # is acting, and therefore what it may call at all. A door admits; it does not decide.
+
+
+def _consent_record(doctype, docname):
+    """Load the live consent marker for one document, normalised for the pure core.
+
+    Fails CLOSED: any lookup error reads as "no marker", never as "no gate". The stored fields
+    are `ref_doctype`/`ref_docname` because `doctype` is reserved on every frappe doc.
+    """
+    try:
+        row = frappe.db.get_value(
+            CONSENT_DOCTYPE, {"ref_doctype": doctype, "ref_docname": docname},
+            ["name", "token_hash", "ref_doctype", "ref_docname", "ref_action",
+             "expires_at", "burned", "minted_by"],
+            as_dict=True)
+    except Exception:  # noqa: BLE001 — a broken lookup must deny, not open the gate
+        return None
+    if not row:
+        return None
+    return {
+        "name": row.get("name"),
+        "token_hash": row.get("token_hash"),
+        "doctype": row.get("ref_doctype"),
+        "docname": row.get("ref_docname"),
+        "action": row.get("ref_action"),
+        "expires_at": _epoch(row.get("expires_at")),
+        "burned": row.get("burned"),
+        "minted_by": row.get("minted_by"),
+    }
+
+
+def _epoch(value):
+    """Coerce a stored expiry to epoch seconds, or ``None`` if it cannot be read.
+
+    ``None`` is the deny-biased answer: `consent_verdict` treats an unreadable expiry as expired,
+    so a marker whose lifetime cannot be established is never spendable.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, datetime.datetime):
+        return value.timestamp()
+    for parse in (
+        lambda v: datetime.datetime.fromisoformat(str(v)).timestamp(),
+        float,
+    ):
+        try:
+            return parse(value)
+        except (ValueError, TypeError, OverflowError):
+            continue
+    return None
+
+
+def _claim_consent(record):
+    """Spend the marker atomically. Returns ``True`` only if THIS request won the single-use claim.
+
+    The spend IS the single-use check. It used to be a read-then-write — ``consent_verdict`` read
+    ``burned`` and a separate ``set_value`` wrote it — so two requests presenting one marker in the
+    same instant could both pass the verdict before either write landed, and single-use is the
+    entire anti-replay property. A conditional ``UPDATE ... WHERE burned = 0`` makes the database
+    the arbiter instead: the row is addressed by primary key, so exactly one statement can match it
+    while unburned. Closes floor-audit F4 (2026-07-26).
+
+    Fails CLOSED, and that is the whole reason this returns a bool instead of writing and shrugging.
+    If the statement raises, or the driver gives us no affected-row count we can read, this returns
+    ``False`` and the caller denies the request. An unverifiable claim is never read as a won claim
+    — the same deny-biased posture as :func:`_active_workflow_name`'s sentinel. The cost of that
+    choice is honest: a driver that never reports ``rowcount`` would refuse every governed write
+    rather than silently permit replays, which is the correct direction to fail in.
+
+    ``frappe.db._cursor.rowcount`` is the only affected-row signal frappe exposes (there is no
+    public accessor; read from ``database/database.py:149`` in frappe 16). It is private, so it is
+    read through ``getattr`` chains and any surprise reads as a lost claim rather than an exception.
+    """
+    name = (record or {}).get("name")
+    if not name:
+        return False
+    try:
+        frappe.db.sql(
+            f"update `tab{CONSENT_DOCTYPE}` set burned = 1 where name = %s and burned = 0",
+            (name,),
+        )
+        affected = getattr(getattr(frappe.db, "_cursor", None), "rowcount", None)
+    except Exception:  # noqa: BLE001 — a failed claim must deny, never open the gate
+        return False
+    # Exactly one row may be claimed. 0 = another request already spent it (or it vanished);
+    # anything unreadable or unexpected is not evidence that we won.
+    return affected == 1

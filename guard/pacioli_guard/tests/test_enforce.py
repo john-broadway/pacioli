@@ -20,6 +20,7 @@ Run: ``python3 -m unittest guard.tests.test_enforce`` from the app root. No frap
 import base64
 import sys
 import types
+import time
 import unittest
 
 # enforce.py does a hard ``import frappe`` at module top (it IS the frappe glue). Satisfy that with
@@ -28,6 +29,7 @@ import unittest
 sys.modules.setdefault("frappe", types.ModuleType("frappe"))
 
 from pacioli_guard import enforce
+from pacioli_guard import scope as scope_mod
 from pacioli_guard.scope import is_permitted
 
 
@@ -71,16 +73,59 @@ class FakePermissionError(Exception):
     pass
 
 
-class FakeDB:
-    """Models the two frappe.db reads enforce.py still makes once it has the user: the scope-doc
-    discovery and the deprecated legacy-field read."""
+class FakeCursor:
+    """Models the DB-API cursor frappe exposes as ``frappe.db._cursor``. ``rowcount`` after an
+    UPDATE is the only affected-row signal frappe offers (there is no public accessor — verified
+    against frappe 16 ``database/database.py:149``), so the consent claim reads it and fails closed
+    when it is unreadable. ``rowcount = None`` models exactly that unreadable case."""
 
-    def __init__(self, scopes, legacy, legacy_columns):
+    def __init__(self):
+        self.rowcount = -1
+
+
+class FakeDB:
+    """Models the frappe.db surface enforce.py uses: the scope-doc discovery, the deprecated
+    legacy-field read, the consent-marker read, and the atomic consent CLAIM (a conditional
+    ``UPDATE ... WHERE burned = 0`` whose affected-row count decides who won)."""
+
+    def __init__(self, scopes, legacy, legacy_columns, markers=None):
         self._scopes = scopes            # {user: FakeScopeDoc}
         self._legacy = legacy            # {user: raw api_scope value (str/dict)}
         self._legacy_columns = set(legacy_columns)
+        # {(ref_doctype, ref_docname): marker dict} — the consent markers on the bench
+        self.markers = dict(markers or {})
+        self.set_values = []             # (doctype, name, field, value) writes the gate made
+        self.sql_calls = []              # (query, values) the gate issued
+        self._cursor = FakeCursor()
+        self.sql_raises = False          # model a DB error during the claim
+        self.sql_hides_rowcount = False  # model a driver that gives us no affected-row count
 
-    def get_value(self, doctype, filters, fieldname):
+    def sql(self, query, values=None, **kwargs):
+        """Only the consent claim reaches here. Applies the real WHERE burned = 0 semantics so the
+        affected-row count means what it means on a real bench: 1 for the request that won the
+        unburned row, 0 for every other."""
+        self.sql_calls.append((query, values))
+        if self.sql_raises:
+            raise RuntimeError("db exploded mid-claim")
+        name = values[0] if isinstance(values, (list, tuple)) and values else values
+        affected = 0
+        for row in self.markers.values():
+            if row.get("name") == name and not row.get("burned"):
+                row["burned"] = 1
+                affected = 1
+        self._cursor.rowcount = None if self.sql_hides_rowcount else affected
+        return []
+
+    def set_value(self, doctype, name, fieldname, value):
+        self.set_values.append((doctype, name, fieldname, value))
+        for key, row in self.markers.items():
+            if row.get("name") == name:
+                row[fieldname] = value
+
+    def get_value(self, doctype, filters, fieldname=None, as_dict=False):
+        if doctype == enforce.CONSENT_DOCTYPE:
+            row = self.markers.get((filters.get("ref_doctype"), filters.get("ref_docname")))
+            return dict(row) if (row and as_dict) else row
         # scope-doc discovery: get_value("API Key Scope", {"user": u}, "name")
         if doctype == enforce.SCOPE_DOCTYPE and isinstance(filters, dict) and "user" in filters:
             u = filters["user"]
@@ -144,11 +189,11 @@ class ExplodingCache:
 class FakeFrappe:
     def __init__(self, *, headers=None, session_user="Guest", scopes=None, legacy=None,
                  legacy_columns=(), request=None, form_dict=None, cache=None, log_raises=False,
-                 workflows=None, workflow_error_doctypes=()):
+                 workflows=None, workflow_error_doctypes=(), markers=None):
         self._headers = headers or {}
         self.session = FakeSession(session_user)
         self._scopes = scopes or {}
-        self.db = FakeDB(self._scopes, legacy or {}, legacy_columns)
+        self.db = FakeDB(self._scopes, legacy or {}, legacy_columns, markers)
         self.local = FakeLocal(request)
         self.form_dict = form_dict or {}
         self.PermissionError = FakePermissionError
@@ -997,3 +1042,138 @@ class TestWorkflowEnforcement(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConsentGateMovedToTheDocumentLayer(unittest.TestCase):
+    """The consent gate used to be enforced here, in ``check_scope``, and its end-to-end tests lived
+    in this file. It moved to the DOCUMENT layer on 2026-07-26 (``pacioli_guard.act``, registered on
+    ``doc_events`` ``before_submit``/``before_cancel``) because consent is a property of an act on a
+    document, not of an HTTP request — see ``act.py``'s module docstring for the altitude reasoning
+    and ``hooks.py`` for why it deliberately does not run in both places (two gates cannot both hold
+    a single-use marker).
+
+    Every property those tests proved is re-proven in ``tests/test_act.py``, including the three that
+    only existed here (a forged token, a marker with no recorded minter, and a document that cannot
+    be identified) — they were written there BEFORE these were deleted, so the move did not drop a
+    property. What remains in this file is the claim helper itself (``TestConsentClaimIsAtomic``,
+    since ``_claim_consent`` still lives in ``enforce``) and this marker, so a reader who comes
+    looking for the consent tests here is told where they went instead of concluding there are none.
+    """
+
+    def test_check_scope_no_longer_decides_consent(self):
+        # A structural lock, not a behaviour test: if a consent check is ever re-added to the
+        # transport layer, the two gates would race for the same single-use marker and the second
+        # would refuse a marker the first had just legitimately spent.
+        import inspect
+
+        source = inspect.getsource(enforce.check_scope)
+        self.assertNotIn("consent_verdict", source)
+        self.assertNotIn("_claim_consent", source)
+
+
+class TestConsentClaimIsAtomic(unittest.TestCase):
+    """Floor audit F4 (2026-07-26). The burn used to be a read-then-write: ``consent_verdict`` read
+    ``burned`` and a separate ``set_value`` wrote it, so two requests presenting one marker in the
+    same instant could BOTH pass the verdict before either write landed. Single-use is the entire
+    anti-replay property, so the burn has to BE the check: a conditional
+    ``UPDATE ... WHERE burned = 0`` makes the database the arbiter, since exactly one statement can
+    match the unburned row. Fails closed — a claim we cannot confirm is never read as a claim we won.
+    """
+
+    TOKEN = "consent-token-abc"
+    SUBMIT_FORM = {"run_method": None, "cmd": None, "doc": None,
+                   "dt": "Sales Invoice", "dn": "SI-0001", "method": "submit"}
+
+    def _marker(self, burned=0):
+        return {("Sales Invoice", "SI-0001"): {
+            "name": "PCM-0001", "token_hash": scope_mod.consent_token_hash(self.TOKEN),
+            "ref_doctype": "Sales Invoice", "ref_docname": "SI-0001", "ref_action": "submit",
+            "expires_at": time.time() + 900, "burned": burned, "minted_by": "operator@x"}}
+
+    def _frappe(self, markers=None, headers=None):
+        grant = FakeScopeDoc(method_patterns=["Sales Invoice.submit"], require_consent=1)
+        hdrs = dict(AUTH)
+        hdrs.update(headers or {})
+        return FakeFrappe(headers=hdrs, session_user="broker@x", scopes={"broker@x": grant},
+                          request=FakeReq("/api/method/run_doc_method", "POST"),
+                          form_dict=dict(self.SUBMIT_FORM), markers=markers)
+
+    # ---- the claim helper, directly ----------------------------------------------------------
+    def test_the_winner_claims_and_a_racer_loses(self):
+        # THE RACE. Both callers already passed the verdict against an unburned marker; only one
+        # may spend it. Calling the claim twice is the serialised equivalent of that race.
+        enforce.frappe = self._frappe(markers=self._marker())
+        record = enforce._consent_record("Sales Invoice", "SI-0001")
+        self.assertTrue(enforce._claim_consent(record))
+        self.assertFalse(enforce._claim_consent(record))
+
+    def test_an_already_burned_marker_cannot_be_claimed(self):
+        enforce.frappe = self._frappe(markers=self._marker(burned=1))
+        record = {"name": "PCM-0001"}
+        self.assertFalse(enforce._claim_consent(record))
+
+    def test_a_db_error_during_the_claim_fails_closed(self):
+        enforce.frappe = self._frappe(markers=self._marker())
+        enforce.frappe.db.sql_raises = True
+        self.assertFalse(enforce._claim_consent({"name": "PCM-0001"}))
+
+    def test_an_unreadable_rowcount_fails_closed(self):
+        # A driver that gives us no affected-row count must not be read as "the claim won".
+        enforce.frappe = self._frappe(markers=self._marker())
+        enforce.frappe.db.sql_hides_rowcount = True
+        self.assertFalse(enforce._claim_consent({"name": "PCM-0001"}))
+
+    def test_a_record_without_a_name_cannot_be_claimed(self):
+        enforce.frappe = self._frappe(markers=self._marker())
+        self.assertFalse(enforce._claim_consent({}))
+        self.assertFalse(enforce._claim_consent(None))
+
+    def test_the_claim_is_scoped_to_one_marker_and_requires_unburned(self):
+        enforce.frappe = self._frappe(markers=self._marker())
+        enforce._claim_consent({"name": "PCM-0001"})
+        query, values = enforce.frappe.db.sql_calls[0]
+        self.assertIn("burned = 0", query.replace("burned=0", "burned = 0"))
+        self.assertIn(enforce.CONSENT_DOCTYPE, query)
+        self.assertEqual(tuple(values), ("PCM-0001",))
+
+
+class TestNoRequestContextFailsClosed(unittest.TestCase):
+    """Floor audit F6 (2026-07-26). ``check_scope`` used to ``return`` when ``frappe.local.request``
+    was absent, skipping the scope allowlist, the workflow gate and the consent gate — after the
+    kill switch and rate limit had already run and passed. Almost certainly unreachable, since a
+    scope only exists at that point because an Authorization header was readable, which needs a
+    request. But a fail-OPEN inside a fail-closed file should be a denial rather than an inference:
+    if it ever becomes reachable, an unclassifiable call from a scoped credential is a refusal."""
+
+    def test_a_scoped_credential_with_no_request_is_denied(self):
+        grant = FakeScopeDoc(method_patterns=["frappe.ping"])
+        enforce.frappe = FakeFrappe(headers=dict(AUTH), session_user="broker@x",
+                                    scopes={"broker@x": grant}, request=None)
+        with self.assertRaises(FakePermissionError):
+            enforce.check_scope()
+        self.assertIn("fails closed", enforce.frappe.thrown[0])
+
+    def test_the_denial_is_audited_like_every_other(self):
+        grant = FakeScopeDoc(method_patterns=["frappe.ping"])
+        enforce.frappe = FakeFrappe(headers=dict(AUTH), session_user="broker@x",
+                                    scopes={"broker@x": grant}, request=None)
+        with self.assertRaises(FakePermissionError):
+            enforce.check_scope()
+        self.assertTrue(any("no request context" in title
+                            for title, _msg in enforce.frappe.denial_logs))
+
+    def test_an_unscoped_credential_is_still_left_alone(self):
+        # The no-op path for a credential with no grant must NOT become a denial — that would
+        # turn every ordinary full-access key on the site into a 403.
+        enforce.frappe = FakeFrappe(headers=dict(AUTH), session_user="nobody@x", request=None)
+        enforce.check_scope()
+        self.assertIsNone(enforce.frappe.thrown)
+
+    def test_the_kill_switch_still_wins_over_this(self):
+        # Ordering check: a disabled grant must deny for the kill-switch reason, not this one.
+        grant = FakeScopeDoc(method_patterns=["frappe.ping"], enabled=0)
+        enforce.frappe = FakeFrappe(headers=dict(AUTH), session_user="broker@x",
+                                    scopes={"broker@x": grant}, request=None)
+        with self.assertRaises(FakePermissionError):
+            enforce.check_scope()
+        self.assertIn("disabled", enforce.frappe.thrown[0])

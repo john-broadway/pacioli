@@ -9,6 +9,7 @@ import unittest
 
 from pacioli_guard.scope import (
     APPLY_WORKFLOW_METHOD,
+    RESOURCE_DOCTYPE_WILDCARD,
     SAFE_METHODS,
     ApiScope,
     api_key_from_auth_header,
@@ -27,7 +28,11 @@ METHOD_ONLY = ApiScope.from_dict(
 RESOURCE_ALLOWLIST = ApiScope.from_dict(
     {"methods": [], "allow_resource": True, "resource_doctypes": ["ToDo", "Note"]}
 )
-RESOURCE_ALL = ApiScope.from_dict({"allow_resource": True})
+# Site-wide resource access, SAID OUT LOUD. An empty doctype allowlist denies (see
+# TestEmptyResourceAllowlistDenies) — this grant is the explicit opt-in.
+RESOURCE_ALL = ApiScope.from_dict(
+    {"allow_resource": True, "resource_doctypes": [RESOURCE_DOCTYPE_WILDCARD]}
+)
 
 
 class TestClassify(unittest.TestCase):
@@ -217,7 +222,7 @@ class TestIsPermitted(unittest.TestCase):
         self.assertTrue(is_permitted(RESOURCE_ALLOWLIST, "resource", ("ToDo", "create")))
         self.assertFalse(is_permitted(RESOURCE_ALLOWLIST, "resource", ("User", "create")))
 
-    def test_resource_all_when_allowlist_empty(self):
+    def test_resource_all_via_explicit_wildcard_row(self):
         self.assertTrue(is_permitted(RESOURCE_ALL, "resource", ("Anything", "read")))
 
     def test_other_fails_closed_when_scoped(self):
@@ -268,7 +273,9 @@ class TestResourceVerbNarrowing(unittest.TestCase):
         self.assertFalse(is_permitted(s, "resource", ("Sales Invoice", "delete")))
 
     def test_verbs_narrow_even_the_all_doctypes_grant(self):
-        s = ApiScope.from_dict({"allow_resource": True, "resource_verbs": ["read"]})  # no doctype list
+        s = ApiScope.from_dict({"allow_resource": True,
+                                "resource_doctypes": [RESOURCE_DOCTYPE_WILDCARD],
+                                "resource_verbs": ["read"]})
         self.assertTrue(is_permitted(s, "resource", ("Anything", "read")))
         self.assertFalse(is_permitted(s, "resource", ("Anything", "delete")))
 
@@ -396,11 +403,14 @@ class TestNullAndBlankFiltering(unittest.TestCase):
         self.assertFalse(is_permitted(s, "method", "c.d", method_resolved=True))
         self.assertTrue(is_permitted(s, "method", "a.b", method_resolved=True))
 
-    def test_blank_only_resource_doctypes_means_allow_all_not_deny_all(self):
-        # frozenset({None}) is non-empty → would skip "empty allowlist = all" and deny everything.
+    def test_blank_only_resource_doctypes_grants_nothing(self):
+        # The cleaning itself still matters: blanks must not survive into the allowlist as members,
+        # or an exact-match lookup would compare against `None`/`""` rows. What CHANGED (F1,
+        # 2026-07-26) is what a cleaned-empty allowlist means — it now denies instead of granting
+        # every DocType, so a blank or mistyped row can no longer produce site-wide access.
         s = ApiScope.from_grant(True, [], [None, "", "   "])
         self.assertEqual(s.resource_doctypes, frozenset())
-        self.assertTrue(is_permitted(s, "resource", ("ToDo", "read")))
+        self.assertFalse(is_permitted(s, "resource", ("ToDo", "read")))
 
 
 class TestRolesProbeGrantContract(unittest.TestCase):
@@ -572,7 +582,9 @@ class TestKillSwitch(unittest.TestCase):
         s = ApiScope.from_dict({"methods": ["frappe.ping"]})
         self.assertTrue(s.enabled)
         self.assertTrue(is_permitted(s, "method", "frappe.ping", method_resolved=True))
-        s2 = ApiScope.from_grant(True, ["frappe.ping"], [], enabled=None)
+        # The doctype allowlist is named explicitly so this stays a test about `enabled` absence
+        # rather than about resource-allowlist semantics (an empty allowlist denies — see F1).
+        s2 = ApiScope.from_grant(True, ["frappe.ping"], ["ToDo"], enabled=None)
         self.assertTrue(s2.enabled)
         self.assertTrue(is_permitted(s2, "resource", ("ToDo", "read")))
 
@@ -1658,3 +1670,97 @@ class TestContainerDoctypeHardDeny(unittest.TestCase):
         # (e.g. "Data Import Log") is unaffected.
         s = ApiScope.from_dict({"methods": ["Data Import Log.submit"]})
         self.assertTrue(is_permitted(s, "method", "Data Import Log.submit", method_resolved=True))
+
+
+class TestEmptyResourceAllowlistDenies(unittest.TestCase):
+    """Floor audit F1 (2026-07-26). An empty ``resource_doctypes`` used to grant EVERY DocType on
+    the site, so the two child tables read as parallel allowlists and behaved oppositely: an empty
+    ``methods`` grants nothing (``any()`` over an empty set), an empty ``resource_doctypes`` granted
+    everything. That made the documented operator gesture — tick the master ``allow_resource``
+    Check, save, fill the table later — the widest grant this app can express, including over the
+    guard's own control plane. Empty now DENIES; site-wide access is still expressible but must be
+    said with a literal wildcard row."""
+
+    def test_empty_allowlist_denies(self):
+        s = ApiScope.from_dict({"allow_resource": True})
+        self.assertFalse(is_permitted(s, "resource", ("Anything", "read")))
+        self.assertFalse(is_permitted(s, "resource", ("Sales Invoice", "create")))
+
+    def test_wildcard_row_grants_every_doctype(self):
+        s = ApiScope.from_dict({"allow_resource": True,
+                                "resource_doctypes": [RESOURCE_DOCTYPE_WILDCARD]})
+        self.assertTrue(is_permitted(s, "resource", ("Anything", "read")))
+        self.assertTrue(is_permitted(s, "resource", ("Sales Invoice", "create")))
+
+    def test_named_allowlist_unchanged(self):
+        # The shape every seat in the estate actually uses — must be untouched by this change.
+        s = ApiScope.from_dict({"allow_resource": True, "resource_doctypes": ["ToDo"]})
+        self.assertTrue(is_permitted(s, "resource", ("ToDo", "read")))
+        self.assertFalse(is_permitted(s, "resource", ("User", "read")))
+
+    def test_wildcard_still_narrowed_by_verbs(self):
+        s = ApiScope.from_dict({"allow_resource": True,
+                                "resource_doctypes": [RESOURCE_DOCTYPE_WILDCARD],
+                                "resource_verbs": ["read"]})
+        self.assertTrue(is_permitted(s, "resource", ("Anything", "read")))
+        self.assertFalse(is_permitted(s, "resource", ("Anything", "delete")))
+
+    def test_wildcard_without_the_master_check_still_denies(self):
+        # allow_resource is still the master switch; a wildcard row does not turn it on.
+        s = ApiScope.from_dict({"allow_resource": False,
+                                "resource_doctypes": [RESOURCE_DOCTYPE_WILDCARD]})
+        self.assertFalse(is_permitted(s, "resource", ("Anything", "read")))
+
+
+class TestControlPlaneUngrantable(unittest.TestCase):
+    """Floor audit F2 (2026-07-26). The guard's own control DocTypes are UNGRANTABLE on BOTH
+    branches, checked before the grant. A credential that can write its own grant is not scoped,
+    and a credential that can insert a consent marker mints its own permission — so this must not
+    be merely absent from our grants, it must be inexpressible. Deny-more-only: the broker touches
+    none of these (markers are minted off-box; it never reads a grant)."""
+
+    WILDCARD = {"allow_resource": True, "resource_doctypes": [RESOURCE_DOCTYPE_WILDCARD]}
+
+    def test_own_grant_doctype_denied_under_wildcard(self):
+        s = ApiScope.from_dict(self.WILDCARD)
+        self.assertFalse(is_permitted(s, "resource", ("API Key Scope", "write")))
+        self.assertFalse(is_permitted(s, "resource", ("API Key Scope", "read")))
+        self.assertFalse(is_permitted(s, "resource", ("API Key Scope", "create")))
+
+    def test_consent_marker_denied_under_wildcard(self):
+        s = ApiScope.from_dict(self.WILDCARD)
+        self.assertFalse(is_permitted(s, "resource", ("Pacioli Consent Marker", "create")))
+        self.assertFalse(is_permitted(s, "resource", ("Pacioli Consent Marker", "delete")))
+
+    def test_control_plane_child_tables_denied(self):
+        s = ApiScope.from_dict(self.WILDCARD)
+        self.assertFalse(is_permitted(s, "resource", ("API Key Scope Method", "create")))
+        self.assertFalse(is_permitted(s, "resource", ("API Key Scope DocType", "create")))
+
+    def test_denied_even_when_an_operator_names_them_explicitly(self):
+        # Ungrantable, not merely ungranted: an operator cannot hand this out by listing it.
+        s = ApiScope.from_dict({"allow_resource": True,
+                                "resource_doctypes": ["API Key Scope",
+                                                      "Pacioli Consent Marker"]})
+        self.assertFalse(is_permitted(s, "resource", ("API Key Scope", "write")))
+        self.assertFalse(is_permitted(s, "resource", ("Pacioli Consent Marker", "create")))
+
+    def test_denied_on_the_method_branch_too(self):
+        s = ApiScope.from_dict({"methods": ["*"]})
+        self.assertFalse(is_permitted(s, "method", "API Key Scope.save", method_resolved=True))
+        self.assertFalse(is_permitted(s, "method", "Pacioli Consent Marker.insert",
+                                      method_resolved=True))
+
+    def test_case_and_accent_folding_evades_nothing(self):
+        # Same collation reasoning as the 2-hop container deny-list: frappe's tabDocType.name
+        # compares case- and accent-insensitively, so the fold is the floor, not exact match.
+        s = ApiScope.from_dict(self.WILDCARD)
+        self.assertFalse(is_permitted(s, "resource", ("api key scope", "write")))
+        self.assertFalse(is_permitted(s, "resource", ("PACIOLI CONSENT MARKER", "create")))
+        self.assertFalse(is_permitted(s, "method", "api key scope.save", method_resolved=True))
+
+    def test_a_real_doctype_sharing_a_prefix_is_not_swept_in(self):
+        # Exact (folded) match, not substring — a distinct doctype merely sharing a prefix stands.
+        s = ApiScope.from_dict({"allow_resource": True,
+                                "resource_doctypes": ["API Key Scope Audit"]})
+        self.assertTrue(is_permitted(s, "resource", ("API Key Scope Audit", "read")))

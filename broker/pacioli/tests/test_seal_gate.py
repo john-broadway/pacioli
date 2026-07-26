@@ -25,6 +25,7 @@ from pacioli.cli import cmd_mint
 from pacioli.registry import load_registry
 from pacioli.runtime import open_store
 from pacioli.store import BrokerStore
+from pacioli import tools as tools_mod
 from pacioli.tools import READ_ONLY_TOOLS, PacioliBroker, format_seal_refusal, tool_names
 
 CLOCK = "2026-07-14T00:00:00Z"
@@ -429,11 +430,11 @@ class FakeClient:
     def get_workflow_state(self, doctype, name, state_field):
         return None
 
-    def submit_document(self, doctype, name, doc=None):
+    def submit_document(self, doctype, name, doc=None, consent=None):
         self.submitted.append(name)
         return {"name": name, "docstatus": 1, "modified": "2026-07-01 10:05:00.000001"}
 
-    def cancel_document(self, doctype, name):
+    def cancel_document(self, doctype, name, consent=None):
         return {"name": name, "docstatus": 2, "modified": "2026-07-01 11:00:00.000001"}
 
 
@@ -946,3 +947,96 @@ class TestMintCliSealGate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestProveVerifyReadsWhileSealedButNeverWrites(unittest.TestCase):
+    """Redteam 2026-07-26. `prove_verify` is in READ_ONLY_TOOLS, so `dispatch`'s seal gate skips
+    it on purpose: a sealed or corrupt store must stay READABLE or the seal would hide the very
+    books that explain it (Global constraint #6). But its handler also ran
+    `_sweep_queued_consequences`, which calls `store.record_outcome` — advancing the chain head and
+    finalizing an open intent.
+
+    So the one tool exempted from the gate in order to READ was also the one tool that could WRITE
+    through the exemption, one indirection down. Under CONTAIN, an agent could still move the audit
+    book and clear its own orphan, and an operator who ran `anchor write` then `seal` would find the
+    head had moved anyway. The exemption is correct; it just has to cover reads only.
+
+    Both halves are asserted here, because fixing this by seal-gating the tool would break the
+    constraint it was exempted for.
+    """
+
+    def _sealed_broker_with_an_open_intent(self):
+        broker, client, stores = make_broker()
+        store = stores("prod")
+        self._submit_something(broker)
+        store.seal("incident", source="operator")
+        return broker, store
+
+    def _submit_something(self, broker):
+        """Leave the ledger non-empty so head/count movement is observable."""
+        plan = broker.dispatch("plan_submit", {"doctype": "Sales Invoice", "name": "SI-1"})
+        return plan
+
+    def test_prove_verify_still_reads_while_sealed(self):
+        broker, store = self._sealed_broker_with_an_open_intent()
+        out = broker.dispatch("prove_verify", _read_args("prove_verify"))
+        self.assertTrue(out["ok"], f"a sealed store must stay readable: {out}")
+        self.assertIn("head", out)
+        self.assertIn("count", out)
+
+    def test_the_writing_sweep_is_not_even_INVOKED_while_sealed(self):
+        """Asserted on INVOCATION, not on the chain head.
+
+        The obvious version of this test — snapshot head/count, dispatch, assert unchanged — passes
+        against the BROKEN code too, because the sweep only resolves `BOM Creator` submits sitting
+        at `committed_pending_async`, and an ordinary fixture has none. Nothing moves either way, so
+        the assertion holds for the wrong reason and proves nothing. Verified: that shape passed
+        against the unfixed tools.py.
+
+        Spying on the call is the property actually wanted — a sealed store must not reach the write
+        path at all — and it fails against the old code regardless of what the fixture contains.
+        """
+        broker, store = self._sealed_broker_with_an_open_intent()
+        calls = []
+        real = tools_mod._sweep_queued_consequences
+        tools_mod._sweep_queued_consequences = lambda c, s: calls.append(1) or real(c, s)
+        try:
+            out = broker.dispatch("prove_verify", _read_args("prove_verify"))
+        finally:
+            tools_mod._sweep_queued_consequences = real
+        self.assertTrue(out["ok"])
+        self.assertEqual(calls, [], "the ledger-writing sweep must not run while sealed")
+
+    def test_the_skipped_sweep_says_why_rather_than_looking_empty(self):
+        # A silently skipped sweep is indistinguishable from a sweep that found nothing, which
+        # would let an operator read "no pending consequences" off a store that was never swept.
+        broker, store = self._sealed_broker_with_an_open_intent()
+        out = broker.dispatch("prove_verify", _read_args("prove_verify"))
+        self.assertIn("sealed", out["queued_consequences"].get("skipped", "").lower())
+
+    def test_an_unsealed_store_still_sweeps(self):
+        # The fix must not disable the sweep outright — it is the mechanism that resolves an
+        # intent whose consequence landed asynchronously.
+        broker, client, stores = make_broker()
+        self._submit_something(broker)
+        out = broker.dispatch("prove_verify", _read_args("prove_verify"))
+        self.assertTrue(out["ok"])
+        self.assertNotIn("skipped", out["queued_consequences"])
+
+    def test_unreadable_seal_state_refuses_the_write_fail_closed(self):
+        # Same deny-biased posture as `_seal_gate`: if we cannot positively confirm UNsealed, we
+        # must not write on the hope that it probably is. The READ still succeeds.
+        broker, client, stores = make_broker()
+        self._submit_something(broker)
+        store = stores("prod")
+        head_before = store.head()
+
+        real_seal_state = store.seal_state
+        store.seal_state = lambda *a, **k: (_ for _ in ()).throw(sqlite3.Error("torn seal table"))
+        try:
+            out = broker.dispatch("prove_verify", _read_args("prove_verify"))
+        finally:
+            store.seal_state = real_seal_state
+        self.assertTrue(out["ok"], "an unreadable seal must not break the read")
+        self.assertIn("fail-closed", out["queued_consequences"].get("skipped", ""))
+        self.assertEqual(store.head(), head_before)

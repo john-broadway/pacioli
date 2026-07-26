@@ -45,6 +45,20 @@ from pathlib import Path
 DENY_PREFIXES: tuple[str, ...] = (
     ".gitea/", ".scratch/", "docs/plans/", "docs/internal/",
     "broker/docs/plans/", "guard/docs/plans/",
+    # `deploy/bench/` = the receipt DRIVERS for our own comparison bench (ruled internal
+    # 2026-07-25). They hardcode the jump host, the bench IP and the bench hostname, so
+    # publishing them hands out a map of private infrastructure. See KEEP_PATHS for the one
+    # parameterised file that is meant for the public thread.
+    "deploy/bench/",
+)
+
+# Exact paths that survive a DENY_PREFIX. This overrides the prefix rule ONLY — never
+# DENY_BASENAMES, so a mistaken entry here still cannot publish a named internal memo. Anything
+# kept is STILL scanned for leak shapes, so an exception is not an exemption.
+KEEP_PATHS: tuple[str, ...] = (
+    # Fully parameterised (SITE + two credentials): anyone can run it against their OWN site.
+    # That is the artifact for the thread; the drivers around it are ours.
+    "deploy/bench/receipts.sh",
 )
 # Denied by BASENAME (matches anywhere in the tree) = internal-only memos the public mirror must
 # NOT carry. `CLAUDE.md` = dev-memory; `CULTURE.md`/`GO-LIVE.md`/`RESEARCH-VERDICT.md` = the
@@ -136,7 +150,44 @@ class AuditResult:
 
 
 def _allowed(token: str) -> bool:
-    return any(a in token for a in ALLOW)
+    """Is *token* a documented, benign example value?
+
+    ANCHORED at one end or the other, never a free substring search. The entries carry two different
+    intents and both are legitimate:
+
+    - **prefix**, for ranges and paths: `192.168.` means the whole documentation subnet, `/root/…`
+      means that directory.
+    - **domain suffix**, for hostnames: `example.lan` names an example DOMAIN, so `erp.example.lan`
+      is an example host too. Only on a dot boundary, so a host merely ENDING in the same letters
+      (`not` + `example.lan`, spelled apart here so this line is not itself a finding) is excluded.
+
+    What is excluded is the free-floating middle match the old `a in token` allowed, which quietly
+    turned every entry into a wildcard in both directions at once.
+    """
+    return any(token.startswith(a) or token.endswith("." + a.rstrip(".")) for a in ALLOW)
+
+
+# A run of printable bytes long enough to be a real string rather than image or font noise.
+_PRINTABLE_RUN = re.compile(rb"[\x20-\x7e]{4,}")
+
+
+def printable_runs(blob: bytes) -> str:
+    """The printable strings inside a non-text file, newline-joined, for scanning.
+
+    Binaries are PUBLISHED (`build_public_tree` strips only denied paths, never by content type),
+    so treating "has a NUL byte" as "not a leak surface" scanned 163 files and published 174. Two
+    concrete shapes it missed: a UTF-16-encoded markdown day-book, which is NUL-heavy and entirely
+    readable, and PNG `tEXt` metadata, where a screenshot carries the name of the host it was taken
+    on. What publishes gets scanned; the file's encoding is not a security boundary.
+    """
+    runs = [m.group(0) for m in _PRINTABLE_RUN.finditer(blob)]
+    # ...and again with NULs removed. UTF-16 interleaves a NUL after every ASCII character, so a
+    # perfectly readable UTF-16 document contains NO printable run of length 4 and the raw pass
+    # returns nothing at all. Dropping the NULs recovers the text for both endiannesses.
+    stripped = blob.replace(b"\x00", b"")
+    if stripped != blob:
+        runs.extend(m.group(0) for m in _PRINTABLE_RUN.finditer(stripped))
+    return "\n".join(r.decode("ascii", "replace") for r in runs)
 
 
 def _deny_literal_pattern(deny_literals: tuple[str, ...]) -> re.Pattern[str] | None:
@@ -174,7 +225,8 @@ def partition_paths(
     kept: list[str] = []
     stripped: list[str] = []
     for p in paths:
-        denied = p.startswith(deny) or Path(p).name in DENY_BASENAMES
+        denied_prefix = p.startswith(deny) and p not in KEEP_PATHS
+        denied = denied_prefix or Path(p).name in DENY_BASENAMES
         (stripped if denied else kept).append(p)
     return kept, stripped
 
@@ -245,16 +297,21 @@ def _git(args: list[str], cwd: Path, env: dict | None = None) -> str:
 
 
 def files_in_ref(ref: str = "HEAD", root: Path | None = None) -> dict[str, str]:
-    """The tracked text files in `ref`'s tree = exactly the publish surface. Binaries skipped."""
+    """EVERY tracked file in `ref`'s tree = exactly the publish surface.
+
+    Text decodes as UTF-8. A binary is not skipped — it is reduced to its printable runs and scanned
+    like anything else, because `build_public_tree` publishes it either way. Skipping binaries meant
+    the audit's own file count was wrong by the number of binaries and its coverage was wrong by
+    their contents.
+    """
     root = root or _repo_root()
     names = _git(["ls-tree", "-r", "--name-only", "-z", ref], root).split("\0")
     files: dict[str, str] = {}
     for name in filter(None, names):
         blob = subprocess.run(["git", "show", f"{ref}:{name}"], cwd=str(root),  # noqa: S603, S607
                               capture_output=True, check=True).stdout
-        if b"\0" in blob[:8192]:   # binary-ish — not a text leak surface
-            continue
-        files[name] = blob.decode("utf-8", "replace")
+        files[name] = (printable_runs(blob) if b"\0" in blob[:8192]
+                       else blob.decode("utf-8", "replace"))
     return files
 
 
@@ -275,10 +332,29 @@ def build_public_tree(
         # the leak-audit; a prefix-only `git rm -r` is blind to a basename deny (CLAUDE.md) and would
         # publish it while audit() reported it stripped.
         all_paths = [p for p in _git(["ls-tree", "-r", "--name-only", "-z", ref], root).split("\0") if p]
-        _, stripped = partition_paths(all_paths, deny)
+        kept, stripped = partition_paths(all_paths, deny)
         if stripped:
             _git(["rm", "--cached", "--quiet", "--ignore-unmatch", "--", *stripped], root, env=env)
-        return _git(["write-tree"], root, env=env).strip()
+        tree = _git(["write-tree"], root, env=env).strip()
+        # POST-CONDITION. `git rm --ignore-unmatch` exits 0 when it removes NOTHING, and nothing
+        # between that call and `write-tree` asserted the result. The SHA printed here is piped
+        # straight into `git commit-tree` and pushed to a public remote, so "I asked for the removal"
+        # is not good enough — read the built tree back and confirm. A guard whose output is never
+        # checked is a guard on the honour system.
+        built = {p for p in _git(["ls-tree", "-r", "--name-only", "-z", tree], root).split("\0") if p}
+        leaked = sorted(built & set(stripped))
+        if leaked:
+            raise RuntimeError(
+                "build-tree post-condition FAILED — denied paths survived into the public tree: "
+                + ", ".join(leaked[:20]) + (f" (+{len(leaked) - 20} more)" if len(leaked) > 20 else "")
+            )
+        missing = sorted(set(kept) - built)
+        if missing:
+            raise RuntimeError(
+                "build-tree post-condition FAILED — kept paths vanished from the public tree: "
+                + ", ".join(missing[:20]) + (f" (+{len(missing) - 20} more)" if len(missing) > 20 else "")
+            )
+        return tree
     finally:
         os.unlink(idx)
 

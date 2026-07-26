@@ -10,7 +10,8 @@ from pacioli.doctor import (FAIL, OK, WARN, check_credentials, check_registry, c
                             probe_accounting_period_read, probe_accounts_settings,
                             probe_belt_exemptions, probe_bench, probe_company_read,
                             probe_gl_entry_read, probe_payment_ledger_read, probe_pcv_read,
-                            probe_repost_read, probe_roles, probe_workflow_read, run_doctor)
+                            probe_consent, probe_repost_read, probe_roles,
+                            probe_workflow_read, run_doctor)
 from pacioli.registry import load_registry
 
 REG = ('[targets.bench]\nbase_url = "https://erp.example.com"\n'
@@ -1271,3 +1272,125 @@ class TestRunDoctor(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProbeConsentTest(unittest.TestCase):
+    """Can possession of this key still post? Doctor must say so out loud, every run.
+
+    `require_consent` is opt-in, so an install can upgrade to guard 0.7.0 and stay wide open to
+    the bypass proven live on 2026-07-25. A silent insecure default is how that survives — the
+    warning is the whole point of this probe, and its absence would be the defect.
+    """
+
+    def setUp(self):
+        self.target = load_registry(toml_text=REG).get(None)
+        self.env = {"S": "supersecret"}
+
+    def _probe(self, status, payload):
+        return probe_consent(self.target, self.env, lambda p: "",
+                             _transport_returning(status, payload))
+
+    def test_gate_on_passes(self):
+        findings = self._probe(200, {"message": {"scoped": True, "require_consent": True,
+                                                 "guard_version": "0.7.0", "user": "broker@x"}})
+        self.assertEqual(findings[0][0], OK)
+        self.assertIn("require_consent is ON", findings[0][1])
+
+    def test_gate_off_warns_and_names_the_bypass(self):
+        findings = self._probe(200, {"message": {"scoped": True, "require_consent": False,
+                                                 "guard_version": "0.7.0", "user": "broker@x"}})
+        self.assertEqual(findings[0][0], WARN)
+        self.assertIn("OFF", findings[0][1])
+        self.assertIn("no plan and no marker", findings[0][1])
+
+    def test_gate_off_does_not_fail_the_install(self):
+        """Deliberate: the gate cannot be switched on before a minting hand exists, so failing
+        here would block the bring-up that leads to turning it on. Warn loudly; do not refuse."""
+        self.assertNotIn(FAIL, [lvl for lvl, _ in self._probe(
+            200, {"message": {"scoped": True, "require_consent": False}})])
+
+    def test_unscoped_credential_fails(self):
+        """A credential with no grant at all is the README's hard precondition broken outright —
+        the guard is a documented no-op for it."""
+        findings = self._probe(200, {"message": {"scoped": False, "require_consent": False}})
+        self.assertEqual(findings[0][0], FAIL)
+        self.assertIn("NO API Key Scope", findings[0][1])
+
+    def test_old_guard_that_does_not_answer_warns(self):
+        for status in (403, 404, 417):
+            with self.subTest(status=status):
+                findings = self._probe(status, {})
+                self.assertEqual(findings[0][0], WARN)
+                self.assertIn("assume", findings[0][1].lower())
+
+    def test_unparseable_answer_is_not_treated_as_fine(self):
+        findings = self._probe(200, {"message": "yes"})
+        self.assertEqual(findings[0][0], WARN)
+        self.assertIn("cannot", findings[0][1].lower())
+
+    def test_unreachable_bench_warns_rather_than_tracebacks(self):
+        def boom(*a, **k):
+            raise OSError("connection reset")
+        findings = probe_consent(self.target, self.env, lambda p: "", boom)
+        self.assertEqual(findings[0][0], WARN)
+        self.assertIn("unreachable", findings[0][1])
+
+
+
+class ProbeResourcePostureTest(unittest.TestCase):
+    """Doctor names how wide the RESOURCE branch is, riding probe_consent's payload.
+
+    guard 0.8.0 changed an empty DocType allowlist from "every DocType on the site" to "nothing",
+    and added an explicit "*" row for site-wide access. Both ends deserve a warning for the same
+    reason require_consent does: an operator quietly unaware of how wide their own grant is, is how
+    the 2026-07-25 bypass survived. The consent verdict must stay findings[0] regardless.
+    """
+
+    def setUp(self):
+        self.target = load_registry(toml_text=REG).get(None)
+        self.env = {"S": "supersecret"}
+
+    def _probe(self, posture, require_consent=True):
+        message = {"scoped": True, "require_consent": require_consent,
+                   "guard_version": "0.8.0", "user": "broker@x"}
+        if posture is not None:
+            message["resource_posture"] = posture
+        return probe_consent(self.target, self.env, lambda p: "",
+                             _transport_returning(200, {"message": message}))
+
+    def test_wildcard_grant_warns(self):
+        findings = self._probe("all_doctypes")
+        self.assertEqual(findings[0][0], OK)               # consent verdict stays first
+        self.assertEqual(findings[1][0], WARN)
+        self.assertIn("wildcard", findings[1][1])
+        self.assertIn("EVERY DocType", findings[1][1])
+
+    def test_empty_allowlist_warns_as_a_half_finished_grant(self):
+        findings = self._probe("denies_all")
+        self.assertEqual(findings[1][0], WARN)
+        self.assertIn("half-finished", findings[1][1])
+
+    def test_a_narrow_grant_says_nothing_extra(self):
+        findings = self._probe("narrow")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0][0], OK)
+
+    def test_master_check_off_says_nothing_extra(self):
+        self.assertEqual(len(self._probe("off")), 1)
+
+    def test_unknown_posture_says_nothing_extra(self):
+        # Deny-biased on the guard side already reports "unknown"; doctor does not editorialise it.
+        self.assertEqual(len(self._probe("unknown")), 1)
+
+    def test_an_older_guard_sending_no_posture_key_is_not_a_problem(self):
+        findings = self._probe(None)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0][0], OK)
+
+    def test_posture_warning_rides_alongside_a_consent_warning(self):
+        # Both can be true at once, and both must be said.
+        findings = self._probe("all_doctypes", require_consent=False)
+        self.assertEqual(findings[0][0], WARN)
+        self.assertIn("require_consent is OFF", findings[0][1])
+        self.assertEqual(findings[1][0], WARN)
+        self.assertIn("wildcard", findings[1][1])

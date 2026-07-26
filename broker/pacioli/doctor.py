@@ -75,6 +75,10 @@ PROBE_METHOD = "frappe.auth.get_logged_user"
 #    ANY user's roles (read-only, no mutation — recon, not escalation). doctor never sends `uid`.
 #    Ignoring `uid` bench-side is a guard code change — a separate hardening increment.
 ROLES_PROBE_PATH = "/api/v2/method/User/get_roles"
+# probe_consent: the floor answering a question about the CALLER, added 2026-07-25 after the
+# bench proved that a correctly-scoped credential still posts without consent. The endpoint takes
+# no arguments and reports only `frappe.session.user`, so this leaks nothing across seats.
+CONSENT_PROBE_PATH = "/api/method/pacioli_guard.api.consent_status"
 _SPINE_VOIDING_ROLES = ("System Manager", "Administrator")
 _OVER_BROAD_ROLES = ("Accounts Manager",)
 _FRAPPE_AUTO_ROLES = frozenset({"All", "Guest", "Desk User"})
@@ -598,6 +602,97 @@ def probe_roles(target, env, read_file, transport):
     return findings
 
 
+def probe_consent(target, env, read_file, transport):
+    """Is this credential consent-gated, or can possession of the key still post?
+
+    `require_consent` (pacioli-guard 0.7.0) is opt-in, which means an install can upgrade and
+    remain wide open to the bypass proven on the live bench 2026-07-25: the broker's own
+    credential, scoped to exactly the calls the broker makes, submitting a document with no plan
+    and no marker. A default that leaves the hole open is defensible only if nobody can be
+    quietly unaware of it — so doctor says it, every run.
+
+    Deliberately a WARN and not a FAIL when the gate is off. An install with the gate off is
+    exactly as governed as it was the day before, and the gate cannot be switched on before a
+    minting hand exists, so failing here would block the very bring-up that leads to turning it
+    on. Silence would be the sin, not the warning. An UNSCOPED credential is a different matter
+    and is a FAIL: that is the README's hard precondition broken outright, and the guard is a
+    documented no-op for it.
+    """
+    try:
+        key = _resolve_ref(target.api_key, "api_key", env, read_file)
+        secret = _resolve_ref(target.api_secret, "api_secret", env, read_file)
+    except RegistryError:
+        return [_finding(FAIL, "consent probe skipped — credential does not resolve (above)")]
+    url = f"{target.base_url}{CONSENT_PROBE_PATH}"
+    try:
+        status, payload = transport("GET", url, {"Authorization": f"token {key}:{secret}"})
+    except Exception as exc:  # noqa: BLE001 — a probe failure must never traceback out of doctor
+        return [_finding(WARN, f"consent probe: bench unreachable: {exc} — cannot establish "
+                               "whether this credential can post without consent")]
+    if status in (403, 404, 417):
+        return [_finding(WARN, "consent probe: this bench does not answer "
+                               "pacioli_guard.api.consent_status — either the guard predates "
+                               "0.7.0 or the method is not granted. Until it answers, assume "
+                               "this credential CAN post without consent: possession of the key "
+                               "is permission to post, which is the bypass 0.7.0 closes")]
+    message = payload.get("message") if isinstance(payload, dict) else None
+    if status != 200 or not isinstance(message, dict):
+        return [_finding(WARN, f"consent probe: unexpected response (HTTP {status}) — cannot "
+                               "establish whether consent is enforced for this credential")]
+    if not message.get("scoped"):
+        return [_finding(FAIL, "consent probe: this credential has NO API Key Scope at all — the "
+                               "guard is a documented no-op for it, so it can call anything its "
+                               "user can call. Bind it (deploy/govern.sh) before running a "
+                               "broker on it; this is the README's hard precondition, not "
+                               "optional hardening")]
+    if message.get("require_consent"):
+        findings = [_finding(OK, "consent: require_consent is ON — a docstatus-changing act "
+                                 "refuses unless it carries a single-use marker minted for that "
+                                 "exact document and act by a different principal. Since guard "
+                                 "0.9.0 that gate is enforced on the document (doc_events), so it "
+                                 "covers every ORM path to submit/cancel — a desk session, an "
+                                 "OAuth token, a background job and the bench console included, "
+                                 "not only api-key REST")]
+    else:
+        findings = [_finding(WARN, "consent: require_consent is OFF for this credential — anything "
+                                   "holding this key can submit or cancel directly, with no plan "
+                                   "and no marker, and the broker's PLAN/CONSENT/PROVE is walked "
+                                   "around entirely (proven live 2026-07-25). Turn it on once a "
+                                   "minting hand exists: API Key Scope -> Require Human Consent")]
+    findings.extend(_resource_posture_findings(message))
+    return findings
+
+
+def _resource_posture_findings(message):
+    """How wide this credential's RESOURCE branch is, read off the same payload.
+
+    Rides ``probe_consent``'s response deliberately: it is the same self-report endpoint and the
+    same question ("what can possession of this key still do"), so surfacing it here costs no extra
+    round trip. Appended after the consent finding, never in front of it — the consent verdict stays
+    ``findings[0]``.
+
+    Why doctor says this at all: guard 0.8.0 changed an empty DocType allowlist from "every DocType
+    on the site" to "nothing", and added an explicit ``"*"`` row for site-wide access. Both ends of
+    that are worth naming out loud, for exactly the reason ``require_consent`` is named — an
+    operator being quietly unaware of how wide their own grant is, is how the 2026-07-25 bypass
+    survived as long as it did. A guard older than 0.8.0 sends no ``resource_posture`` key at all,
+    which reads as nothing to say rather than as a problem.
+    """
+    posture = message.get("resource_posture")
+    if posture == "all_doctypes":
+        return [_finding(WARN, "resource scope: this grant carries a wildcard row, so the key can "
+                               "reach EVERY DocType on the site through raw REST CRUD. Verb "
+                               "narrowing still applies and the guard's own control DocTypes are "
+                               "refused regardless, but name the doctypes it actually needs — a "
+                               "wildcard is a grant nobody can audit by reading it")]
+    if posture == "denies_all":
+        return [_finding(WARN, "resource scope: allow_resource is on but the DocType allowlist is "
+                               "empty, so every resource call refuses. Since guard 0.8.0 an empty "
+                               "allowlist denies (it used to mean every DocType) — this usually "
+                               "means a half-finished grant, so finish it or untick allow_resource")]
+    return []
+
+
 def probe_belt_exemptions(target, env, read_file, transport):
     """The belt-exemption drift watch (docs/plans/2026-07-09-probe-belt-exemptions.md).
 
@@ -885,6 +980,7 @@ def run_doctor(env, *, target_name=None, offline=False,
             findings += probe_gl_entry_read(target, env, read_file, transport)
             findings += probe_repost_read(target, env, read_file, transport)
             findings += probe_roles(target, env, read_file, transport)
+            findings += probe_consent(target, env, read_file, transport)
             findings += probe_belt_exemptions(target, env, read_file, transport)
         for level, msg in findings:
             failed |= level == FAIL

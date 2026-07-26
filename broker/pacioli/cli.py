@@ -78,11 +78,54 @@ def cmd_mint(env, plan_id, target, ttl):
         print(f"error: could not mint (a live marker for this plan may already exist): {exc}",
               file=sys.stderr)
         return 1
-    print(f"plan:   {plan_id}  (document {plan.docname} on target {plan.target})")
+    # THE HUMAN'S ONLY INDEPENDENT VIEW OF WHAT THEY ARE AUTHORISING (redteam 2026-07-26).
+    # This printout used to name the plan id, the docname and the target, and nothing else — so a
+    # one-invoice submit and a cascade-cancel that reverses five submitted documents rendered
+    # IDENTICALLY apart from the plan id. The operator's whole picture of the act was then the
+    # agent's narration, which is precisely the thing consent is supposed to be independent of.
+    # The binding machinery was never the weak part (check_op/check_doctype are exact); the
+    # DISCLOSURE was. Everything below is already persisted on the plan and was simply not shown.
+    print(f"plan:   {plan_id}")
+    print(f"act:    {plan.op.upper()} {plan.doctype} {plan.docname}")
+    print(f"target: {plan.target}")
+    if plan.graph:
+        # A cascade authorises the whole graph under ONE marker. Name every document, because
+        # "5 documents" is a number a human skims and a list is a thing they check.
+        print(f"        ...and CASCADES to {len(plan.graph)} more document(s):")
+        for node in plan.graph:
+            if isinstance(node, dict):
+                print(f"          - {node.get('doctype', '?')} {node.get('name', node.get('docname', '?'))}")
+            else:
+                print(f"          - {node}")
+    if plan.projected_gl:
+        debits = sum(_gl_side(row, "debit") for row in plan.projected_gl)
+        credits = sum(_gl_side(row, "credit") for row in plan.projected_gl)
+        print(f"        projected GL: {len(plan.projected_gl)} line(s), "
+              f"debits {debits:,.2f} / credits {credits:,.2f}")
+        # The house law, on the consent line: no debit without a credit. A balanced entry nets to
+        # zero, so printing the NET would have shown "0.00" for every healthy plan and told the
+        # human nothing. The magnitude is the size of the act; the imbalance is the alarm.
+        if round(debits - credits, 2) != 0:
+            print(f"  RISK: projected entry DOES NOT BALANCE "
+                  f"(off by {debits - credits:,.2f}) — no debit without a credit")
+    for flag in plan.risk_flags:
+        print(f"  RISK: {flag}")
     print(f"ttl:    {ttl}s")
     print(f"marker: {token}")
     print("hand this token to the agent out of band; it is shown once and stored only as a hash.")
+    print("if the act above is not what you were asked to approve, do not hand it over.")
     return 0
+
+
+def _gl_side(row, side):
+    """One GL row's debit or credit, for the mint disclosure. Never raises: this runs on the consent
+    path, and a malformed projection must not stop a human seeing the rest of the act."""
+    if not isinstance(row, dict):
+        return 0.0
+    try:
+        return float(row.get(side) or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def cmd_verify(env, target, expected_head):
@@ -106,6 +149,30 @@ def cmd_verify(env, target, expected_head):
         return 0
     print(f"FAILED: {reason} ({count} receipts). head: {head}", file=sys.stderr)
     return 1
+
+
+def _close_gap_reason(statement, response):
+    """Short prose for the DURABLE close record when a close finds a gap.
+
+    The row used to carry `reason=""`, so the permanent artifact — what `close-status` shows, what
+    the anchor pins, what the next period's default `--since` derives from — said nothing about WHY
+    a period was gapped. The confession existed only in that run's stdout. Counts, not contents.
+    """
+    summary = statement.get("summary") or {}
+    by_class = summary.get("by_class") or {}
+    chain = statement.get("chain") or {}
+    parts = []
+    if by_class.get("orphan"):
+        parts.append(f"{by_class['orphan']} orphan")
+    if summary.get("unconfirmed"):
+        parts.append(f"{summary['unconfirmed']} unconfirmed")
+    if chain.get("verified") is False:
+        parts.append("chain does not verify")
+    if chain.get("anchor_matches") is False:
+        parts.append("live head does not match the anchor")
+    if response and response.get("gate_required"):
+        parts.append("envelope raised a gate")
+    return "; ".join(parts) or "statement not balanced"
 
 
 def cmd_close(env, target, since, until, expected_head, as_json, reconcile=False, respond=False,
@@ -426,7 +493,21 @@ def cmd_close(env, target, since, until, expected_head, as_json, reconcile=False
                               "cursor": gate_state["cursor"], "gapped": None, "seq": None,
                               "broker_sealed": broker_sealed}
         else:
-            gapped_flag = bool(response["gate_required"])
+            # `gapped` means THIS CLOSE FOUND A GAP, which is what its name says, what
+            # `record_close`'s own docstring calls "the ONLY thing that can later latch the gate",
+            # and what this command's help calls "the close that finds the gap records itself".
+            # It was `bool(response["gate_required"])`, i.e. floor level >= 2 — and every default
+            # floor is 0, 1 or 3, so NO default finding reached it except `chain_broken`, which
+            # also sets `seal_required`. An orphan is floor 1: "Pacioli's own unbalanced entry, the
+            # confession". So a period closed over an orphan recorded CLEAN, the confession lived
+            # only in that one run's stdout, and on the next default-`--since` advance the orphan
+            # sat behind the cursor and never surfaced again (redteam 2026-07-26).
+            #
+            # The statement's own `balanced` is the honest signal: it is false for an orphan, for an
+            # unconfirmed act, for a chain that does not verify, and for an anchor mismatch. Kept as
+            # an OR with `gate_required` so an envelope-escalated finding still latches even if a
+            # future statement counts it as balanced.
+            gapped_flag = bool(response["gate_required"]) or not st["balanced"]
             try:
                 # Compare-and-append: `gate_state` is the ONE read this run planned its period
                 # bounds against (the --since default above came from it); its last_close_seq is
@@ -434,7 +515,8 @@ def cmd_close(env, target, since, until, expected_head, as_json, reconcile=False
                 # BEGIN IMMEDIATE. A concurrent advance landing between our read and this write
                 # raises CloseRecordStaleError below -- the period math is stale, not the store.
                 new_state = store.record_close(period_since=since, period_until=until,
-                                               attested_head=head, gapped=gapped_flag, reason="",
+                                               attested_head=head, gapped=gapped_flag,
+                                               reason=_close_gap_reason(st, response) if gapped_flag else "",
                                                expected_last_close_seq=gate_state["last_close_seq"])
             except CloseGateLatchedError:
                 fresh = store.close_gate_state()
@@ -1419,10 +1501,24 @@ def cmd_anchor_check(env, target, infile):
             return 1
     print(f"ok: chain matches the anchor (pinned {record['count']} receipt(s) at "
           f"{record['ts']}; live chain has {len(receipts)}, verifies).")
-    if len(receipts) > record["count"]:
-        print(f"note: {len(receipts) - record['count']} receipt(s) appended since this pin are "
-              "not yet covered by any pin — rotate with `pacioli anchor write` when checked.",
-              file=sys.stderr)
+    # THE POST-PIN WINDOW IS ALWAYS NAMED (redteam 2026-07-26). This note used to fire only when
+    # the chain had GROWN — so it vanished in exactly the case where the unprotected window had
+    # been exploited. A chain rolled back TO the pin (delete every receipt above it; the survivors'
+    # HMACs are genuine, so `verify_chain` still passes) rendered byte-identical to a chain that
+    # legitimately had not moved: same `ok`, no note, exit 0. `anchor write` tells the operator to
+    # run `anchor check` against the old pin BEFORE rotating, which is precisely the ceremony that
+    # rendering defeated. The pin cannot cover this window in either direction; the honest fix is to
+    # say so every time rather than only when it is convenient.
+    appended = len(receipts) - record["count"]
+    if appended > 0:
+        print(f"note: {appended} receipt(s) appended since this pin are not yet covered by any "
+              "pin — rotate with `pacioli anchor write` when checked.", file=sys.stderr)
+    else:
+        print("note: the live chain is exactly the pinned length, so NOTHING here is evidence "
+              "about the window after the pin. This reads the same whether no act occurred or "
+              "every act since the pin was deleted — a rollback to the pin still verifies, because "
+              "the surviving receipts' seals are genuine. Compare against your own record of "
+              "expected activity; the pin alone cannot tell you.", file=sys.stderr)
     return 0
 
 

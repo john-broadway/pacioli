@@ -16,24 +16,63 @@ don't close it either (they're consent claims, confirmed by Frappe's own OAuth a
 DocTypes) it may touch — and enforces it **at the credential layer**, deny-by-default. A leaked or
 over-shared key becomes a blast-radius of *what you allowed*, not your whole ERP.
 
-It governs **every** API credential on the site — an integration, a Zapier/n8n flow, a script, a
-vendor token, a cron job, an MCP/A2A agent. You don't need to run AI to need this.
+It governs **every api-key credential** on the site, agent or not: an integration, a Zapier/n8n
+flow, a script, a vendor token, an MCP/A2A agent. You don't need to run AI to need this.
+
+"Api-key" is the boundary, not a hedge. This gate runs at `auth_hooks`, where the only thing that
+exists is *which credential authenticated*, so it sees requests carrying a `token` or `Basic`
+Authorization header and nothing else. It does **not** see OAuth2 `Bearer` tokens, desk/cookie
+sessions, background jobs, the scheduler, server scripts, or the bench console. The separate
+document-layer gate below covers the *act* on those paths; see "What this does not govern".
 
 This is the counting-house door, in Luca Pacioli's terms: **no one writes in the books but the
 appointed hand — and only in the books appointed to them.**
 
 ## How it works — no core fork
 
-Enforced through Frappe's public `auth_hooks` extension point, which runs **after** the api-key
-authenticates and **before** the request dispatches. A scoped credential that steps outside its
-allowlist gets a `403 PermissionError`; unscoped credentials (browser sessions, normal keys) are
-completely untouched. Nothing in Frappe core is modified — this is a plain `bench install-app`.
+Two of Frappe's own public hooks, because there are two questions and they are legible at two
+different altitudes. Nothing in Frappe core is modified either way — this is a plain
+`bench install-app`.
+
+**`auth_hooks` — what may this credential call?** Runs **after** the api-key authenticates and
+**before** the request dispatches. A scoped credential that steps outside its allowlist gets a
+`403 PermissionError`; unscoped credentials (browser sessions, normal keys) are completely
+untouched. "Which credential is this" only exists at authentication time, so this can only live
+here, which also means it governs api-key requests and not OAuth `Bearer`, desk sessions, or
+background jobs.
+
+**`doc_events` `before_submit` / `before_cancel` — was this act consented?** Consent is a property
+of a document, so it is checked on the document. Every path that **posts to the ledger** through the
+ORM passes it, including the ones the credential hook never sees. It is inert for anyone without a
+grant that sets `require_consent`, so installing this app does not change a site that has not opted
+in.
+
+**What walks around both hooks, stated rather than discovered:**
+
+1. Writes that skip the document lifecycle entirely: raw SQL, and `db_update`-style field writes,
+   which ERPNext core does itself when reposting. No Frappe extension point observes those, so no
+   gate built on Frappe extension points can claim them.
+2. An actor who can break the *grant read* itself. The consent handler is registered on
+   `doc_events["*"]`, so it runs on every document on the site; if reading the grant raises, it
+   returns rather than throwing, because a `"*"` handler that crashes takes the whole site down
+   with it. The trade is deliberate and it is a real residual, not a bug.
+3. **Anything Frappe QUEUES cannot be consented at all.** A Journal Entry with more than 100 rows,
+   and any DocType carrying `queue_in_background`, is submitted by a background worker. The worker
+   runs as the enqueuing user so the gate still applies — but a marker travels in an HTTP header and
+   a job has no request, so a gated principal's queued submit is refused *every time*, and Frappe
+   surfaces it as a generic "Action Failed" rather than naming consent. Fail-closed, so nothing posts
+   ungoverned; but do not gate a credential and then expect it to complete a queued submission.
+4. `Document.discard` — whitelisted, and it sets `docstatus = 2` with `db_set` while firing
+   `before_discard` rather than `before_cancel`. It refuses anything that is not a draft, so no
+   ledger entry is ever reversed by it. Gating it wants its own act type rather than being folded
+   into "cancel": consenting to reverse a posted entry and consenting to abandon a draft are
+   different permissions.
 
 ```
 POST /api/resource/SI/<name>?run_method=submit → 200  (granted "Sales Invoice.submit" — resolved)
 POST /api/resource/JE/<name>?run_method=submit → 403  (doctype not granted)
 GET  /api/method/<any-bare-rpc>                → 403  (deny-unknown: bare names denied unless
-                                                       granted AND on the 3-entry SAFE_METHODS)
+                                                       granted AND on the 4-entry SAFE_METHODS)
 POST /api/resource/<DocType>                   → 403  (raw-CRUD bypass closed, unless allow_resource)
 # unscoped credential → unchanged behaviour
 ```
@@ -53,12 +92,17 @@ user whose API key you're scoping:
 
 - `methods` — exact dotted names or `fnmatch` globs. A document method (item-URL `?run_method=submit`)
   matches as `"<DocType>.submit"`. **As of 0.6.0 (deny-unknown), grant per-doctype
-  `"<DocType>.<method>"` patterns** — a bare RPC name only ever fires if it is one of the three
+  `"<DocType>.<method>"` patterns** — a bare RPC name only ever fires if it is one of the four
   curated `SAFE_METHODS` (see "Deny-unknown" below); any other bare/unresolved method is denied
   even if a pattern here matches it.
 - `allow_resource` — defaults **false** (method-only; denies raw `/api/resource` CRUD).
-- `resource_doctypes` — when `allow_resource` is true, an optional DocType allowlist (empty = all,
-  still bounded by the user's own roles).
+- `resource_doctypes` — when `allow_resource` is true, the DocType allowlist. **Empty denies**
+  (as of 0.8.0), matching `methods`: a grant that names nothing permits nothing. Site-wide resource
+  access stays expressible because wanting it is legitimate, but it must be *said* — one literal
+  `"*"` row, visible in the grant where an auditor will see it. Everything granted here is still
+  bounded by the user's own roles; scope narrows, never widens.
+  > Before 0.8.0 an empty allowlist permitted **every** DocType. That was a security defect with a
+  > published advisory. If you are on 0.6.3 or earlier, upgrade.
 - `Allow Read` / `Allow Create` / `Allow Write` / `Allow Delete` — the **per-credential resource
   verbs** (all default on). A DocType allowlist alone admits *every* verb, so a credential meant to
   *read* invoices also POSTs/PUTs/DELETEs them. Untick the verbs you don't want and the same
@@ -119,12 +163,17 @@ the `Bulk Update` hard-deny below). Whack-a-mole on method names does not conver
 inverts the posture**: a `methods` grant on a method call is honored ONLY when the call is
 **doctype-RESOLVED** — the route itself carried the doctype (item-URL `?run_method`, v2
 path-carried doc-method, v2 two-segment controller method, or a body-doctype rewrite above) — OR
-the bare name is one of exactly **three curated `SAFE_METHODS`** (exact names, no globs, each
+the bare name is one of exactly **four curated `SAFE_METHODS`** (exact names, no globs, each
 read-only with no docstatus/data mutation):
 
 - `frappe.auth.get_logged_user` — identity probe (`pacioli doctor`)
 - `frappe.desk.form.linked_with.get_submitted_linked_docs` — linked-doc lookup (the UNDO graph)
 - `erpnext.controllers.stock_controller.show_accounting_ledger_preview` — PLAN preview
+- `pacioli_guard.api.consent_status` — this app's own self-report (`pacioli doctor`), added 0.7.0.
+  It passes the same admission test: no arguments, writes nothing, reports only on
+  `frappe.session.user`, so it cannot be pointed at another credential or another doctype and has
+  no body to launder a target through. It exists so an operator can be told `require_consent` is
+  off, because a silent insecure default is how a bypass hides.
 
 **Anything else is denied even if a grant pattern fnmatches it** — a new frappe RPC is denied until
 reviewed, instead of open until enumerated. SAFE_METHODS membership is necessary-not-sufficient
@@ -346,7 +395,7 @@ through the guard entirely").
 - A `methods` entry is enforced **deny-unknown as of 0.6.0**: it fires only on a doctype-RESOLVED
   call (item-URL `run_method`, v2 path/two-segment doc-methods, or a body-doctype rewrite — the
   submit/cancel/apply_workflow RPCs and every `run_doc_method` inner method resolve from the
-  request body per 0.5.0–0.6.0) or on an exact `SAFE_METHODS` name (three read-only utilities).
+  request body per 0.5.0–0.6.0) or on an exact `SAFE_METHODS` name (four read-only utilities).
   A bare/unresolved generic RPC — a draft `save`/`insert`, `set_value`, `bulk_delete`, any
   unrecognised name — is **denied even if granted** (see "Deny-unknown" above; live-proven
   2026-07-06: a *granted* bare `frappe.model.workflow.apply_workflow` and a *granted*

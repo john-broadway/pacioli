@@ -1768,7 +1768,7 @@ class FakeClient:
     def ledger_preview(self, company, doctype, docname):
         return {"gl_columns": [], "gl_data": [{"account": "Debtors", "debit": 100.0}]}
 
-    def submit_document(self, doctype, name, doc=None):
+    def submit_document(self, doctype, name, doc=None, consent=None):
         from pacioli.erpnext import ErpnextError
         self._mutation_attempted = True
         if self.fail_submit:
@@ -1785,7 +1785,7 @@ class FakeClient:
                 "customer": "ACME", "items": [{"rate": 1.0}],
                 "status": self.docs.get(name, {}).get("status")}
 
-    def cancel_document(self, doctype, name):
+    def cancel_document(self, doctype, name, consent=None):
         from pacioli.erpnext import ErpnextError
         self._mutation_attempted = True
         if self.fail_cancel:
@@ -1913,8 +1913,24 @@ class FakeClient:
         if self.fail_apply_workflow:
             raise ErpnextError(self.fail_apply_workflow, status=417, answered=True)
         self.applied_workflow_transitions.append((name, action))
+        # MOVE THE STATE, the way frappe does. This used to return the state the document was
+        # ALREADY in, so the double could not express the one thing that matters on this path:
+        # frappe's server does `get_doc(...)` then `load_from_db()` and re-resolves the action
+        # against the document's LIVE state, which may have moved since the broker checked it.
+        # A double that always echoes the pre-call state can never model that divergence — and so
+        # could never fail on it (redteam 2026-07-26).
+        current = self.workflow_states.get(name, "")
+        landed = current
+        for w in self.workflows:
+            for t in (w.get("transitions") or []):
+                if t.get("state") == current and t.get("action") == action:
+                    landed = t.get("next_state", current)
+                    if t.get("next_state_docstatus") is not None:
+                        self.docs.setdefault(name, {})["docstatus"] = t["next_state_docstatus"]
+                    break
+        self.workflow_states[name] = landed
         return {"name": name, "modified": "2026-07-03 00:00:00.000001",
-                self.workflow_state_field: self.workflow_states.get(name, "")}
+                self.workflow_state_field: landed}
 
 
 def sample_workflow(name="SI Approval", states=None, transitions=None):
@@ -14889,7 +14905,7 @@ class CascadeClient(FakeClient):
         self.get_document_calls.append((doctype, name))
         return super().get_document(doctype, name)
 
-    def cancel_document(self, doctype, name):
+    def cancel_document(self, doctype, name, consent=None):
         from pacioli.erpnext import ErpnextError
         self._mutation_attempted = True
         if self.fail_cancel:
@@ -20763,3 +20779,184 @@ class TestSubcontractingReceiptCancelRiskFlags(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestClosedBooksChecksTheDateThatActuallyPosts(unittest.TestCase):
+    """Redteam 2026-07-26 — VALIDATE ONE VALUE, USE ANOTHER.
+
+    `_governed_write` reads period locks for the document's LIVE posting date, then
+    `governed_submit` runs `check_red_line` against `plan.posting_date`. Two different dates, one
+    set of locks. If the live date drifts out of the plan's date without bumping `modified`, the
+    broker reads locks for a date inside a closed period and checks a date outside it.
+
+    `check_fresh`'s `modified`-equality is only an IMPLICIT protection against that drift, and this
+    module already says so in the wrong-COMPANY belt twenty lines above the bug: a
+    `db_set(update_modified=False)` or raw-SQL patch does not bump `modified`. The company case got
+    a live re-read; the date case did not, even though the live date was already in hand.
+
+    `plan.py`'s stated contract is that the broker "refuses and says so rather than discover it at
+    submit or, worse, write in a closed book." That is the contract under test.
+    """
+
+    def test_a_drifted_live_posting_date_inside_a_lock_is_refused(self):
+        broker, client, stores = make_broker()
+        # Plan against a date OUTSIDE any lock.
+        plan = broker.dispatch("plan_submit", {"name": "SI-1"})
+        token = "raw-token-high-entropy"
+        stores("prod").mint_marker(token, plan["plan_id"], expires_at=2_000.0)
+
+        # The books close behind the plan, and the document's live date moves INTO the closed
+        # period without touching `modified` — so freshness still passes.
+        before = client.docs["SI-1"]["modified"]
+        client.docs["SI-1"]["posting_date"] = "2026-06-15"
+        client.docs["SI-1"]["modified"] = before          # explicitly unchanged
+        client.locks = {"closed_period_until": "2026-06-30"}
+
+        out = broker.dispatch("submit_sales_invoice",
+                              {"name": "SI-1", "plan_id": plan["plan_id"], "marker": token})
+        self.assertFalse(out["ok"], f"a write into a closed period must be refused: {out}")
+        self.assertEqual(out["stage"], "red_line",
+                         "a closed-books refusal keeps its own stage whichever check fires")
+        self.assertEqual(client.submitted, [], "nothing may post into a closed book")
+
+    def test_an_undrifted_document_in_an_open_period_still_submits(self):
+        # The belt must not refuse ordinary writes: same fixture, no drift, no lock.
+        broker, client, stores = make_broker()
+        plan = broker.dispatch("plan_submit", {"name": "SI-1"})
+        token = "raw-token-high-entropy"
+        stores("prod").mint_marker(token, plan["plan_id"], expires_at=2_000.0)
+        out = broker.dispatch("submit_sales_invoice",
+                              {"name": "SI-1", "plan_id": plan["plan_id"], "marker": token})
+        self.assertTrue(out["ok"], f"an ordinary governed write must still land: {out}")
+        self.assertEqual(client.submitted, ["SI-1"])
+
+
+class TestCascadeChecksTheDateThatActuallyREVERSES(unittest.TestCase):
+    """Redteam 2026-07-26 (second pass) — the closed-books belt was never carried to the sibling.
+
+    `run_cascade` preflights `check_red_line` against `plan.graph`'s STORED `posting_date`, and
+    reads that node's locks for the SAME stored date. So the live date is never looked at, and a
+    node whose `posting_date` drifted into a closed period without bumping `modified` has its GL
+    entries REVERSED there while the broker reports `ok: true`.
+
+    This is the identical defect fixed for the single-op path earlier the same day — the wrong-
+    COMPANY belt sitting directly above it in `_tool_cascade_cancel` got a live re-read and the date
+    did not, even though `_cascade_node_meta` had already fetched the live value, only for the
+    graph comparison to keep `(doctype, docname)` and throw the rest away. The single-op path
+    refuses the identical act; this one permitted it.
+
+    Cancelling REVERSES entries, so a locked period matters at least as much here as on submit.
+    """
+
+    def test_a_drifted_live_posting_date_refuses_the_whole_cascade(self):
+        cc = CascadeClient({})
+        broker, client, stores = make_broker(client=cc)
+        plan = broker.dispatch("plan_cascade_cancel",
+                               {"name": "T", "pacioli_doctype": "Sales Invoice"})
+        self.assertTrue(plan["ok"], plan)
+        token = "raw-cascade-token"
+        stores("prod").mint_marker(token, plan["plan_id"], expires_at=2_000.0)
+
+        # The books close behind the plan, and the node's live date moves INTO the closed period
+        # without touching `modified`, so per-node freshness still passes.
+        before = cc.docs["T"]["modified"]
+        cc.docs["T"]["posting_date"] = "2026-06-15"
+        cc.docs["T"]["modified"] = before
+        cc.locks = {"closed_period_until": "2026-06-30"}
+
+        out = broker.dispatch("cascade_cancel",
+                              {"name": "T", "pacioli_doctype": "Sales Invoice",
+                               "plan_id": plan["plan_id"], "marker": token})
+        self.assertFalse(out["ok"], f"a cascade into a closed period must be refused: {out}")
+        self.assertEqual(out["stage"], "red_line")
+        self.assertEqual(cc.cancelled, [], "nothing may be reversed inside a closed period")
+
+    def test_an_undrifted_cascade_still_runs(self):
+        # The belt must not refuse ordinary cascades.
+        cc = CascadeClient({})
+        broker, client, stores = make_broker(client=cc)
+        plan = broker.dispatch("plan_cascade_cancel",
+                               {"name": "T", "pacioli_doctype": "Sales Invoice"})
+        token = "raw-cascade-token-2"
+        stores("prod").mint_marker(token, plan["plan_id"], expires_at=2_000.0)
+        out = broker.dispatch("cascade_cancel",
+                              {"name": "T", "pacioli_doctype": "Sales Invoice",
+                               "plan_id": plan["plan_id"], "marker": token})
+        self.assertTrue(out["ok"], f"an ordinary cascade must still run: {out}")
+
+
+class TestWorkflowTransitionConfessesADifferentLanding(unittest.TestCase):
+    """Redteam 2026-07-26 — VALIDATE ONE STATE, USE ANOTHER.
+
+    `check_transition` approves an action against the state the broker READ. `apply_workflow` then
+    sends only `{doctype, name, action}`, and frappe's server does `get_doc(...)` + `load_from_db()`
+    and re-resolves the action against the document's LIVE state. Nothing compared the two.
+
+    The exploit is an ordinary two-level approval workflow that reuses one action label:
+
+        Pending L1 --Approve--> Pending L2   (docstatus 0, non-approving: the broker MAY do it)
+        Pending L2 --Approve--> Approved     (docstatus 1, APPROVING: the broker must refuse)
+
+    Ask for "Approve" at L1; if the document reaches L2 in the window, frappe performs the
+    APPROVING hop — a real docstatus 0->1 submit with GL entries, through the one tool that by
+    design takes NO plan and NO marker. `workflow.py` says this belt must hold even if the
+    credential could technically call `apply_workflow` and succeed, so it is load-bearing.
+
+    It cannot be prevented from here — the act has already landed — so it is CONFESSED, with the
+    outcome recorded first so the ledger carries the state that actually landed.
+    """
+
+    def _two_level(self):
+        return {"name": "Two Level", "document_type": "Sales Invoice", "is_active": 1,
+                "workflow_state_field": "workflow_state",
+                "states": [{"state": "Pending L1", "doc_status": "0"},
+                           {"state": "Pending L2", "doc_status": "0"},
+                           {"state": "Approved", "doc_status": "1"}],
+                "transitions": [
+                    {"state": "Pending L1", "action": "Approve", "next_state": "Pending L2",
+                     "allowed": "Accounts User", "next_state_docstatus": 0},
+                    {"state": "Pending L2", "action": "Approve", "next_state": "Approved",
+                     "allowed": "Accounts User", "next_state_docstatus": 1},
+                ]}
+
+    def test_a_different_landing_is_refused_and_names_both_states(self):
+        broker, client, _ = make_broker()
+        client.workflows = [self._two_level()]
+        client.workflow_states["SI-1"] = "Pending L1"
+
+        # The document moves to L2 between the broker's read and its call. Modelled by having the
+        # fake's own state advance underneath, which is exactly what a concurrent approver does.
+        real_get = client.get_workflow_state
+
+        def racing(doctype, name, field):
+            seen = real_get(doctype, name, field)
+            client.workflow_states[name] = "Pending L2"   # someone else approves L1
+            return seen
+
+        client.get_workflow_state = racing
+        out = broker.dispatch("request_workflow_transition",
+                              {"name": "SI-1", "action": "Approve"})
+        self.assertFalse(out["ok"], f"a landing the broker never approved must confess: {out}")
+        self.assertEqual(out["stage"], "workflow")
+        self.assertIn("Pending L2", out["reason"])
+        self.assertIn("Approved", out["reason"])
+
+    def test_an_ordinary_transition_is_untouched(self):
+        broker, client, _ = make_broker()
+        client.workflows = [self._two_level()]
+        client.workflow_states["SI-1"] = "Pending L1"
+        out = broker.dispatch("request_workflow_transition",
+                              {"name": "SI-1", "action": "Approve"})
+        self.assertTrue(out["ok"], f"a normal non-approving hop must still work: {out}")
+        self.assertEqual(out["result"]["workflow_state"], "Pending L2")
+
+    def test_the_result_reports_the_landed_state_not_the_prediction(self):
+        # The field used to fall back to `next_state` when the bench reported none — substituting
+        # the prediction for the observation in the very field used to check the prediction.
+        broker, client, _ = make_broker()
+        client.workflows = [self._two_level()]
+        client.workflow_states["SI-1"] = "Pending L1"
+        out = broker.dispatch("request_workflow_transition",
+                              {"name": "SI-1", "action": "Approve"})
+        self.assertEqual(out["result"]["approved_next_state"], "Pending L2")
+        self.assertEqual(out["result"]["workflow_state"], "Pending L2")

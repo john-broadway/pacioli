@@ -33,13 +33,34 @@ def _in_window(ts, since, until):
     """ISO ts strings are sortable (``YYYY-MM-DDTHH:MM:SSZ``), so window bounds are plain string
     comparisons, inclusive on both ends. A receipt with NO ts is never silently dropped from a
     windowed statement — it CANNOT be excluded (we don't know when it happened), so it is included
-    and flagged by the caller-visible path (deny-biased: an attestation never quietly omits an act)."""
+    and flagged by the caller-visible path (deny-biased: an attestation never quietly omits an act).
+
+    **A BARE ``until`` covers its whole day, decided HERE** (redteam 2026-07-26).
+    ``clock.expand_bare_date_end_of_day`` was applied only in the CLI's site-timezone conversion,
+    which runs only when the target DECLARES ``site_tz`` — and no ``site_tz`` is the documented
+    default. For those targets the bound arrived unexpanded and the string compare dropped the
+    final day: ``"2026-07-31T14:00:00Z" > "2026-07-31"``. Closing month by month made the last day
+    of EVERY period invisible in both adjacent statements, silently, while the CLI's own help said a
+    bare date covers the whole day.
+
+    Compared on the DATE PART rather than by appending an end-of-day suffix, and that is deliberate.
+    ``expand_bare_date_end_of_day`` belongs to the SITE clock domain: it emits a space separator
+    (``"2026-07-31 23:59:59.999999"``) for frappe, while receipts here are ISO-Z
+    (``"2026-07-31T14:00:00Z"``). Comparing those two strings puts ``"T"`` against ``" "`` and gets
+    the wrong answer — a cross-domain suffix is what made this fragile in the first place. "The date
+    part must not exceed this date" needs no separator convention and no sub-second reasoning.
+
+    ``since`` is deliberately NOT treated this way: as a lower bound a bare date is already the
+    smallest string for that day, so it already includes the whole day.
+    """
     if not ts:
         return True
     if since is not None and ts < since:
         return False
-    if until is not None and ts > until:
-        return False
+    if until is not None:
+        bare_until = ":" not in until
+        if ts[:10] > until if bare_until else ts > until:
+            return False
     return True
 
 

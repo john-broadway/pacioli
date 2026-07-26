@@ -8,6 +8,8 @@ logic is unit-testable without a running bench. The frappe glue lives in ``enfor
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import unicodedata
 from dataclasses import dataclass, field
@@ -125,9 +127,11 @@ class ApiScope:
     :param allow_resource: may the credential use ``/api/resource`` CRUD at all? Defaults to
         ``False`` — method-only unless resource access is explicitly granted (this denies the
         raw-CRUD bypass by default).
-    :param resource_doctypes: when ``allow_resource``, an optional DocType allowlist. An empty set
-        means "all DocTypes" (still subject to the user's own role permissions downstream — scope
-        narrows, never widens).
+    :param resource_doctypes: when ``allow_resource``, the DocType allowlist. An empty set **denies**
+        (0.8.0 onward), matching ``methods``: a grant naming nothing permits nothing. Site-wide
+        access is expressible but must be stated — one literal ``RESOURCE_DOCTYPE_WILDCARD`` row.
+        Still subject to the user's own role permissions downstream: scope narrows, never widens.
+        (Before 0.8.0 an empty set meant "all DocTypes". That was a security defect, not a default.)
     :param enabled: the **kill switch**. ``False`` denies every request from this credential,
         regardless of allowlists. Defaults ``True``, and a grant that never carried the field
         (pre-CONTAIN) reads as enabled — absence is not a kill.
@@ -159,6 +163,7 @@ class ApiScope:
     rate_limit_per_minute: int = 0
     resource_verbs: frozenset = None
     enforce_workflow: bool = False
+    require_consent: bool = False
 
     @classmethod
     def from_dict(cls, d):
@@ -176,12 +181,15 @@ class ApiScope:
             # the same strict string coercion so "0"/"false" from a legacy JSON blob can't be
             # mistaken for truthy the way bare Python bool() would read them.
             enforce_workflow=_coerce_flag(d.get("enforce_workflow")),
+            # Same coercion and the same off-by-default posture: a grant predating this gate
+            # must behave exactly as it did, or an upgrade starts denying live credentials.
+            require_consent=_coerce_flag(d.get("require_consent")),
         )
 
     @classmethod
     def from_grant(cls, allow_resource, method_patterns, resource_doctypes,
                    enabled=None, rate_limit_per_minute=None, resource_verbs=None,
-                   enforce_workflow=None):
+                   enforce_workflow=None, require_consent=None):
         """Build from the structured *API Key Scope* DocType fields — the pure seam the frappe
         glue feeds (an ``allow_resource`` Check plus two child-table allowlists, the CONTAIN pair
         — the ``enabled`` kill switch + ``rate_limit_per_minute`` — the per-credential
@@ -203,6 +211,7 @@ class ApiScope:
                 # verbatim so an explicit "deny all resource verbs" is not coerced back to "all".
                 "resource_verbs": resource_verbs if resource_verbs is None else list(resource_verbs),
                 "enforce_workflow": enforce_workflow,
+                "require_consent": require_consent,
             }
         )
 
@@ -339,6 +348,14 @@ SAFE_METHODS = frozenset({
     "frappe.auth.get_logged_user",                                         # read-only identity probe (doctor)
     "frappe.desk.form.linked_with.get_submitted_linked_docs",               # read-only linked-doc lookup (UNDO graph)
     "erpnext.controllers.stock_controller.show_accounting_ledger_preview",  # read-only PLAN preview (savepoint→rollback)
+    # This app's own diagnostic, added 2026-07-25. It earns a place on this deliberately tiny
+    # list by the same test the others pass: it takes NO arguments, writes nothing, and reports
+    # only on `frappe.session.user`, so it cannot be pointed at another credential or another
+    # doctype and has no body to launder a target through. It exists so `pacioli doctor` can tell
+    # an operator that `require_consent` is off — a silent insecure default is how the bypass
+    # this app just closed would otherwise keep hiding. Refusing it by name would leave the
+    # diagnostic ungrantable in practice, since a bare method grant is (correctly) not enough.
+    "pacioli_guard.api.consent_status",                                     # read-only self-report (doctor)
 })
 
 # The 2-hop laundering vector no classifier can resolve: a tool/container DocType whose whitelisted
@@ -387,6 +404,45 @@ def _fold_doctype(s):
 _UNGRANTABLE_METHOD_DOCTYPES_FOLDED = frozenset(
     _fold_doctype(d) for d in _UNGRANTABLE_METHOD_DOCTYPES)
 
+# The explicit site-wide resource grant (floor audit F1, 2026-07-26). An EMPTY
+# ``resource_doctypes`` allowlist now DENIES, matching ``methods`` (where an empty allowlist grants
+# nothing because `any()` over an empty set is False). It previously granted every DocType on the
+# site, which made the two child tables read as parallel allowlists while behaving oppositely, and
+# made the documented operator gesture — tick the master ``allow_resource`` Check, save, fill the
+# table afterwards — the widest grant this app can express, reaching the guard's own control plane.
+# Site-wide access is a legitimate thing to want, so it stays expressible; it just has to be SAID,
+# with one literal wildcard row that an auditor can see in the grant doc. Spelling borrowed from
+# frappe's own ``doc_events["*"]`` convention rather than inventing a sentinel.
+RESOURCE_DOCTYPE_WILDCARD = "*"
+
+# The guard's OWN control plane — ungrantable on BOTH branches (floor audit F2, 2026-07-26).
+# A credential that can write its own ``API Key Scope`` is not scoped: it can widen ``methods``,
+# clear the doctype allowlist, or simply untick ``require_consent``, and the grant doc is trivially
+# addressable because ``API Key Scope`` autonames ``field:user`` (the doc name IS the username, no
+# read needed to guess it). A credential that can insert a ``Pacioli Consent Marker`` mints its own
+# permission, which is precisely the property the consent gate exists to deny. Frappe's own role
+# permissions already restrict both DocTypes to System Manager, but that is a role wall, and our
+# own bench notes record the standing pressure to hand an agent seat a manager role to make some
+# other thing green. So this must be INEXPRESSIBLE at the guard layer, not merely absent from our
+# grants. Deny-more-only and zero-regression: the broker reads no grant and mints markers off-box.
+# NOT included: the 2-hop container DocTypes above stay method-branch-only, unchanged — a resource
+# create of a container is inert without its method, and widening that is a separate reviewed act.
+_UNGRANTABLE_DOCTYPES = frozenset({
+    "API Key Scope",
+    "API Key Scope Method",
+    "API Key Scope DocType",
+    "Pacioli Consent Marker",
+})
+_UNGRANTABLE_DOCTYPES_FOLDED = frozenset(_fold_doctype(d) for d in _UNGRANTABLE_DOCTYPES)
+
+
+def _is_control_plane(doctype):
+    """True if ``doctype`` is one of the guard's own control DocTypes. Folded case-and-accent for
+    the same collation reason as :func:`_fold_doctype` — the doctype name reaching here is an
+    attacker-controlled string, and frappe's ``tabDocType.name`` compares case- and
+    accent-insensitively, so folding can only ever deny more, never less."""
+    return isinstance(doctype, str) and _fold_doctype(doctype.strip()) in _UNGRANTABLE_DOCTYPES_FOLDED
+
 
 def is_permitted(scope, kind, target, *, method_resolved=False):
     """Pure allow/deny decision.
@@ -421,6 +477,9 @@ def is_permitted(scope, kind, target, *, method_resolved=False):
         # case-AND-accent, see _fold_doctype above for why that (not exact string) is the floor.
         if doctype_part is not None and _fold_doctype(doctype_part) in _UNGRANTABLE_METHOD_DOCTYPES_FOLDED:
             return False
+        # The guard's own control plane, same posture: before the grant, never expressible.
+        if _is_control_plane(doctype_part):
+            return False
         granted = any(fnmatchcase(target, pat) for pat in scope.methods if isinstance(pat, str))
         return granted and (method_resolved or target in SAFE_METHODS)
     if kind == "resource":
@@ -428,13 +487,21 @@ def is_permitted(scope, kind, target, *, method_resolved=False):
             return False
         doctype = target[0] if target else None
         verb = target[1] if target and len(target) > 1 else None
+        # hard deny, before anything a grant can say — the wildcard row below does not reach these,
+        # and neither does an operator naming them explicitly. See _UNGRANTABLE_DOCTYPES.
+        if _is_control_plane(doctype):
+            return False
         # Per-credential verb narrowing, checked first: resource_verbs None is "all verbs" (backward
         # compatible / unspecified); a present set (even empty) denies any verb it does not list —
         # this is what makes a read-only resource credential real (a DocType allowlist alone admitted
         # every verb), and it honors an all-unticked grant as deny-all rather than full access.
         if scope.resource_verbs is not None and verb not in scope.resource_verbs:
             return False
+        # Empty allowlist denies — see RESOURCE_DOCTYPE_WILDCARD for why this changed and what the
+        # explicit opt-in is. A wildcard row grants every doctype EXCEPT the hard-denied ones above.
         if not scope.resource_doctypes:
+            return False
+        if RESOURCE_DOCTYPE_WILDCARD in scope.resource_doctypes:
             return True
         return doctype in scope.resource_doctypes
     return False  # unknown call class + a scoped credential -> fail closed
@@ -906,3 +973,185 @@ def docstatus_target_doctype(kind, target, form=None):
     if kind == "resource" and isinstance(target, (tuple, list)) and target:
         return target[0]
     return None
+
+
+_DOC_PATH_ANCHORS = ("resource", "document")
+
+
+def _docname_from_path(path):
+    """The document named by a REST path, or ``None``. Pure.
+
+    Covers ``/api/resource/<DocType>/<name>`` and its v1/v2 aliases, plus the v2 path-carried
+    doc-method (``/api/v2/document/<DocType>/<name>/method/<m>``). A path naming only a doctype
+    (a create, or a list read) names no document.
+    """
+    segments = [unquote(s) for s in (path or "").split("/") if s]
+    for i, seg in enumerate(segments):
+        if seg in _DOC_PATH_ANCHORS and i + 2 < len(segments):
+            return segments[i + 2].strip() or None
+    return None
+
+
+def docstatus_target_docname(path, form):
+    """The document a docstatus-changing call is moving, or ``None``. Pure.
+
+    Consent is bound to ONE document, so the gate has to know which. The name travels in as many
+    places as the doctype does: the URL path, ``dn`` (v1 ``run_doc_method``), ``name``
+    (``frappe.client.cancel``), or inside a doc body (``doc``/``docs``/``document``).
+
+    DENY-BIASED ON AMBIGUITY, exactly as :func:`_run_doc_method_doctype` is for the doctype: this
+    collects the name from EVERY present source and resolves only when they AGREE. A legitimate
+    client names one document in one place; naming two is the spoof shape — send a marker minted
+    for a harmless invoice alongside a body naming a different one, and a source-order-trusting
+    gate would burn the first marker to authorize the second document. Zero sources also returns
+    ``None``, because consent that cannot be bound to a document is not consent.
+    """
+    form = form or {}
+    candidates = set()
+    from_path = _docname_from_path(path)
+    if from_path:
+        candidates.add(from_path)
+    for key in ("dn", "name"):
+        value = form.get(key)
+        if isinstance(value, str) and value.strip():
+            candidates.add(value.strip())
+    for key in ("doc", "docs", "document"):
+        for doc in _iter_body_docs(form.get(key)):
+            name = doc.get("name")
+            if isinstance(name, str) and name.strip():
+                candidates.add(name.strip())
+    if len(candidates) != 1:
+        return None
+    return next(iter(candidates))
+
+
+def consent_token_hash(token):
+    """Hash a consent token for storage. Pure.
+
+    The bench stores only this. A marker row is a *proof to check*, never a secret to keep:
+    reading every stored marker off the books box must not yield a token anyone can spend.
+    """
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def _consent_field(record, key):
+    """Read a field from a marker record, whether it arrives as a mapping or a frappe doc."""
+    if record is None:
+        return None
+    if hasattr(record, "get") and not isinstance(record, (str, bytes)):
+        return record.get(key)
+    return getattr(record, key, None)
+
+
+def docstatus_action(kind, target, http_method, form):
+    """Pure: WHICH docstatus move is this call attempting — ``"submit"``, ``"cancel"``, or
+    ``None`` when it cannot be read.
+
+    Consent is consent to an ACT, not merely to a document. Cancel reverses GL entries; a human
+    who consented to posting an invoice did not thereby consent to reversing it, and both are
+    docstatus moves on the same document. So the gate needs the act, and a marker names one.
+
+    ``None`` is the deny-biased answer and callers must treat it as such: an act nobody can read
+    is an act no marker can be bound to. This deliberately mirrors the SHAPES
+    :func:`is_docstatus_changing` already recognises — that function decides *whether* a call
+    moves docstatus, this one decides *which way* — and it reuses the same constants so the two
+    can never drift apart.
+    """
+    if kind == "method":
+        if not isinstance(target, str) or not target:
+            return None
+        if target == APPLY_WORKFLOW_METHOD:
+            return None
+        if target == SAVEDOCS_METHOD:
+            action = form.get("action") if isinstance(form, dict) else None
+            return {"Submit": "submit", "Cancel": "cancel"}.get(action)
+        _, _, method_name = target.rpartition(".")
+        return method_name if method_name in _DOCSTATUS_METHOD_NAMES else None
+    if kind == "resource":
+        if not isinstance(form, dict):
+            return None
+        if http_method in ("PUT", "PATCH", "POST"):
+            value = form.get("docstatus")
+            if isinstance(value, (int, str)) and value in _SUBMITTING_DOCSTATUS:
+                return "submit" if str(value) == "1" else "cancel"
+        return None
+    return None
+
+
+def consent_verdict(presented, doctype, docname, action, record, now, principal):
+    """Decide whether a ledger-affecting call carries valid consent. Pure.
+
+    Returns ``(allowed, reason)``; ``reason`` carries the refusal text when denied.
+
+    WHY THIS EXISTS. Scoping a credential to exactly the calls it makes does not stop whoever
+    holds that credential from making those calls. The broker must be allowed to submit
+    invoices, so its key is allowed to submit invoices, so a stolen key submits invoices with
+    no plan and no receipt. Proven on the live bench 2026-07-25: the ledger moved. No allowlist
+    can close that, because the allowlist is already exactly right. The floor has to demand
+    evidence that a human consented to THIS act on THIS document, and burn that evidence on use.
+
+    Deny-biased throughout, and every branch names what is wrong: a refusal here is a fixable,
+    inspectable event, not a dead end.
+
+    ORDER MATTERS. Binding and liveness are judged BEFORE the token is compared, so a correct
+    token against a stale, spent, wrong-document, wrong-act or self-minted marker still refuses.
+    The comparison itself is constant-time — a marker check that leaks its answer through timing
+    is a marker check an attacker can walk.
+
+    TWO SEPARATIONS THIS ENFORCES, both learned the same day the bypass was found:
+
+    * **Act binding.** ``action`` is the move being attempted (see :func:`docstatus_action`) and
+      the marker names the move it authorises. A submit marker does not spend on a cancel. An
+      unreadable act binds to nothing and refuses.
+    * **Minter separation.** ``principal`` is the credential making the call. If it also minted
+      the marker, the credential authorised itself and the gate is decoration — a stolen key
+      would mint its own permission and spend it in the same breath. Unprovable separation (no
+      recorded minter, or an unidentifiable caller) is not separation, and refuses too.
+    """
+    if not presented:
+        return False, "no consent marker presented"
+    if record is None:
+        # NAMES THE ACT IT WAS ASKED ABOUT, and a remedy that exists in THIS install.
+        #
+        # It used to say "...before it can be submitted" for every act, so a blocked CANCEL was
+        # told to go get permission to submit. And it named `pacioli mint`, which ships in the
+        # SEPARATE `pacioli` broker distribution — this package installs no console script at all,
+        # and its documented deployment is a bare `bench install-app` on a bench with no broker on
+        # it. Both were observed live. A refusal is the one message an operator is guaranteed to
+        # read, at the moment they are blocked; sending them after a command their shell does not
+        # have is a lie that costs them real time.
+        return False, (f"no live consent marker for this document and act — a human (not this "
+                       f"credential) must create a Pacioli Consent Marker for this exact document "
+                       f"with action '{action}' before it can proceed. In the desk UI, or with "
+                       f"`pacioli mint` from the separate `pacioli` broker package")
+    if _consent_field(record, "burned"):
+        return False, "this consent marker was already used — markers are single-use"
+    expires_at = _consent_field(record, "expires_at")
+    if expires_at is None or now >= expires_at:
+        return False, "this consent marker has expired — mint a fresh one"
+    if (_consent_field(record, "doctype") != doctype
+            or _consent_field(record, "docname") != docname):
+        return False, ("this consent marker was minted for a different document — consent for "
+                       "one document is not consent for another")
+    marker_action = _consent_field(record, "action")
+    if not action or not marker_action:
+        return False, ("the act being authorised could not be determined — consent binds to a "
+                       "named act (submit or cancel), and an unreadable act binds to nothing")
+    if str(marker_action).strip().lower() != str(action).strip().lower():
+        return False, (f"this consent marker authorises {str(marker_action).strip().lower()}, "
+                       f"not {str(action).strip().lower()} — consent for one act is not consent "
+                       "for a different act on the same document")
+    minted_by = _consent_field(record, "minted_by")
+    if not minted_by:
+        return False, ("this consent marker does not record who minted it — separation that "
+                       "cannot be shown is not separation")
+    if not principal:
+        return False, ("the acting principal could not be identified, so the marker's minter "
+                       "cannot be shown to be a different hand")
+    if str(minted_by).strip().casefold() == str(principal).strip().casefold():
+        return False, ("this credential minted its own consent — a marker must come from a "
+                       "different hand than the one it authorises")
+    stored = _consent_field(record, "token_hash") or ""
+    if not hmac.compare_digest(str(stored), consent_token_hash(presented)):
+        return False, "the presented consent marker does not match the one on record"
+    return True, ""

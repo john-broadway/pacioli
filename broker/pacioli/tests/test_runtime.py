@@ -152,3 +152,93 @@ class TestMintCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMintDisclosesTheActNotJustThePlanId(unittest.TestCase):
+    """Redteam 2026-07-26 — the human's only INDEPENDENT view of what they are authorising.
+
+    `pacioli mint` printed the plan id, the docname and the target. Nothing else. So a one-invoice
+    submit and a cascade-cancel that reverses five submitted documents rendered identically apart
+    from a hex string, and the operator's entire picture of the act was the agent's narration —
+    which is exactly what consent is supposed to be independent of.
+
+    The binding machinery was never weak (`check_op`/`check_doctype` are exact and were probed
+    clean). The DISCLOSURE was. Every field shown now was already persisted on the plan.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        d = Path(self.dir.name)
+        (d / "targets.toml").write_text(REG)
+        self.env = {"PACIOLI_REGISTRY": str(d / "targets.toml"),
+                    "PACIOLI_STATE_DIR": str(d), "K": "kk", "S": "ss"}
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def _record(self, plan_id, **kw):
+        from pacioli.plan import new_plan
+        store = open_store(self.env, "prod")
+        store.record_plan(new_plan(plan_id, "prod", "v1", "2026-07-01", **kw))
+
+    def _mint(self, plan_id):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = cmd_mint(self.env, plan_id=plan_id, target=None, ttl=900)
+        return rc, out.getvalue() + err.getvalue()
+
+    def test_a_submit_and_a_cascade_cancel_do_not_render_identically(self):
+        self._record("p-submit", docname="SI-1", op="submit", doctype="Sales Invoice")
+        self._record("p-cascade", docname="SI-1", op="cancel", doctype="Sales Invoice",
+                     graph=[{"doctype": "Payment Entry", "name": "PE-9"},
+                            {"doctype": "Delivery Note", "name": "DN-9"},
+                            {"doctype": "Journal Entry", "name": "JE-9"}])
+        _, submit_out = self._mint("p-submit")
+        _, cascade_out = self._mint("p-cascade")
+
+        # Strip the plan-id line: the point is that the REST of the disclosure differs.
+        def body(text):
+            return "\n".join(ln for ln in text.splitlines() if not ln.startswith("plan:")
+                             and not ln.startswith("marker:"))
+
+        self.assertNotEqual(body(submit_out), body(cascade_out),
+                            "two different acts must not look the same to the approving human")
+
+    def test_the_act_names_the_operation_and_the_doctype(self):
+        self._record("p1", docname="SI-1", op="cancel", doctype="Sales Invoice")
+        _, out = self._mint("p1")
+        self.assertIn("CANCEL", out)
+        self.assertIn("Sales Invoice", out)
+        self.assertIn("SI-1", out)
+
+    def test_a_cascade_names_every_document_it_will_touch(self):
+        self._record("p1", docname="SI-1", op="cancel", doctype="Sales Invoice",
+                     graph=[{"doctype": "Payment Entry", "name": "PE-9"},
+                            {"doctype": "Delivery Note", "name": "DN-9"}])
+        _, out = self._mint("p1")
+        # A count is a thing a human skims; a list is a thing they check.
+        self.assertIn("PE-9", out)
+        self.assertIn("DN-9", out)
+
+    def test_risk_flags_reach_the_human(self):
+        self._record("p1", docname="SI-1", op="submit", doctype="Sales Invoice",
+                     risk_flags=["posting date is in a prior period"])
+        _, out = self._mint("p1")
+        self.assertIn("prior period", out)
+
+    def test_an_unbalanced_projection_is_called_out_loudly(self):
+        # The house law on the consent line. A balanced entry nets to zero, so printing the NET
+        # would show "0.00" for every healthy plan and tell the human nothing; the magnitude is
+        # the size of the act and the imbalance is the alarm.
+        self._record("p1", docname="JE-1", op="submit", doctype="Journal Entry",
+                     projected_gl=[{"debit": 100.0, "credit": 0}, {"debit": 0, "credit": 90.0}])
+        _, out = self._mint("p1")
+        self.assertIn("DOES NOT BALANCE", out)
+        self.assertIn("10.00", out)
+
+    def test_a_balanced_projection_shows_its_size_not_a_useless_zero(self):
+        self._record("p1", docname="SI-1", op="submit", doctype="Sales Invoice",
+                     projected_gl=[{"debit": 1450.0, "credit": 0}, {"debit": 0, "credit": 1450.0}])
+        _, out = self._mint("p1")
+        self.assertNotIn("DOES NOT BALANCE", out)
+        self.assertIn("1,450.00", out)

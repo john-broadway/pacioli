@@ -75,6 +75,19 @@ _FLOOR = {
     "unconfirmed": 1,        # alert — a write that got no answer and MAY have posted (suspense item)
     "second_generation": 1,  # alert — rows rewritten off-seat under a voucher Pacioli governs
     "blind_read": 1,         # alert — the reconciliation refused; cannot even attest
+    "time_gate_blind": 0,    # RECORD — a governed voucher the second-generation detector is
+                             # STRUCTURALLY blind on (the act carried no server `modified` stamp, so
+                             # the time gate cannot apply). NOT an accusation — nothing says those
+                             # rows were rewritten — but the detector cannot say they were not, and
+                             # a blind spot that renders identically to a clean result is the shape
+                             # this whole envelope exists to refuse (redteam 2026-07-26).
+                             #
+                             # RECORD, not alert, and the floor was chosen by measurement rather
+                             # than by instinct: an outcome recorded without a server `modified`
+                             # stamp is ORDINARY, not exotic, so alerting would fire on normal
+                             # operation and train the operator to ignore it. This is a standing
+                             # condition like `adverse_posture` — it belongs in the report, named,
+                             # every time. The defect being fixed is invisibility, not severity.
     "adverse_posture": 0,    # record — a standing condition (mutable/scrubbable books), not an event
     "ungoverned": 0,         # record under mixed_door; raised to alert under sole_door (see below)
     "chain_broken": 3,       # contain — the SOLE default-contain: the attestation apparatus is
@@ -217,6 +230,13 @@ def build_response(statement, reconciliation, *, target=None, posture=None, enve
                 d = e if isinstance(e, dict) else {"malformed": True}
                 _emit("second_generation", _FLOOR["second_generation"], d)
 
+        # Time-gate blind: vouchers the second-generation detector structurally could not clear.
+        blind = rc.get("time_gate_blind")
+        if isinstance(blind, list):
+            for e in blind:
+                _emit("time_gate_blind", _FLOOR["time_gate_blind"],
+                      e if isinstance(e, dict) else {"malformed": True})
+
         # Ungoverned: recorded under mixed_door, ALERT under sole_door. The floor is raised by posture,
         # never by an accusation — a desk posting is legitimate; the operator's posture is the verdict.
         ungoverned_floor = 1 if posture_word == "sole_door" else _FLOOR["ungoverned"]
@@ -286,6 +306,8 @@ _CLASS_WORD = {
     "orphan": "orphan (intent with no committed outcome — reconcile against the real docstatus)",
     "unconfirmed": "unconfirmed (the write got no answer and MAY have posted)",
     "second_generation": "second-generation (rows rewritten under a governed voucher — e.g. a repost)",
+    "time_gate_blind": "time-gate blind (a governed voucher whose act carried no server timestamp — "
+                       "a second generation of its rows could not be distinguished either way)",
     "blind_read": "blind reconciliation (could not complete — cannot attest)",
     "ungoverned": "ungoverned (did not pass through Pacioli)",
     "adverse_posture": "adverse posture (the books are more mutable/scrubbable than ideal)",

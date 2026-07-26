@@ -6,6 +6,222 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.33.3 — 2026-07-26 — the credential stops following redirects, and the Close stops losing a day
+
+PATCH. Redteam findings against the operator surface (`doctor.py`, `close.py`, `anchor`), which no
+prior pass had reached.
+
+**The credential followed 3xx to any host.** `default_transport` used bare `urllib.request.urlopen`,
+i.e. the DEFAULT opener, which installs `HTTPRedirectHandler`. Python's `redirect_request` strips
+only `content-length` and `content-type` — **`Authorization` is re-sent** — and its permitted schemes
+include plain `http`, so an https bench could redirect to http and any bench could redirect anywhere.
+That defeats `registry.py`'s refusal of a plain-http `base_url`, which exists for exactly that
+reason. **Not diagnostic-only: this is the transport for every call, submit included.** Demonstrated
+with a bench that 302s every probe to a second host — `doctor` printed `ready.` and the credential
+had already left 65 times, every `ok` in the report being the attacker's own self-report. Now
+refused, loudly, naming the target: the registry pinned a base_url, so a redirecting API call is
+misconfigured or hostile, and following it quietly is how an operator never finds out.
+
+**`close --until <bare date>` silently dropped the final day.** The bare-date-to-end-of-day expansion
+ran only in the CLI's site-timezone conversion, which only runs when the target declares `site_tz` —
+and no `site_tz` is the documented default. So `"2026-07-31T14:00:00Z" > "2026-07-31"` excluded an act
+on the very day the operator asked for, while the CLI's help said a bare date covers the whole day.
+Closing month by month made the last day of EVERY period invisible in **both** adjacent statements,
+permanently, with no flag. Worse with `--reconcile`: the GL sweep DID expand, so one statement's two
+halves disagreed about what the period was. Now decided at the comparison, on the DATE PART — the
+existing helper belongs to the site clock domain and emits a space separator, so reusing it here put
+`"T"` against `" "`, which is how the cross-domain suffix was fragile to begin with.
+
+**`anchor check` rendered a rollback-to-the-pin as "nothing happened".** The "receipts appended since
+this pin are not yet covered" note fired only when the chain had GROWN, so it vanished in exactly the
+case where the unprotected post-pin window had been exploited: delete every receipt above the pin and
+the survivors' seals are still genuine, so the chain verifies, the count matches, and the output is
+byte-identical to a chain that legitimately had not moved. The post-pin window is now named every
+time, including when nothing was appended, because the pin cannot cover it in either direction.
+
+**A period closed over an orphan recorded itself clean.** `gapped` was `bool(gate_required)`, i.e.
+floor >= 2, and every default floor is 0, 1 or 3 — so nothing but `chain_broken` ever set it, and
+that also sets `seal_required`. An orphan is floor 1, the thing `_FLOOR` itself calls "Pacioli's own
+unbalanced entry; the confession". The durable row said clean, the confession lived only in that
+run's stdout, and the next default-`--since` advance put the orphan behind the cursor forever. Now
+driven by the statement's own `balanced`, and the row carries prose instead of `""` — counts, never
+contents.
+
+**Disclosed, not fixed:** a consent marker binds document + act + minter, **not content**. Draft
+saves are ungated, so a marker minted for a draft still authorises the submit after the draft's
+amounts change. Now stated in `SECURITY.md`. Closing it means pinning document state into the marker,
+which is a design increment and a live-install migration, not a patch.
+
+**The second-generation detector's blind spot is now visible.** `_row_governed` returns
+`structural_only` when a voucher's only matching act carried no server `modified` stamp: the time
+gate cannot apply, so a LATER generation of those rows cannot be distinguished from the governed
+one. That reached the operator as a sentence in `reconciliation["flags"]` — and `build_response`
+classifies findings, not prose, so a voucher the detector was structurally blind on rendered
+identically to one it had actually cleared: governed, complete, no finding, exit 0. Those vouchers
+are now named in `time_gate_blind` and emitted as findings.
+
+Floor **0 (record), not alert**, and the floor was chosen by measurement rather than instinct: an
+outcome recorded without a server stamp turns out to be ordinary, not exotic — alerting would fire
+on normal operation and train the operator to ignore it. Nothing here accuses anyone; the defect
+being fixed is invisibility, not severity.
+
+`_row_governed`'s docstring also claimed a row failing every time-gated transition "is not silently
+rescued by a co-present structural one". The rescue is real and deliberate — a genuinely stamp-less
+act still governs its own rows, and refusing that would over-accuse. The word that mattered was
+*silently*, and it is now earned rather than asserted.
+
+**Malformed arguments get a structured refusal instead of a traceback.** `dispatch`'s own docstring
+promises "a governed denial is a structured answer (stage + reason), never a traceback", and `a2a.py`
+claims hostile enumeration "is a ledger entry, not an invisible transport error". Neither held:
+neither door validates `inputSchema` (the MCP SDK does not; the A2A door passes params through as
+given), so a non-string `plan_id` raised `sqlite3.ProgrammingError` — not an `OperationalError`, so
+the existing clause missed it — and a non-string `expected_head` raised `TypeError` out of
+`hmac.compare_digest`. Both escaped as tracebacks with no receipt. A backstop clause now catches what
+none of the precise clauses named, LAST so every existing stage keeps its own label, and it reports
+the exception TYPE rather than a stack.
+
+**Two more residuals published rather than discovered.** A consent-gated principal **cannot complete
+anything Frappe queues** — a Journal Entry over 100 rows, or any `queue_in_background` DocType, is
+submitted by a worker that runs as the enqueuing user (so the gate applies) with no request to carry
+a marker header (so it can only ever be refused, reported by Frappe as a generic "Action Failed").
+And `Document.discard` is whitelisted and reaches `docstatus = 2` via `db_set` on `before_discard`,
+so the old "every ORM path to docstatus 1/2" was not literally true; it refuses non-drafts, so no
+ledger entry is ever reversed by it, and the claim is now "every path that posts to the ledger".
+
+Broker 3142 → 3163.
+
+## 0.33.2 — 2026-07-26 — check the date that actually posts, and show the human the act they are signing
+
+PATCH, two redteam findings on the broker half.
+
+**Closed books: validate one value, use another.** `_governed_write` reads period locks for the
+document's **live** posting date, then `governed_submit` runs `check_red_line` against the **plan's**
+posting date. Two different dates, one set of locks. If the live date drifted out of the plan's
+without bumping `modified`, the broker read locks for a date inside a closed period, checked a date
+outside it, and permitted the write. `check_fresh`'s `modified`-equality is only an implicit guard
+against that drift, and this module already says so twenty lines above the bug, in the wrong-COMPANY
+belt written for exactly this evasion (`db_set(update_modified=False)` and raw SQL do not bump
+`modified`). The company case got a live re-read. The date case did not, though the live date was
+already in hand. The live date is now checked against the locks that were read for it, at the same
+point and with the same `red_line` stage, before the marker is fetched — so a refusal never touches
+consent. The plan-date check stays and answers its own question: is what the human consented to
+still legal.
+
+Proven by removing the belt and watching the write land: `ok: true`, `docstatus: 1`, into a closed
+period.
+
+**Consent disclosed the plan id, not the act.** `pacioli mint` printed the plan id, the docname and
+the target. A one-invoice submit and a cascade-cancel reversing five submitted documents therefore
+rendered *identically* apart from a hex string, so the human's whole picture of what they were
+authorising was the agent's narration — the one thing consent exists to be independent of. For a
+reconcile plan the docname is the plan id, so the operator saw a hex string where the document
+should be. The binding machinery was never the weak part; `check_op` and `check_doctype` are exact
+and were probed clean. The disclosure was.
+
+`mint` now names the operation, the doctype and the document; lists **every** document a cascade
+will touch, because a count is a thing a human skims and a list is a thing they check; prints the
+projected GL as debits and credits with its own size rather than a net that reads `0.00` for every
+healthy plan; surfaces the plan's risk flags; and calls out an unbalanced projection in the house's
+own words. It closes by saying that if the act shown is not the one you were asked to approve, do
+not hand the token over. Every field was already persisted and simply never shown.
+
+**The declared `limit` bounds are now enforced.** Every `list_*` publishes
+`{"minimum": 1, "maximum": 200}` and nothing checked it: the MCP SDK does not validate
+`inputSchema` and the A2A door passes params through as given. `limit=0` reached frappe as
+`limit_page_length="0"`, which this same client uses deliberately elsewhere to mean *all rows*, so a
+tool whose schema says the minimum is 1 was an unbounded dump of the doctype. A non-integer raised
+`ValueError` out of `dispatch`, which catches neither, producing a traceback where this surface
+promises a structured refusal and leaving no receipt behind. Clamped now, with the published
+default as the fallback.
+
+Broker 3130 → 3142.
+
+## 0.33.1 — 2026-07-26 — the one tool exempted from the seal in order to READ could also WRITE
+
+PATCH. Redteam finding against the broker half, which the 2026-07-26 floor audit had explicitly
+left unaudited.
+
+`prove_verify` sits in `READ_ONLY_TOOLS`, so `dispatch`'s seal gate skips it deliberately: a sealed
+or corrupt store must stay **readable**, or the seal would hide the very books that explain it
+(Global constraint #6). But its handler also ran `_sweep_queued_consequences`, and that calls
+`store.record_outcome` — advancing the chain head and finalizing an open intent. So the single tool
+exempted from the gate *in order to read* was also the single tool that could **write through the
+exemption**, one indirection below where any reader would look.
+
+Consequences: an agent under CONTAIN could still move the audit book and clear its own open item,
+and an operator who ran `pacioli anchor write` then `pacioli seal` would find the head had moved
+anyway, leaving growth to adjudicate that the seal was supposed to prevent. The docstring's claim
+that a sealed store refuses the write outright was not true for ledger writes.
+
+Fixed by keeping the exemption and narrowing it to what it was for. `prove_verify` still verifies
+and still reports while sealed; the sweep stands down and **says why**, because a silently skipped
+sweep is indistinguishable from a sweep that found nothing. If seal state is unreadable it is
+treated as sealed, the same deny-biased posture `_seal_gate` already takes: cannot confirm unsealed,
+do not write.
+
+Broker 3125 → 3130. Three of the five new tests fail against 0.33.0; the other two are regression
+guards that must pass either way (a sealed store still reads, an unsealed one still sweeps).
+
+**One of the five was written wrong first, and it is worth recording.** The obvious test — snapshot
+the chain head, dispatch, assert unchanged — PASSED against the broken code, because the sweep only
+resolves `BOM Creator` submits sitting at `committed_pending_async` and an ordinary fixture has
+none. Nothing moved either way, so it held for the wrong reason. It now asserts on INVOCATION: the
+writing sweep must not be reached at all. Same lesson as the frame double and the cascade double,
+three days running. Check that your test can fail before you believe it passed.
+
+## 0.33.0 — 2026-07-26 — doctor says how wide the grant is, not just whether consent is on
+
+MINOR (one new diagnostic; no behaviour change to any governed path; broker 3125 + 395 subtests, +7).
+
+`doctor`'s consent probe now also reports the **resource-branch posture** it reads off the same
+self-report payload (`pacioli_guard.api.consent_status`, guard 0.8.0), so it costs no extra round
+trip and the consent verdict stays `findings[0]`:
+
+- **WARN on a wildcard grant** — the key can reach every DocType on the site through raw REST CRUD.
+  Verb narrowing still applies and the guard's own control DocTypes are refused regardless, but a
+  wildcard is a grant nobody can audit by reading it.
+- **WARN on `allow_resource` with an empty allowlist** — every resource call refuses. Guard 0.8.0
+  changed that from "every DocType" to "nothing", so this state now reads as a half-finished grant.
+- Silent on a narrow grant, on `allow_resource` off, and on a guard older than 0.8.0 that sends no
+  `resource_posture` key at all — nothing to say is not the same as a problem.
+
+Same reasoning as the `require_consent` warning it sits beside: an operator quietly unaware of how
+wide their own grant is, is how the 2026-07-25 bypass survived as long as it did.
+
+Also: the consent-ON finding now states the coverage it actually has. Guard 0.9.0 moved that gate onto
+the document (`doc_events` `before_submit`/`before_cancel`), so it covers every ORM path to
+submit/cancel — a desk session, an OAuth token, a background job and the bench console included — not
+only api-key REST. Doctor said the narrower thing while the guarantee was already wider.
+
+## 0.32.0 — 2026-07-25 — the broker carries the floor's consent marker
+
+MINOR (one new OPTIONAL tool parameter; nothing required, no grant widened, deny-bias unchanged;
+broker 3111 + 392 subtests). Companion to `pacioli-guard` 0.7.0.
+
+**Why.** The bench proved on 2026-07-25 that scoping the broker's own credential to exactly the
+calls it makes does not stop whoever holds it from making those calls: a direct `run_doc_method`
+submitted a Sales Invoice with no plan and no receipt, and the ledger moved. Guard 0.7.0 answers
+that at the floor with `require_consent` and a single-use `Pacioli Consent Marker`. A guard the
+broker cannot satisfy would simply have broken every governed write, so the broker has to carry
+the marker.
+
+- **`consent_token`** — a new optional property on every `submit_*`/`cancel_*` tool schema.
+  Deliberately NOT in `required`: the floor gate is opt-in, and making the parameter mandatory
+  would break every bench that has not turned it on.
+- **`ErpnextClient._call(..., consent=...)`** attaches `X-Pacioli-Consent` **per call**, not per
+  session, so a read never burns a marker and the broker holds a token only for the single act a
+  human consented to. Threaded through `submit_document` and `cancel_document` — a cancel needs
+  its own marker, because consent to post is not consent to reverse.
+- **The broker never mints the marker it spends.** The floor refuses a marker whose minter is the
+  acting credential, so minting stays a different hand on the books box. A broker that could mint
+  its own consent would be signing its own permission slip, which is the bypass this closes.
+
+**Live-proven end to end** against the public bench (`erpnext.anytimecomm.com`, guard 0.7.0,
+`require_consent` ON): plan_submit → `pacioli mint` (broker marker) → a floor marker minted by
+Administrator → `submit_sales_invoice` carrying both → `ok: true`, **docstatus 1**, and
+`pacioli verify` reports the chain verifying across 6 receipts. The same act without the floor
+marker refuses at the bench with the guard naming the reason.
+
 ## 0.31.1 — 2026-07-23 — live-prove batch E: 48 of 51 proven, three bench-caught fixes
 
 PATCH (bug fixes plus an honest count correction; no new capability, no grant widened, deny-bias

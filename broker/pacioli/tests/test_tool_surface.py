@@ -345,8 +345,14 @@ _GENERIC = {
 _VERB_SCHEMA = {
     "get": (["name", "pacioli_target"], ("name",)),
     "list": (["filters", "limit", "pacioli_target"], ()),
-    "submit": (["marker", "name", "pacioli_target", "plan_id"], ("name", "plan_id", "marker")),
-    "cancel": (["marker", "name", "pacioli_target", "plan_id"], ("name", "plan_id", "marker")),
+    # `consent_token` (2026-07-25) is OPTIONAL, never required: it carries the floor-side consent
+    # marker for benches running pacioli-guard with `require_consent` on. Required-tuple
+    # deliberately unchanged — making it mandatory would break every bench that has not turned the
+    # gate on, and the gate is opt-in by design.
+    "submit": (["consent_token", "marker", "name", "pacioli_target", "plan_id"],
+               ("name", "plan_id", "marker")),
+    "cancel": (["consent_token", "marker", "name", "pacioli_target", "plan_id"],
+               ("name", "plan_id", "marker")),
     "amend": (["name", "pacioli_target"], ("name",)),
 }
 
@@ -403,14 +409,34 @@ class ToolSurfaceCharacterization(unittest.TestCase):
                                       "plan_id": {"type": "string", "description": "From plan_submit."},
                                       "marker": {"type": "string",
                                                  "description": "The single-use consent token a "
-                                                                "human handed you."}, **target}},
+                                                                "human handed you."},
+                                      "consent_token": {
+                                          "type": "string",
+                                          "description": (
+                                              "Optional. The floor-side consent marker "
+                                              "(`API Key Scope.require_consent`), minted on "
+                                              "the books box by a different principal for this "
+                                              "exact document and act, and spent on use. Required "
+                                              "by benches that enforce consent at the floor; "
+                                              "harmless on benches that do not. See the guard's "
+                                              "SECURITY.md for supported versions.")}, **target}},
             "cancel": {"type": "object", "required": ["name", "plan_id", "marker"],
                        "properties": {"name": {"type": "string",
                                                "description": "Submitted document name."},
                                       "plan_id": {"type": "string", "description": "From plan_cancel."},
                                       "marker": {"type": "string",
                                                  "description": "The single-use consent token a "
-                                                                "human handed you."}, **target}},
+                                                                "human handed you."},
+                                      "consent_token": {
+                                          "type": "string",
+                                          "description": (
+                                              "Optional. The floor-side consent marker "
+                                              "(`API Key Scope.require_consent`), minted on "
+                                              "the books box by a different principal for this "
+                                              "exact document and act, and spent on use. Required "
+                                              "by benches that enforce consent at the floor; "
+                                              "harmless on benches that do not. See the guard's "
+                                              "SECURITY.md for supported versions.")}, **target}},
             "amend": {"type": "object", "required": ["name"],
                       "properties": {"name": {"type": "string",
                                               "description": "Cancelled document name."}, **target}},
@@ -469,3 +495,81 @@ class ToolSurfaceCharacterization(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDeclaredLimitBoundsAreActuallyEnforced(unittest.TestCase):
+    """Redteam 2026-07-26. Every `list_*` publishes `{"minimum": 1, "maximum": 200}` and nothing
+    enforced it: the MCP SDK does not validate `inputSchema` and the A2A door passes params through
+    as given, so the declaration was a promise with no keeper.
+
+    `limit=0` was the sharp one. It reached frappe as `limit_page_length="0"`, which this very
+    client uses deliberately elsewhere to mean ALL ROWS — so a tool whose schema says the minimum
+    is 1 became an unbounded dump of the doctype.
+    """
+
+    def test_zero_does_not_become_unbounded(self):
+        from pacioli.tools import LIMIT_MIN, _bounded_limit
+        self.assertEqual(_bounded_limit(0), LIMIT_MIN)
+
+    def test_negative_and_huge_are_clamped_to_the_declared_range(self):
+        from pacioli.tools import LIMIT_MAX, LIMIT_MIN, _bounded_limit
+        self.assertEqual(_bounded_limit(-5), LIMIT_MIN)
+        self.assertEqual(_bounded_limit(10_000_000), LIMIT_MAX)
+        self.assertEqual(_bounded_limit(200), LIMIT_MAX)
+
+    def test_a_non_integer_falls_back_instead_of_raising_out_of_dispatch(self):
+        # `int(args.get("limit"))` raised ValueError/TypeError straight out of dispatch, which
+        # catches neither — a traceback instead of a structured refusal, and no receipt.
+        from pacioli.tools import LIMIT_DEFAULT, _bounded_limit
+        for bad in ("abc", None, {}, [], object()):
+            self.assertEqual(_bounded_limit(bad), LIMIT_DEFAULT, repr(bad))
+
+    def test_an_ordinary_value_is_untouched(self):
+        from pacioli.tools import _bounded_limit
+        self.assertEqual(_bounded_limit(50), 50)
+        self.assertEqual(_bounded_limit("50"), 50)
+
+
+class TestMalformedArgumentsGetAStructuredRefusalNotATraceback(unittest.TestCase):
+    """Redteam 2026-07-26. `dispatch`'s own docstring promises "a governed denial is a structured
+    answer (stage + reason), never a traceback", and `a2a.py` claims hostile enumeration "is a
+    ledger entry, not an invisible transport error". Neither held for malformed arguments.
+
+    Neither door validates `inputSchema` — the MCP SDK does not, and the A2A door passes `params`
+    through as given — so schema-illegal-but-JSON-legal values reach the handlers. `dispatch` caught
+    only ErpnextError, RegistryError, sqlite3.OperationalError and StoreCorruptError. Real escapes:
+
+      * a non-string `plan_id` -> `sqlite3.ProgrammingError`, which is NOT an OperationalError
+      * a non-string `expected_head` -> `TypeError` from `hmac.compare_digest`
+
+    Both raised out of dispatch as tracebacks, with no receipt behind them.
+    """
+
+    def _broker(self):
+        from pacioli.tests.test_seal_gate import make_broker
+        return make_broker()[0]
+
+    def test_a_non_string_plan_id_is_a_structured_deny(self):
+        out = self._broker().dispatch("submit_sales_invoice",
+                                      {"name": "SI-1", "plan_id": {"not": "a string"},
+                                       "marker": "x"})
+        self.assertFalse(out["ok"])
+        self.assertIn("stage", out)
+        self.assertIsInstance(out.get("reason"), str)
+
+    def test_a_non_string_expected_head_is_a_structured_deny(self):
+        out = self._broker().dispatch("prove_verify", {"expected_head": 12345})
+        self.assertFalse(out["ok"])
+        self.assertIn("stage", out)
+
+    def test_the_reason_names_the_type_and_carries_no_traceback(self):
+        out = self._broker().dispatch("prove_verify", {"expected_head": 12345})
+        self.assertNotIn("Traceback", out["reason"])
+        self.assertNotIn("File \"", out["reason"])
+
+    def test_an_ordinary_refusal_keeps_its_own_precise_stage(self):
+        # The backstop must be LAST: a normal governed denial must not be relabelled "request".
+        out = self._broker().dispatch("submit_sales_invoice",
+                                      {"name": "SI-1", "plan_id": "nope", "marker": "x"})
+        self.assertFalse(out["ok"])
+        self.assertNotEqual(out.get("stage"), "request")

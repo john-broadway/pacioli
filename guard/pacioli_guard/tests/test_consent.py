@@ -1,0 +1,506 @@
+# Copyright (c) 2026, John Broadway and contributors
+# License: Apache-2.0
+"""Consent verification at the floor.
+
+Why this gate exists: on 2026-07-25 the live bench proved that scoping the broker's own
+credential to exactly the calls it makes does NOT stop whoever holds that credential from
+making those calls directly. The broker must be allowed to submit invoices, so its key is
+allowed to submit invoices, so a stolen key submits invoices — no plan, no marker, no receipt.
+Verified end to end: the ledger moved.
+
+Credential scope cannot close that, by construction. The floor has to check consent itself.
+
+Two properties added after the first pass (second-lens review, same day). Both are the same
+principle the document binding already encodes, carried one step further:
+
+* **Consent is to an ACT, not just a document.** Cancel reverses GL entries. A human who
+  consented to posting an invoice did not consent to reversing it, and both are docstatus
+  moves on the same document — so a submit marker must not spend on a cancel.
+* **A credential cannot mint its own consent.** If the key that acts is the key that minted
+  the marker, the gate authorises itself and the whole thing is theatre. The marker records
+  who minted it; the floor compares.
+"""
+import unittest
+
+from pacioli_guard.scope import (
+    consent_token_hash,
+    consent_verdict,
+    docstatus_action,
+    docstatus_target_docname,
+)
+
+GOOD = "fixture-consent-token-not-a-real-secret"
+HUMAN = "operator@example.com"
+AGENT = "pacioli-broker@example.com"
+
+
+def record(token=GOOD, doctype="Sales Invoice", docname="ACC-SINV-2026-00004",
+           expires_at=2000, burned=0, action="submit", minted_by=HUMAN):
+    return {"token_hash": consent_token_hash(token), "doctype": doctype,
+            "docname": docname, "expires_at": expires_at, "burned": burned,
+            "action": action, "minted_by": minted_by}
+
+
+def verdict(**over):
+    """Every call states the act and the acting principal — there is no implicit default."""
+    kw = {"presented": GOOD, "doctype": "Sales Invoice", "docname": "ACC-SINV-2026-00004",
+          "action": "submit", "record": record(), "now": 1000, "principal": AGENT}
+    kw.update(over)
+    return consent_verdict(**kw)
+
+
+class TestTheRefusalTextDoesNotLie(unittest.TestCase):
+    """John, 2026-07-26: **"our code must not lie."**
+
+    A refusal is the one message an operator is guaranteed to read, at the exact moment they are
+    blocked and looking for the remedy. Every sentence in it is a claim this software makes about
+    itself, and a false one there costs more than a false one in a README — it sends someone down a
+    road that does not exist while their write is failing.
+
+    These tests assert the refusal text is TRUE, not that it is well written.
+    """
+
+    def test_a_cancel_refusal_does_not_say_the_document_must_be_SUBMITTED(self):
+        # The reason hardcoded "before it can be submitted" for every act. Observed live on the
+        # bench in this exact shape: "requires human consent to cancel a document, and no live
+        # consent marker ... before it can be submitted". The act is a parameter; the text ignored
+        # it and named the wrong one.
+        allowed, reason = verdict(action="cancel", record=None)
+        self.assertFalse(allowed)
+        self.assertNotIn("submitted", reason)
+
+    def test_a_submit_refusal_still_reads_correctly(self):
+        allowed, reason = verdict(action="submit", record=None)
+        self.assertFalse(allowed)
+        self.assertIn("submit", reason)
+
+    def test_the_remedy_does_not_promise_a_CLI_this_package_does_not_ship(self):
+        """`pacioli mint` lives in the SEPARATE broker distribution (`pip install pacioli`).
+
+        `pacioli-guard` ships no console script at all — its documented deployment is a bare
+        `bench install-app` on a customer bench, with no broker anywhere near it. Telling that
+        operator to run `pacioli mint` names a command their shell does not have.
+        """
+        allowed, reason = verdict(action="submit", record=None)
+        self.assertFalse(allowed)
+        if "pacioli mint" in reason:
+            self.assertIn("pacioli", reason.split("pacioli mint")[1][:200],
+                          "if the CLI is named, the text must say which package ships it")
+
+
+class TestConsentVerdict(unittest.TestCase):
+    def test_refuses_when_no_marker_is_presented(self):
+        """The bypass, exactly: the right credential making the right call with no consent."""
+        allowed, reason = verdict(presented=None, record=None)
+        self.assertFalse(allowed)
+        self.assertIn("no consent marker", reason.lower())
+
+    def test_allows_a_live_marker_bound_to_this_document_and_act(self):
+        allowed, reason = verdict()
+        self.assertTrue(allowed, reason)
+
+    def test_refuses_when_no_marker_was_ever_minted_for_this_document(self):
+        allowed, reason = verdict(record=None)
+        self.assertFalse(allowed)
+        self.assertIn("no live consent marker", reason.lower())
+
+    def test_refuses_an_expired_marker(self):
+        allowed, reason = verdict(record=record(expires_at=999))
+        self.assertFalse(allowed)
+        self.assertIn("expired", reason.lower())
+
+    def test_refuses_a_marker_already_burned(self):
+        """Single use. Replay is the whole reason the marker is burned on consumption."""
+        allowed, reason = verdict(record=record(burned=1))
+        self.assertFalse(allowed)
+        self.assertIn("already used", reason.lower())
+
+    def test_refuses_a_marker_minted_for_a_different_document(self):
+        """Consent for one invoice is not consent for the next one."""
+        allowed, reason = verdict(docname="ACC-SINV-2026-00099")
+        self.assertFalse(allowed)
+        self.assertIn("different document", reason.lower())
+
+    def test_refuses_a_marker_minted_for_a_different_doctype(self):
+        allowed, reason = verdict(doctype="Journal Entry")
+        self.assertFalse(allowed)
+        self.assertIn("different document", reason.lower())
+
+    def test_refuses_a_forged_token_against_a_real_record(self):
+        """The record is live and correctly bound; only the token is wrong."""
+        allowed, reason = verdict(presented="not-the-real-token-not-the-real-tok")
+        self.assertFalse(allowed)
+        self.assertIn("does not match", reason.lower())
+
+    def test_expiry_is_checked_before_the_token_matches(self):
+        """An expired marker refuses even when the presented token is correct."""
+        allowed, _ = verdict(record=record(expires_at=1000))
+        self.assertFalse(allowed)
+
+
+class TestConsentIsBoundToTheAct(unittest.TestCase):
+    """A marker names one act. Cancel is not submit, and reversing a posting is its own decision."""
+
+    def test_a_submit_marker_does_not_authorise_a_cancel(self):
+        allowed, reason = verdict(action="cancel")
+        self.assertFalse(allowed)
+        self.assertIn("different act", reason.lower())
+
+    def test_a_cancel_marker_authorises_a_cancel(self):
+        allowed, reason = verdict(action="cancel", record=record(action="cancel"))
+        self.assertTrue(allowed, reason)
+
+    def test_refuses_when_the_act_cannot_be_determined(self):
+        """An unreadable docstatus move is not spendable — deny-biased, like every other branch."""
+        allowed, reason = verdict(action=None)
+        self.assertFalse(allowed)
+        self.assertIn("act", reason.lower())
+
+    def test_refuses_a_marker_that_names_no_act(self):
+        allowed, reason = verdict(record=record(action=None))
+        self.assertFalse(allowed)
+        self.assertIn("act", reason.lower())
+
+    def test_act_binding_is_checked_before_the_token_matches(self):
+        allowed, _ = verdict(action="cancel", presented="not-the-real-token-not-the-real-t")
+        self.assertFalse(allowed)
+
+
+class TestACredentialCannotMintItsOwnConsent(unittest.TestCase):
+    """The separation the whole gate rests on. Documented as law 2026-07-25; enforced here.
+
+    Without this, a stolen key mints a marker and spends it in the same breath, and the floor
+    dutifully records that consent was given. The marker must come from another hand.
+    """
+
+    def test_refuses_when_the_acting_credential_minted_the_marker(self):
+        allowed, reason = verdict(record=record(minted_by=AGENT))
+        self.assertFalse(allowed)
+        self.assertIn("own consent", reason.lower())
+
+    def test_case_and_whitespace_do_not_defeat_the_comparison(self):
+        allowed, reason = verdict(record=record(minted_by="  PACIOLI-Broker@Example.com "))
+        self.assertFalse(allowed)
+        self.assertIn("own consent", reason.lower())
+
+    def test_refuses_a_marker_with_no_recorded_minter(self):
+        """Unprovable separation is not separation."""
+        allowed, reason = verdict(record=record(minted_by=None))
+        self.assertFalse(allowed)
+        self.assertIn("minted", reason.lower())
+
+    def test_refuses_when_the_acting_principal_is_unknown(self):
+        allowed, reason = verdict(principal=None)
+        self.assertFalse(allowed)
+        self.assertIn("principal", reason.lower())
+
+    def test_allows_when_a_different_hand_minted_it(self):
+        allowed, reason = verdict(record=record(minted_by=HUMAN))
+        self.assertTrue(allowed, reason)
+
+
+class TestDocstatusAction(unittest.TestCase):
+    """Which act is this call attempting? Pure, and deny-biased on anything it cannot read."""
+
+    def test_a_document_submit_method(self):
+        self.assertEqual(docstatus_action("method", "Sales Invoice.submit", "POST", {}), "submit")
+
+    def test_a_document_cancel_method(self):
+        self.assertEqual(docstatus_action("method", "Sales Invoice.cancel", "POST", {}), "cancel")
+
+    def test_the_desk_save_endpoint_submitting(self):
+        self.assertEqual(
+            docstatus_action("method", "frappe.desk.form.save.savedocs", "POST",
+                             {"action": "Submit"}), "submit")
+
+    def test_the_desk_save_endpoint_cancelling(self):
+        self.assertEqual(
+            docstatus_action("method", "frappe.desk.form.save.savedocs", "POST",
+                             {"action": "Cancel"}), "cancel")
+
+    def test_the_desk_save_endpoint_with_an_unknown_action_is_unreadable(self):
+        self.assertIsNone(
+            docstatus_action("method", "frappe.desk.form.save.savedocs", "POST",
+                             {"action": "Update"}))
+
+    def test_a_raw_update_setting_docstatus_one(self):
+        self.assertEqual(docstatus_action("resource", ("Sales Invoice", "X"), "PUT",
+                                          {"docstatus": 1}), "submit")
+
+    def test_a_raw_update_setting_docstatus_two(self):
+        self.assertEqual(docstatus_action("resource", ("Sales Invoice", "X"), "PUT",
+                                          {"docstatus": "2"}), "cancel")
+
+    def test_a_create_inserted_as_submitted(self):
+        self.assertEqual(docstatus_action("resource", ("Sales Invoice",), "POST",
+                                          {"docstatus": 1}), "submit")
+
+    def test_an_unreadable_docstatus_value(self):
+        self.assertIsNone(docstatus_action("resource", ("Sales Invoice", "X"), "PUT",
+                                           {"docstatus": "banana"}))
+
+    def test_a_plain_read_names_no_act(self):
+        self.assertIsNone(docstatus_action("resource", ("Sales Invoice", "X"), "GET", {}))
+
+
+class TestDocstatusTargetDocname(unittest.TestCase):
+    """Consent is bound to one document, so the gate must know WHICH document is being moved.
+
+    Deny-biased on ambiguity, mirroring _run_doc_method_doctype: a legitimate client names one
+    document in one place. Only a spoof names two, and an unresolved name must refuse rather
+    than let a marker minted for one invoice authorize another.
+    """
+
+    def test_reads_dn_from_a_run_doc_method_form(self):
+        self.assertEqual(
+            docstatus_target_docname("/api/method/run_doc_method",
+                                     {"dt": "Sales Invoice", "dn": "ACC-SINV-2026-00004"}),
+            "ACC-SINV-2026-00004")
+
+    def test_reads_name_from_a_document_body(self):
+        self.assertEqual(
+            docstatus_target_docname(
+                "/api/method/frappe.client.submit",
+                {"doc": {"doctype": "Sales Invoice", "name": "ACC-SINV-2026-00004",
+                         "docstatus": 1}}),
+            "ACC-SINV-2026-00004")
+
+    def test_reads_the_document_from_a_resource_path(self):
+        self.assertEqual(
+            docstatus_target_docname("/api/resource/Sales Invoice/ACC-SINV-2026-00004", {}),
+            "ACC-SINV-2026-00004")
+
+    def test_percent_encoded_path_segment_is_decoded(self):
+        self.assertEqual(
+            docstatus_target_docname("/api/resource/Sales%20Invoice/ACC-SINV-2026-00004", {}),
+            "ACC-SINV-2026-00004")
+
+    def test_refuses_when_nothing_names_a_document(self):
+        self.assertIsNone(docstatus_target_docname("/api/method/run_doc_method",
+                                                   {"dt": "Sales Invoice"}))
+
+    def test_refuses_when_two_sources_name_different_documents(self):
+        """The same spoof shape the doctype resolver already defends against."""
+        self.assertIsNone(docstatus_target_docname(
+            "/api/method/run_doc_method",
+            {"dn": "ACC-SINV-2026-00004",
+             "doc": {"doctype": "Sales Invoice", "name": "ACC-SINV-2026-00099"}}))
+
+    def test_resolves_when_two_sources_agree(self):
+        self.assertEqual(
+            docstatus_target_docname(
+                "/api/method/run_doc_method",
+                {"dn": "ACC-SINV-2026-00004",
+                 "doc": {"doctype": "Sales Invoice", "name": "ACC-SINV-2026-00004"}}),
+            "ACC-SINV-2026-00004")
+
+    def test_a_doctype_only_resource_path_names_no_document(self):
+        """POST /api/resource/Sales Invoice creates; there is no document to consent to yet."""
+        self.assertIsNone(docstatus_target_docname("/api/resource/Sales Invoice", {}))
+
+
+class TestConsentTokenHash(unittest.TestCase):
+    def test_hash_is_stable_for_the_same_token(self):
+        self.assertEqual(consent_token_hash(GOOD), consent_token_hash(GOOD))
+
+    def test_hash_differs_for_different_tokens(self):
+        self.assertNotEqual(consent_token_hash(GOOD), consent_token_hash(GOOD + "x"))
+
+    def test_hash_does_not_contain_the_token(self):
+        """A stored marker must not be reversible into the token a human handed the agent."""
+        self.assertNotIn(GOOD, consent_token_hash(GOOD))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class TestConsentStatusIsGrantableAsABareMethod(unittest.TestCase):
+    """The doctor probe must be reachable, and reachable ONLY on the safe-method terms.
+
+    `is_permitted` deliberately refuses a bare (doctype-unresolved) method grant unless the name
+    is on the small curated SAFE_METHODS list — a classifier cannot enumerate every dangerous
+    generic RPC, so the default is denied-until-reviewed. The diagnostic endpoint was granted on
+    the live bench and still refused for exactly that reason (2026-07-25), which is the design
+    working. It qualifies on the same terms as the others: no arguments, no writes, reports only
+    the calling session's own user.
+    """
+
+    def test_it_is_on_the_curated_safe_list(self):
+        from pacioli_guard.scope import SAFE_METHODS
+        self.assertIn("pacioli_guard.api.consent_status", SAFE_METHODS)
+
+    def test_a_granted_credential_may_call_it(self):
+        from pacioli_guard.scope import ApiScope, is_permitted
+        scope = ApiScope.from_grant(1, ["pacioli_guard.api.consent_status"], [])
+        self.assertTrue(is_permitted(scope, "method", "pacioli_guard.api.consent_status"))
+
+    def test_an_ungranted_credential_may_not(self):
+        """Being safe does not mean being free — it still has to be in the allowlist."""
+        from pacioli_guard.scope import ApiScope, is_permitted
+        scope = ApiScope.from_grant(1, ["frappe.auth.get_logged_user"], [])
+        self.assertFalse(is_permitted(scope, "method", "pacioli_guard.api.consent_status"))
+
+
+# ---- F3: minted_by is established by the server, not asserted by the caller --------------------
+# The controller does `import frappe` + `from frappe.model.document import Document`, so the stub
+# needs that module chain. Same posture as test_enforce.py: satisfy the hard imports bench-free,
+# then drive the REAL controller code rather than a reimplementation of it.
+import sys
+import types
+
+_frappe = sys.modules.setdefault("frappe", types.ModuleType("frappe"))
+_frappe_model = sys.modules.setdefault("frappe.model", types.ModuleType("frappe.model"))
+_frappe_document = sys.modules.setdefault(
+    "frappe.model.document", types.ModuleType("frappe.model.document"))
+if not hasattr(_frappe_document, "Document"):
+    class _StubDocument:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    _frappe_document.Document = _StubDocument
+_frappe.model = _frappe_model
+_frappe_model.document = _frappe_document
+# `api.py` evaluates `@frappe.whitelist()` at import time, so the stub needs a passthrough.
+if not hasattr(_frappe, "whitelist"):
+    _frappe.whitelist = lambda *a, **k: (lambda fn: fn)
+
+from pacioli_guard.scoping.doctype.pacioli_consent_marker.pacioli_consent_marker import (  # noqa: E402
+    PacioliConsentMarker,
+)
+
+
+class TestMintedByIsServerBound(unittest.TestCase):
+    """Floor audit F3 (2026-07-26). ``consent_verdict`` refuses a self-minted marker, and that is
+    the property that closed the 2026-07-25 bypass — but the field it reads was never established
+    by anything. ``minted_by`` is ``read_only`` on the DocType, which is a form property and not a
+    server-side wall, and the controller was ``pass``, so the stored value was whatever the creator
+    supplied. These lock the binding, and specifically lock that it OVERWRITES."""
+
+    def setUp(self):
+        self._saved = getattr(_frappe, "session", None)
+        _frappe.session = types.SimpleNamespace(user="operator@example.com")
+
+    def tearDown(self):
+        if self._saved is None:
+            if hasattr(_frappe, "session"):
+                del _frappe.session
+        else:
+            _frappe.session = self._saved
+
+    def test_minted_by_comes_from_the_session(self):
+        doc = PacioliConsentMarker()
+        doc.before_insert()
+        self.assertEqual(doc.minted_by, "operator@example.com")
+
+    def test_a_caller_supplied_minted_by_is_overwritten(self):
+        # THE property. Fill-when-blank would let a credential name any other principal as its
+        # minter and pass the separation check with a string of its own choosing.
+        doc = PacioliConsentMarker(minted_by="Administrator")
+        doc.before_insert()
+        self.assertEqual(doc.minted_by, "operator@example.com")
+
+    def test_the_acting_credential_cannot_launder_itself_through_the_field(self):
+        # A credential inserting its own marker gets its OWN name recorded, which is exactly what
+        # consent_verdict's separation branch then refuses. Bound field -> real mechanism.
+        _frappe.session = types.SimpleNamespace(user="agent@example.com")
+        doc = PacioliConsentMarker(minted_by="operator@example.com")
+        doc.before_insert()
+        self.assertEqual(doc.minted_by, "agent@example.com")
+        allowed, reason = consent_verdict(
+            "tok", "Sales Invoice", "SI-001", "submit",
+            {"name": "m1", "token_hash": consent_token_hash("tok"), "doctype": "Sales Invoice",
+             "docname": "SI-001", "action": "submit", "expires_at": 9e18, "burned": 0,
+             "minted_by": doc.minted_by},
+            0.0, "agent@example.com")
+        self.assertFalse(allowed)
+        self.assertIn("mint", reason.lower())
+
+
+class TestConsentStatusSelfReport(unittest.TestCase):
+    """The floor's self-report (``pacioli_guard.api.consent_status``). It had no behaviour tests at
+    all, which is a gap in a security-relevant endpoint: it is the one thing on SAFE_METHODS that
+    an operator's `doctor` run believes. Its contract is POSTURE, never contents — it must never
+    return DocType names, and anything it cannot establish must read as not-established."""
+
+    class _Row:
+        def __init__(self, ref_doctype):
+            self.ref_doctype = ref_doctype
+
+    class _Doc:
+        def __init__(self, allow_resource=0, rows=(), require_consent=0):
+            self.allow_resource = allow_resource
+            self.resource_doctypes = list(rows)
+            self.require_consent = require_consent
+
+    class _FakeDB:
+        def __init__(self, doc):
+            self._doc = doc
+
+        def get_value(self, doctype, filters, fieldname=None, as_dict=False):
+            if self._doc is None:
+                return None
+            if isinstance(filters, dict):      # name discovery
+                return "AKS::seat"
+            return getattr(self._doc, fieldname, None)
+
+    def _api(self, doc):
+        from pacioli_guard import api
+        fake = types.ModuleType("frappe")
+        fake.session = types.SimpleNamespace(user="seat@example.com")
+        fake.db = self._FakeDB(doc)
+        fake.get_doc = lambda dt, name: doc
+        api.frappe = fake
+        return api
+
+    def test_unscoped_is_the_loudest_state(self):
+        api = self._api(None)
+        out = api.consent_status()
+        self.assertFalse(out["scoped"])
+        self.assertFalse(out["require_consent"])
+        self.assertEqual(out["resource_posture"], "unknown")
+
+    def test_narrow_grant_reports_narrow(self):
+        api = self._api(self._Doc(allow_resource=1, rows=[self._Row("Sales Invoice")],
+                                  require_consent=1))
+        out = api.consent_status()
+        self.assertTrue(out["scoped"])
+        self.assertTrue(out["require_consent"])
+        self.assertEqual(out["resource_posture"], "narrow")
+
+    def test_wildcard_row_reports_all_doctypes(self):
+        api = self._api(self._Doc(allow_resource=1, rows=[self._Row("*")]))
+        self.assertEqual(api.consent_status()["resource_posture"], "all_doctypes")
+
+    def test_empty_allowlist_reports_denies_all(self):
+        # guard 0.8.0: this used to mean "every DocType". It now denies, and that is worth saying —
+        # it usually means a half-finished grant.
+        api = self._api(self._Doc(allow_resource=1, rows=[]))
+        self.assertEqual(api.consent_status()["resource_posture"], "denies_all")
+
+    def test_blank_rows_are_not_mistaken_for_a_grant(self):
+        api = self._api(self._Doc(allow_resource=1, rows=[self._Row("  "), self._Row(None)]))
+        self.assertEqual(api.consent_status()["resource_posture"], "denies_all")
+
+    def test_master_check_off_reports_off(self):
+        api = self._api(self._Doc(allow_resource=0, rows=[self._Row("Sales Invoice")]))
+        self.assertEqual(api.consent_status()["resource_posture"], "off")
+
+    def test_it_never_returns_doctype_names(self):
+        # The contract: posture, not contents. A leak here would hand one seat's allowlist to
+        # whoever holds another seat's key.
+        api = self._api(self._Doc(allow_resource=1, rows=[self._Row("Sales Invoice")],
+                                  require_consent=1))
+        self.assertNotIn("Sales Invoice", repr(api.consent_status()))
+
+    def test_a_broken_posture_read_cannot_break_the_consent_report(self):
+        doc = self._Doc(allow_resource=1, rows=[self._Row("Sales Invoice")], require_consent=1)
+        api = self._api(doc)
+
+        def boom(dt, name):
+            raise RuntimeError("doc read failed")
+
+        api.frappe.get_doc = boom
+        out = api.consent_status()
+        self.assertTrue(out["require_consent"])          # still established
+        self.assertEqual(out["resource_posture"], "unknown")   # never reported as fine
