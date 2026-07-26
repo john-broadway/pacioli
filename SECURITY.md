@@ -7,7 +7,7 @@ file states plainly what is supported, what is covered, and what is not.
 
 | Package | PyPI | Supported | Notes |
 |---|---|---|---|
-| `pacioli-guard` | `pacioli-guard` | **0.9.5 and later** | 0.6.3 and earlier carry a published advisory. Upgrade. 0.9.1–0.9.4 were never published and are **not** supported: each carries a consent defect found by the review of its predecessor. |
+| `pacioli-guard` | `pacioli-guard` | **0.9.6 and later** | 0.6.3 and earlier carry a published advisory. Upgrade. **0.9.1–0.9.5 were never published** and are not supported: 0.9.1–0.9.4 each carry a consent defect found by the adversarial review of its predecessor, and 0.9.5 decides correctly but tells the operator three things that are not true (fixed in 0.9.6). |
 | `pacioli` (broker) | `pacioli` | **0.33.0 and later** | |
 
 Pre-1.0 means the surface can still move. Security fixes land on the current minor; there is no
