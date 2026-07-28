@@ -7,7 +7,7 @@ file states plainly what is supported, what is covered, and what is not.
 
 | Package | PyPI | Supported | Notes |
 |---|---|---|---|
-| `pacioli-guard` | `pacioli-guard` | **0.9.6 and later** | In 0.6.3 and earlier an empty resource allowlist returned permitted, granting every DocType (incorrect authorization). Only three versions were ever published — 0.6.2, 0.6.3 and 0.9.6 — so the remedy is 0.9.6. **0.9.1–0.9.5 were never published** and are not supported: 0.9.1–0.9.4 each carry a consent defect found by the adversarial review of its predecessor, and 0.9.5 decides correctly but tells the operator three things that are not true (fixed in 0.9.6). |
+| `pacioli-guard` | `pacioli-guard` | **0.10.0 and later** | Two published defects, both fixed by upgrading. In 0.6.3 and earlier an empty resource allowlist returned permitted, granting every DocType (incorrect authorization). In 0.9.6 the consent gate let a nested cancel ride a marker that authorised a *submit*, so a caller-named pre-existing document could be cancelled with no marker of its own — fixed in 0.10.0. Only four versions were ever published: 0.6.2, 0.6.3, 0.9.6 and 0.10.0. **0.9.0–0.9.5 were never published** and are not supported. |
 | `pacioli` (broker) | `pacioli` | **0.33.3 and later** | 0.33.2 and earlier used urllib's default opener, which re-sends `Authorization` when following a 3xx and permits plain `http`, so a redirecting endpoint could take the broker's credential to a host the registry never pinned. Fixed in 0.33.3; upgrade. |
 
 Pre-1.0 means the surface can still move. Security fixes land on the current minor; there is no

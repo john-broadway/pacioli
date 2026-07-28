@@ -30,5 +30,11 @@ doc_events = {
     "*": {
         "before_submit": "pacioli_guard.act.before_submit",
         "before_cancel": "pacioli_guard.act.before_cancel",
+        # NOT a gate. `after_insert` decides nothing and refuses nothing — it records that a
+        # document was created inside an act that already established consent, so that the
+        # `before_submit` gate can tell "the act made this" from "the caller named this" when
+        # ERPNext creates and submits in two separate calls. Added 0.10.0; before it, every
+        # `doc.save(); doc.submit()` cascade inside a governed act was REFUSED. See act.py.
+        "after_insert": "pacioli_guard.act.after_insert",
     }
 }

@@ -3,6 +3,137 @@
 Least-privilege API capability scoping for Frappe/ERPNext. Honest pre-1.0 semver.
 Distribution name `pacioli-guard`; Frappe app / import module `pacioli_guard`.
 
+## 0.10.0 — 2026-07-28 — the ride crossed acts, and "created by the act" was a proxy
+
+MINOR, because it changes what a governed seat is allowed to do in both directions. Found by an
+independent review of `_may_ride` that read frappe 16.28.0 and erpnext v16 on disk instead of this
+project's own docstrings. Both defects had been written down here as things that were **not known**.
+
+### 1. SECURITY — a `submit` marker licensed a `cancel` of a caller-named pre-existing document
+
+`_may_ride` returned `True` for every cancel, so any `Document.cancel()` nested inside an act that
+had established consent reached `docstatus 2` with **no marker, no act-binding check, no spend and
+no audit row** — the ride path never calls `consent_verdict`, which is where the marker-to-act
+binding lives. The 0.9.5 docstring stated this residual and then said *"No such lever is known."*
+That sentence was written without the sweep behind it, and it was false.
+
+The lever is in the shipped tree and inside slice-one's own grant:
+
+- `Sales Invoice.on_submit` (`sales_invoice.py:507`) calls `process_asset_depreciation()`
+  unconditionally, which reaches `depreciate_asset_on_sale` (`:1508-1516`). That iterates the item
+  rows and does `frappe.get_doc("Asset", d.asset)` on a **bare `Link` the caller supplies in the
+  request body** — no `read_only`, no `fetch_from`, and the guarding validation lives behind
+  `if d.is_fixed_asset:` (`:428-429`), which is a server-set field.
+- That reaches `depreciation.py:481` `reschedule_depreciation` and
+  `asset_depreciation_schedule.py:215-217`: `current_schedule.cancel()` on a `docstatus == 1`,
+  `is_submittable` document, **through the document lifecycle** (only
+  `should_not_cancel_depreciation_entries` is set, not `ignore_validate`, so `before_cancel` fires
+  and the ride is what admitted it).
+- Same shape behind a wider grant: `Unreconcile Payment.on_submit` (`unreconcile_payment.py:59-64`)
+  walks a child table the caller fills and reaches `accounts/utils.py:857`/`:859`
+  `gain_loss_je.cancel()` on submitted Journal Entries.
+
+**Fixed** by giving the cancel branch a discriminator it did not have: the ENCLOSING act. An undo
+may cascade into undos (`accounts_controller.py:2001-2005` cancels the system-generated credit and
+debit notes, the exchange gain/loss journal and the common-party journal on an ordinary invoice
+cancel, all through the lifecycle), but a submit cascading into a cancel of a document that already
+has a name is an act a human could have been asked to approve. `_CONSENT_ESTABLISHED` now carries
+the act it was established for instead of a bare `True`, which is the state the old code lacked.
+
+**Adopter-visible, and it is not one flow.** Every ERPNext path where a submit cascades into a
+lifecycle cancel now needs a marker for that cancel as well as for the act itself: asset sale
+(`sales_invoice.py:507`), partial-quantity asset sale (`:505` → `asset.py:1462` → `:1480`), a credit
+note against an asset sale (`:1503-1505` → `restore_asset` → `depreciation.py:498-500`), Asset Repair
+capitalization (`asset_repair.py:202` → `:210`), Asset Shift Allocation
+(`asset_shift_allocation.py:51-52`), Asset Value Adjustment (`asset_value_adjustment.py:181-184`) and
+`Unreconcile Payment` (`:59-64`). Fail-closed, and named in the refusal message rather than silent.
+
+**One consent header can now carry several markers.** This is part of the fix, not a convenience.
+The first cut of it shipped a remedy that did not exist: the header reader returned a single value
+and `consent_verdict` compared it against the record for the document in hand, so a request could
+satisfy at most ONE marker, while `pacioli mint` issues a fresh random token per marker. A second
+marker minted for the cascaded cancel carried a different token, could never match, and the whole
+act aborted with no ordering that worked — so the cost was not "a second marker", it was a hard
+block, while the refusal message pointed the operator at a command that could not help them. Caught
+by an independent review of the fix before release. Markers are separated by whitespace or commas;
+each is still bound to one document and one act, still requires a different minter, and is still
+spent exactly once. Comparison remains constant-time per candidate, and every candidate is compared
+so the loop reveals neither which token matched nor how many were tried.
+
+The candidate the old docstring named as the unwalked risk — frappe's own link-cancel machinery —
+turned out to be the safe one. `cancel_all_linked_docs` (`desk/form/linked_with.py:368`) is a flat
+loop; each cancel's frame pops before the next begins, so nothing encloses them and every one falls
+through to the marker check.
+
+### 2. `flags.in_insert` was a proxy for "created by the act", and it missed the common case
+
+`in_insert` answers "is `Document.insert` on the stack right now". frappe clears it at
+`model/document.py:482` and `:507`, so ERPNext's ordinary two-call idiom — `doc.save()` then
+`doc.submit()` — arrived at `before_submit` with the flag **False** on a document the governed act
+had just created. It was refused, for a name no human could ever have minted a marker against, and
+the refusal aborted the whole enclosing act. Shipped instances: `serial_batch_bundle.py:1166`/
+`:1172` (the auto-created Serial and Batch Bundle in ordinary stock flow, with `ignore_validate`
+explicitly cleared before the submit) and `depreciation.py:245-249` (the depreciation Journal
+Entry). This is the 0.9.4 shape reached by a different mechanism: fail-closed, never an escape, and
+it removes UNDO where it fires.
+
+**Fixed** by recording creation when it happens rather than inferring it later. A new
+`after_insert` handler on `doc_events["*"]` stamps a document that was inserted while an enclosing
+act already held consent. It is **not a third gate**: it refuses nothing, reads no grant, does no
+database work, and stamps nothing when no governed act encloses the insert — a `sys._getframe` walk
+is its whole cost. `in_insert` is kept as the single-call case it always covered correctly.
+
+### 3. Two false statements removed from load-bearing prose
+
+- *"`flags.in_insert` is written in exactly one place in frappe 16"* — false.
+  `frappe/core/doctype/user/user.py:204` writes it too. The conclusion it supported survives for
+  reasons that never depended on the count (`User` is not submittable, `before_insert` runs at
+  `:473` before frappe's own set at `:478`, and `insert` clears at `:507` regardless), but the claim
+  was written without the sweep. That is the same failure as the `stock_reconciliation.py:227`
+  citation corrected in 0.9.3, which makes it a pattern rather than a slip.
+- The 0.9.4 entry below calls that regression **LATENT, not active**, on the strength of one live
+  bench cancel that produced no second lifecycle cancel. The code path says otherwise:
+  `accounts_controller.py:2001-2005` reaches three of them on an ordinary invoice cancel, plus
+  `serial_batch_bundle.py:412-420` and `stock_ledger.py:163-187` for an `update_stock` invoice. The
+  bench invoice simply had none of those. The entry is left standing and corrected here rather than
+  edited, per this project's habit of keeping corrections visible.
+
+Also published: a second `ignore_validate` instance in the residual this module already discloses
+(`stock_controller.py:2517-2521`, a `Serial and Batch Bundle` submit). The previously cited one was
+a POS edge case; this one sits in ordinary material-transfer flow, so the residual was undercounted.
+
+### Residual, unchanged and now stated precisely
+
+Under a governed **cancel**, a cascaded cancel of a pre-existing document still rides. The
+justification is that an undo may cascade into undos (`accounts_controller.py:2001-2005`), and that
+is load-bearing for the product's UNDO story — but it is a justification, not a description of
+everything it admits. At least one instance is caller-steered in the same shape just closed on the
+submit side: `Asset Repair.on_cancel` (`asset_repair.py:222`) calls `cancel_sabb` (`:215-220`),
+which does `frappe.get_doc("Serial and Batch Bundle", row.serial_and_batch_bundle).cancel()` on a
+bare `Link` the caller fills in the `stock_items` child table. Narrowing it needs a signal that a
+cascaded cancel is a consequence of the enclosing **document**, which does not exist yet; frappe's
+link tables are the candidate and have not been walked, so nothing about them is claimed.
+
+### Tests
+
+Twelve new tests, each watched fail first. Four mutations were run against the shipped code, and
+every one of them turns a test red: reverting the cancel branch to `return True`, dropping the
+creation stamp from the submit branch, deleting `after_insert`'s governed-act guard so every insert
+on the site is stamped, and propagating the act a nested write RODE instead of the act it performed.
+The last two passed silently against the first cut of this release, which is why they are here — a
+safety property nothing can fail on is a comment, not a guarantee.
+
+The refusal tests assert the refused **document name and act**, not merely that a refusal happened.
+`_may_ride` had one direct assertion before this release and now has five, covering the states
+frappe can produce through the `in_insert` and enclosing-act dimensions and deliberately omitting
+`(CANCEL, in_insert=True)`, which frappe cannot produce. The creation-stamp dimension is exercised
+through the handler rather than by direct assertion, because `FakeDoc` cannot construct it.
+
+A double defect surfaced on the way: the `marker()` fixture gave every marker the same name, so
+spending one read as spending all of them and the first multi-marker test failed as a single-use
+violation. The double's fault, not the code's, and the seventh time in four days that the missing or
+wrong dimension of a test double was where the trouble was.
+
 ## 0.9.6 — 2026-07-26 — the code stops lying to the operator it just blocked
 
 PATCH, and it changes no decision — every allow and every refusal is byte-identical. What changes is

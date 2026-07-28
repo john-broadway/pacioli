@@ -1078,6 +1078,26 @@ def docstatus_action(kind, target, http_method, form):
     return None
 
 
+def _presented_candidates(presented):
+    """The individual consent markers a caller presented, as a tuple.
+
+    Accepts what the transport actually produces: a single token (the common case, unchanged), or
+    several separated by whitespace and/or commas in one header, or an already-split sequence.
+    Splitting is done HERE, in the pure core, so the parsing rule is testable without frappe and
+    there is exactly one of it.
+
+    Empty and whitespace-only entries are dropped rather than compared: an empty candidate must
+    never be able to match an empty ``token_hash`` on a malformed record.
+    """
+    if presented is None:
+        return ()
+    if not isinstance(presented, str):
+        items = presented
+    else:
+        items = presented.replace(",", " ").split()
+    return tuple(str(item).strip() for item in items if str(item).strip())
+
+
 def consent_verdict(presented, doctype, docname, action, record, now, principal):
     """Decide whether a ledger-affecting call carries valid consent. Pure.
 
@@ -1152,6 +1172,17 @@ def consent_verdict(presented, doctype, docname, action, record, now, principal)
         return False, ("this credential minted its own consent — a marker must come from a "
                        "different hand than the one it authorises")
     stored = _consent_field(record, "token_hash") or ""
-    if not hmac.compare_digest(str(stored), consent_token_hash(presented)):
+    # ``presented`` may carry MORE THAN ONE marker, because one request can perform more than one
+    # gated act: closing the 0.10.0 act-crossing bypass means a caller-steered cascaded cancel needs
+    # its own human authorisation, and it happens inside the enclosing act's request. Every marker
+    # is still bound to one document and one act and is still spent once — this only lets the
+    # transport carry the several authorisations an act legitimately requires. Matching is
+    # constant-time PER CANDIDATE and every candidate is compared, so the loop leaks neither which
+    # token matched nor how many were tried.
+    matched = False
+    for candidate in _presented_candidates(presented):
+        if hmac.compare_digest(str(stored), consent_token_hash(candidate)):
+            matched = True
+    if not matched:
         return False, "the presented consent marker does not match the one on record"
     return True, ""

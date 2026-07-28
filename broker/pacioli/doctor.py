@@ -937,8 +937,14 @@ def probe_workflow_read(target, env, read_file, transport):
 
 
 def run_doctor(env, *, target_name=None, offline=False,
-               read_file=None, transport=default_transport):
-    """Run every check; return ``(exit_code, lines)``. Exit is 0 only with zero failures."""
+               read_file=None, transport=default_transport, findings_out=None):
+    """Run every check; return ``(exit_code, lines)``. Exit is 0 only with zero failures.
+
+    ``findings_out``: an optional list that receives the STRUCTURED ``(level, message)`` tuples as
+    they are produced. It exists so `pacioli receipt` never has to parse the display strings back
+    into data — the formatted line is a rendering, and reconstructing data from a rendering is how
+    a display change silently becomes a logic change.
+    """
     if read_file is None:
         read_file = lambda p: Path(p).read_text(encoding="utf-8")  # noqa: E731
     lines, failed = ["pacioli doctor — config & readiness (read-only)"], False
@@ -947,6 +953,8 @@ def run_doctor(env, *, target_name=None, offline=False,
     for level, msg in reg_findings:
         failed |= level == FAIL
         lines.append(_PREFIX[level] + msg)
+        if findings_out is not None:
+            findings_out.append((level, msg))
     if registry is None:
         return 1, lines
 
@@ -958,8 +966,15 @@ def run_doctor(env, *, target_name=None, offline=False,
 
     for target in targets:
         lines.append(f"[target {target.name}]")
-        lines.append(_PREFIX[OK] + f"base_url: {target.base_url}"
-                     + (f" (company-pinned: {target.company})" if target.company else ""))
+        # Routed through findings_out like every other line, deliberately. This is the ONE line
+        # carrying the operator's hostname, so it is exactly the line the receipt's redaction must
+        # be proven against — leaving it out would make the artifact clean by omission rather than
+        # by mechanism, and an untested redactor is not a redactor.
+        _base = (_PREFIX[OK] + f"base_url: {target.base_url}"
+                 + (f" (company-pinned: {target.company})" if target.company else ""))
+        lines.append(_base)
+        if findings_out is not None:
+            findings_out.append((OK, _base[len(_PREFIX[OK]):]))
         findings = check_credentials(target, env, read_file)
         findings += check_state(env, target.name)
         if offline:
@@ -985,6 +1000,8 @@ def run_doctor(env, *, target_name=None, offline=False,
         for level, msg in findings:
             failed |= level == FAIL
             lines.append(_PREFIX[level] + msg)
+            if findings_out is not None:
+                findings_out.append((level, msg))
 
     lines.append("NOT ready — fix the XX lines above." if failed else "ready.")
     return (1 if failed else 0), lines

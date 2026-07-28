@@ -68,10 +68,15 @@ class FakeDoc:
 
 
 def marker(*, docname="SI-0001", doctype="Sales Invoice", action="submit", burned=0,
-           minted_by="operator@x", token=TOKEN, expires_in=900):
+           minted_by="operator@x", token=TOKEN, expires_in=900, name=None):
+    # `name` is the marker's OWN identity, and it must differ per marker. It is what
+    # `_claim_consent` burns, so two fixture markers sharing a name make spending one read as
+    # spending both — which looked exactly like a single-use violation when the multi-marker tests
+    # were first written, and was the double's fault, not the code's. Defaults per document.
     import time
     return {(doctype, docname): {
-        "name": "PCM-0001", "token_hash": consent_token_hash(token),
+        "name": name or f"PCM-{doctype.replace(' ', '')}-{docname}",
+        "token_hash": consent_token_hash(token),
         "ref_doctype": doctype, "ref_docname": docname, "ref_action": action,
         "expires_at": time.time() + expires_in, "burned": burned, "minted_by": minted_by}}
 
@@ -311,14 +316,30 @@ class TestBackwardCompatibilityAndRegistration(unittest.TestCase):
         act.before_submit(FakeDoc(), "before_submit")
         self.assertIsNone(fake.thrown)
 
-    def test_only_the_two_docstatus_events_are_registered(self):
+    def test_only_the_two_docstatus_events_GATE(self):
+        # The gates are still exactly the two docstatus transitions. `after_insert` joined the
+        # registration in 0.10.0 and is NOT a third gate: it refuses nothing and reads no grant, it
+        # only records that a document was created inside an already-consented act. Asserted here
+        # so a future handler cannot be added to the wildcard without this test being read.
         from pacioli_guard import hooks
 
-        self.assertEqual(set(hooks.doc_events["*"]), {"before_submit", "before_cancel"})
+        self.assertEqual(set(hooks.doc_events["*"]),
+                         {"before_submit", "before_cancel", "after_insert"})
         self.assertEqual(hooks.doc_events["*"]["before_submit"],
                          "pacioli_guard.act.before_submit")
         self.assertEqual(hooks.doc_events["*"]["before_cancel"],
                          "pacioli_guard.act.before_cancel")
+        self.assertEqual(hooks.doc_events["*"]["after_insert"],
+                         "pacioli_guard.act.after_insert")
+
+    def test_the_recording_hook_refuses_nothing_and_reads_no_grant(self):
+        # Registered on `"*"`, so it runs on every insert on every site including one that never
+        # opted in. It must never throw and must never touch the grant, or installing this app
+        # becomes indistinguishable from breaking the site.
+        fake = wire(headers={}, markers=None)
+        fake.scopes = {}
+        act.after_insert(FakeDoc(in_insert=False), "after_insert")
+        self.assertIsNone(fake.thrown)
 
     def test_it_is_registered_on_the_wildcard_not_a_doctype_list(self):
         # Keyed on the acting principal's grant, never on a list of doctypes — otherwise a governed
@@ -768,13 +789,20 @@ class TestTheDenialMessageDoesNotLie(unittest.TestCase):
 class TestACancelCascadeIsStructurallyNotAnInsert(unittest.TestCase):
     """Redteam 2026-07-26, THIRD pass — 0.9.4 made the ride unreachable on the CANCEL path.
 
-    ``flags.in_insert`` is written in exactly one place in frappe 16: ``Document.insert``, set at
-    ``model/document.py:478`` and cleared at ``:482`` (and again at ``:499``/``:507``).
-    ``Document._cancel`` (``:1324-1326``) is ``docstatus = 2`` followed by ``save()`` -> ``_save()``,
-    which never sets the flag; and a document being cancelled has a name and is not ``__islocal``, so
-    ``_save`` never delegates to ``insert()`` (``:571-572``). **So ``in_insert`` is False at every
-    ``before_cancel`` frappe is capable of producing**, and 0.9.4's ride condition could not be
-    satisfied there by any input.
+    ``Document._cancel`` (``model/document.py:1324-1326``) is ``docstatus = 2`` followed by
+    ``save()`` -> ``_save()``, which never sets ``flags.in_insert``; and a document being cancelled
+    has a name and is not ``__islocal``, so ``_save`` never delegates to ``insert()``
+    (``:571-572``). **So ``in_insert`` is False at every ``before_cancel`` frappe is capable of
+    producing**, and 0.9.4's ride condition could not be satisfied there by any input.
+
+    CORRECTED 2026-07-28. This paragraph used to open "``flags.in_insert`` is written in exactly one
+    place in frappe 16: ``Document.insert``". That is FALSE — ``frappe/core/doctype/user/user.py:204``
+    (``User.before_insert``) writes it too. The conclusion above survives, for reasons that never
+    depended on the count: ``User`` is not submittable, ``before_insert`` runs at ``:473`` before
+    frappe's own set at ``:478``, and ``insert`` clears the flag at ``:507`` regardless. The claim
+    was written without the sweep behind it, which is the same failure as the
+    ``stock_reconciliation.py:227`` citation corrected in ``act.py``. In a module whose authority is
+    that its citations are checkable, sweep before writing "exactly".
 
     The effect: a gated principal cancelling a Sales Invoice was refused the instant ERPNext cancelled
     the ledger entries underneath it, and the whole cancel aborted. Fail-CLOSED, so never an escape —
@@ -792,8 +820,11 @@ class TestACancelCascadeIsStructurallyNotAnInsert(unittest.TestCase):
 
     def test_in_insert_is_never_required_on_the_cancel_path(self):
         # The predicate itself, pinned: no cancelled document can carry the flag, so demanding it
-        # would deny unconditionally.
-        self.assertTrue(act._may_ride(FakeDoc(in_insert=False), act.CANCEL))
+        # would deny unconditionally. Since 0.10.0 the cancel branch discriminates on the ENCLOSING
+        # act instead — an undo may cascade into undos — so the enclosing act is passed here. What
+        # this test guards is unchanged: `in_insert` False must not be what refuses a cascaded
+        # cancel.
+        self.assertTrue(act._may_ride(FakeDoc(in_insert=False), act.CANCEL, act.CANCEL))
 
     def test_a_cascaded_cancel_rides_the_consented_cancel(self):
         si = FakeDoc(in_insert=False)
@@ -838,3 +869,239 @@ class TestACancelCascadeIsStructurallyNotAnInsert(unittest.TestCase):
 
         with self.assertRaises(FakePermissionError):
             _save(si, lambda: (act.before_submit(si, "before_submit"), amplify()))
+
+
+class TestActCrossingAndTwoStepCreation(unittest.TestCase):
+    """The 2026-07-28 second lens, which walked frappe 16.28.0 and erpnext v16 on disk rather than
+    this app's own docstrings. It found the ride wrong in BOTH directions, and both were written
+    down here as things that were not known.
+
+    1. **A SUBMIT marker licensed a CANCEL of a caller-named pre-existing document.** `_may_ride`
+       returned True for every cancel, and its docstring stated the residual and then said "No such
+       lever is known". The lever is shipped in ERPNext: `Sales Invoice.on_submit` (`:507`) ->
+       `process_asset_depreciation` -> `depreciate_asset_on_sale` (`:1508-1516`) iterates the item
+       rows and does `frappe.get_doc("Asset", d.asset)` on a BARE Link the caller supplies in the
+       request body (no `read_only`, no `fetch_from`) -> `depreciation.py:481` ->
+       `asset_depreciation_schedule.py:215-217` `current_schedule.cancel()` on a docstatus-1
+       document, through the lifecycle. That crosses the exact act binding `consent_verdict`
+       enforces and `before_cancel` claims is enforced, because the ride path never calls it.
+
+    2. **`in_insert` is "created by THIS WRITE FRAME", not "created by the act".** frappe clears it
+       at `model/document.py:482`/`:507` before a later `submit()` re-enters `_save`, so ERPNext's
+       ordinary `save(); submit()` idiom reaches `before_submit` with the flag False on a document
+       the act itself created. Shipped instances: `serial_batch_bundle.py:1166`/`:1172` (the
+       auto-created Serial and Batch Bundle, `ignore_validate` explicitly cleared before the submit)
+       and `depreciation.py:245-249` (the depreciation Journal Entry). Those were REFUSED, aborting
+       the whole governed act — the 0.9.4 shape again, fail-closed but product-breaking.
+
+    Neither was expressible before. `FakeDoc` took `in_insert` as a free constructor argument, so
+    the suite's only model of "the act created this" WAS the flag, and "created but flag False"
+    could not be named. Seventh time the missing dimension of a double is where the defect lived.
+    """
+
+    def setUp(self):
+        self.fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker())
+
+    def test_a_SUBMIT_marker_does_not_license_a_nested_CANCEL_of_a_pre_existing_document(self):
+        # The lever, as a test. One marker for `submit Sales Invoice SI-0001`; ERPNext cancels a
+        # submitted Asset Depreciation Schedule the caller named through the item row's `asset`
+        # link. A human COULD have been asked to approve that cancel — the document exists and has
+        # a name — which is exactly the test the submit branch already applies.
+        si = FakeDoc(in_insert=False)
+
+        def cascade():
+            ads = FakeDoc(doctype="Asset Depreciation Schedule", name="ADS-PRE-EXISTING",
+                          in_insert=False)
+            _save(ads, act.before_cancel, ads, "before_cancel")
+
+        with self.assertRaises(FakePermissionError):
+            _save(si, lambda: (act.before_submit(si, "before_submit"), cascade()))
+        # Refused for the SCHEDULE, not the invoice, and for CANCEL, not submit. Asserting only
+        # "a refusal happened" would pass just as well if the invoice's own marker had failed,
+        # which is a different bug entirely.
+        self.assertIn("ADS-PRE-EXISTING", self.fake.thrown[0])
+        self.assertIn("consent to cancel", self.fake.thrown[0])
+
+    def test_a_cascaded_cancel_under_a_governed_CANCEL_still_rides(self):
+        # The 0.9.4 fix must survive the fix above. An ordinary invoice cancel reverses itself
+        # through real lifecycle cancels of second documents — `accounts_controller.py:2001-2005`
+        # cancels system-generated credit/debit notes, the exchange gain/loss journal and the
+        # common-party journal — and a human cannot mint markers for those.
+        self.fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(action="cancel"))
+        si = FakeDoc(in_insert=False)
+
+        def cascade():
+            je = FakeDoc(doctype="Journal Entry", name="ACC-JV-EXISTING", in_insert=False)
+            _save(je, act.before_cancel, je, "before_cancel")
+
+        _save(si, lambda: (act.before_cancel(si, "before_cancel"), cascade()))
+        self.assertIsNone(self.fake.thrown)
+
+    def test_a_document_the_act_CREATED_IN_TWO_STEPS_still_rides(self):
+        # `doc.save()` then `doc.submit()`. The document did not exist when the human minted the
+        # marker, so it must ride — but `in_insert` is False by the time the submit reaches the
+        # gate, which is why the flag alone was the wrong signal.
+        si = FakeDoc(in_insert=False)
+
+        def cascade():
+            sbb = FakeDoc(doctype="Serial and Batch Bundle", name="SBB-NEW", in_insert=False)
+            # `doc.save()` -> Document.insert -> run_method("after_insert") at document.py:498,
+            # inside insert's own frame, name set, `in_insert` False (cleared at :482, set again
+            # only after this returns).
+            insert(sbb, act.after_insert, sbb, "after_insert")
+            # `doc.submit()` -> _submit -> save() -> _save. A named, non-local document, so :571-572
+            # does NOT delegate back to insert() and the flag stays False.
+            _save(sbb, act.before_submit, sbb, "before_submit")
+
+        _save(si, lambda: (act.before_submit(si, "before_submit"), cascade()))
+        self.assertIsNone(self.fake.thrown)
+
+    def test_a_two_step_creation_OUTSIDE_a_governed_act_licenses_nothing(self):
+        # The custody record is only made when an enclosing act has already established consent.
+        # An insert with no governed act on the stack must leave no stamp behind, or the record
+        # itself becomes the bypass.
+        sbb = FakeDoc(doctype="Serial and Batch Bundle", name="SBB-LOOSE", in_insert=False)
+        insert(sbb, act.after_insert, sbb, "after_insert")
+        with self.assertRaises(FakePermissionError):
+            _save(sbb, act.before_submit, sbb, "before_submit")
+
+    def test_a_CANCEL_marker_licenses_a_submit_of_a_document_the_act_CREATED(self):
+        # Pinned as INTENDED, not tolerated. A cancel creates reversing documents
+        # (`depreciation.py:544-559` builds a reversal Journal Entry and submits it), and no human
+        # could mint a marker for a name that does not exist yet. The act-crossing that matters is
+        # the other direction, where the target is pre-existing and nameable.
+        self.fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(action="cancel"))
+        si = FakeDoc(in_insert=False)
+
+        def cascade():
+            je = FakeDoc(doctype="Journal Entry", name="REV-JE-1", in_insert=True)
+            insert(je, act.before_submit, je, "before_submit")
+
+        _save(si, lambda: (act.before_cancel(si, "before_cancel"), cascade()))
+        self.assertIsNone(self.fake.thrown)
+
+    def test_may_ride_is_pinned_on_every_producible_state(self):
+        # `_may_ride` had exactly ONE direct assertion before this. The (CANCEL, in_insert=True)
+        # cell is deliberately absent: frappe cannot produce it, and asserting it would pin the
+        # double rather than the code.
+        self.assertFalse(act._may_ride(FakeDoc(in_insert=False), act.SUBMIT, act.SUBMIT))
+        self.assertTrue(act._may_ride(FakeDoc(in_insert=True), act.SUBMIT, act.SUBMIT))
+        self.assertTrue(act._may_ride(FakeDoc(in_insert=True), act.SUBMIT, act.CANCEL))
+        self.assertTrue(act._may_ride(FakeDoc(in_insert=False), act.CANCEL, act.CANCEL))
+        self.assertFalse(act._may_ride(FakeDoc(in_insert=False), act.CANCEL, act.SUBMIT))
+
+
+class TestOneRequestCanCarryTheMarkersItNeeds(unittest.TestCase):
+    """Second lens on the 0.10.0 fix itself, 2026-07-28, and it caught the fix half-done.
+
+    Closing the act-crossing bypass means a caller-steered cascaded cancel now falls through to the
+    marker check. The 0.10.0 changelog and `_may_ride`'s docstring both said the cost was that the
+    act "needs a second marker". **That remedy did not exist.** `_presented_consent` read ONE header
+    value and `consent_verdict` compares it against the record for the document in hand, so a
+    request could satisfy at most one marker — and `pacioli mint` generates a fresh random token per
+    marker. A second marker minted for the schedule cancel carried a different token, could never
+    match, and the whole submit aborted with no ordering that worked.
+
+    So the fix did not make an asset-sale invoice COSTLIER under a governed seat, it made it
+    IMPOSSIBLE, while the refusal message pointed the operator at a command that could not produce a
+    usable marker. Consent is per act by design; the transport just could not carry more than one.
+    It can now.
+    """
+
+    def setUp(self):
+        self.si_token = "token-for-the-invoice"
+        self.ads_token = "token-for-the-schedule"
+        markers = marker(token=self.si_token)
+        markers.update(marker(doctype="Asset Depreciation Schedule", docname="ADS-PRE-EXISTING",
+                              action="cancel", token=self.ads_token))
+        self.markers = markers
+
+    def test_two_markers_in_one_request_satisfy_both_acts(self):
+        # The documented remedy, as a test. The governed submit spends its own marker; the cascaded
+        # cancel the caller steered falls through to the marker check and spends the SECOND one.
+        fake = wire(headers={act.CONSENT_HEADER: f"{self.si_token} {self.ads_token}"},
+                    markers=self.markers)
+        si = FakeDoc(in_insert=False)
+
+        def cascade():
+            ads = FakeDoc(doctype="Asset Depreciation Schedule", name="ADS-PRE-EXISTING",
+                          in_insert=False)
+            _save(ads, act.before_cancel, ads, "before_cancel")
+
+        _save(si, lambda: (act.before_submit(si, "before_submit"), cascade()))
+        self.assertIsNone(fake.thrown)
+
+    def test_a_second_marker_is_still_bound_to_its_own_document_and_act(self):
+        # Carrying two tokens must not become "any token satisfies anything". The schedule's marker
+        # authorises CANCEL of ADS-PRE-EXISTING; it must not spend on a different document.
+        fake = wire(headers={act.CONSENT_HEADER: f"{self.si_token} {self.ads_token}"},
+                    markers=self.markers)
+        si = FakeDoc(in_insert=False)
+
+        def cascade():
+            other = FakeDoc(doctype="Asset Depreciation Schedule", name="ADS-SOMEONE-ELSES",
+                            in_insert=False)
+            _save(other, act.before_cancel, other, "before_cancel")
+
+        with self.assertRaises(FakePermissionError):
+            _save(si, lambda: (act.before_submit(si, "before_submit"), cascade()))
+        self.assertIn("ADS-SOMEONE-ELSES", fake.thrown[0])
+
+    def test_one_token_still_behaves_exactly_as_before(self):
+        # The single-marker path is the overwhelmingly common one and must not change shape.
+        fake = wire(headers={act.CONSENT_HEADER: self.si_token}, markers=self.markers)
+        si = FakeDoc(in_insert=False)
+        _save(si, act.before_submit, si, "before_submit")
+        self.assertIsNone(fake.thrown)
+
+
+class TestTheCreationRecordAndTheCustodyChain(unittest.TestCase):
+    """The two properties the 0.10.0 fix rests on that no test observed, found by mutation in the
+    second lens: deleting `after_insert`'s governed-act guard, and stamping the ENCLOSING act instead
+    of the current one, each left all 445 tests green. A safety property nothing can fail on is a
+    comment, not a guarantee.
+    """
+
+    def setUp(self):
+        self.fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker())
+
+    def test_the_recording_hook_stamps_nothing_outside_a_governed_act(self):
+        # Observed DIRECTLY on the document, not inferred from a later refusal. The pre-existing
+        # test asserted a refusal that fires for an unrelated reason (`_require_consent` returns
+        # before `_may_ride` when nothing encloses), so the stamp's absence was invisible to it.
+        loose = FakeDoc(doctype="Serial and Batch Bundle", name="SBB-LOOSE", in_insert=False)
+        insert(loose, act.after_insert, loose, "after_insert")
+        self.assertNotIn(act._CREATED_IN_ACT, loose.flags)
+
+    def test_the_recording_hook_DOES_stamp_inside_a_governed_act(self):
+        # The other half of the same property: the stamp must actually land where it is needed, or
+        # the test above would pass on a hook that never stamps anything at all.
+        si = FakeDoc(in_insert=False)
+        created = FakeDoc(doctype="Serial and Batch Bundle", name="SBB-NEW", in_insert=False)
+
+        def cascade():
+            insert(created, act.after_insert, created, "after_insert")
+
+        _save(si, lambda: (act.before_submit(si, "before_submit"), cascade()))
+        self.assertTrue(created.flags.get(act._CREATED_IN_ACT))
+
+    def test_custody_records_THIS_act_not_the_act_it_rode(self):
+        # Three levels. A governed CANCEL licenses a nested SUBMIT of a document it created; that
+        # submit must record ITSELF as the established act, so a cancel nested one level deeper is
+        # judged against a submit and refused. Stamping the act it rode instead would let the
+        # original cancel authority reach arbitrary depth and reopen the crossing underneath it.
+        self.fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(action="cancel"))
+        si = FakeDoc(in_insert=False)
+
+        def deepest():
+            victim = FakeDoc(doctype="Asset Depreciation Schedule", name="ADS-PRE-EXISTING",
+                             in_insert=False)
+            _save(victim, act.before_cancel, victim, "before_cancel")
+
+        def middle():
+            rev = FakeDoc(doctype="Journal Entry", name="REV-JE-1", in_insert=True)
+            insert(rev, lambda: (act.before_submit(rev, "before_submit"), deepest()))
+
+        with self.assertRaises(FakePermissionError):
+            _save(si, lambda: (act.before_cancel(si, "before_cancel"), middle()))
+        self.assertIn("ADS-PRE-EXISTING", self.fake.thrown[0])

@@ -1522,11 +1522,28 @@ def cmd_anchor_check(env, target, infile):
     return 0
 
 
-def cmd_doctor(env, target, offline):
-    """Read-only config & readiness report. Exit 0 only when zero checks fail."""
+def cmd_doctor(env, target, offline, receipt=False):
+    """Read-only config & readiness report. Exit 0 only when zero checks fail.
+
+    ``receipt``: render the run as one pasteable artifact instead of the operator-facing report.
+    It goes to STDOUT alone (even on failure) so `pacioli doctor --receipt > r.txt` is the whole
+    workflow. Nothing is transmitted — see pacioli/receipt.py; sharing it is a human act.
+    """
     from pacioli.doctor import run_doctor
 
-    code, lines = run_doctor(env, target_name=target, offline=offline)
+    findings = [] if receipt else None
+    code, lines = run_doctor(env, target_name=target, offline=offline, findings_out=findings)
+    if receipt:
+        from datetime import datetime, timezone
+
+        from pacioli import __version__
+        from pacioli.receipt import render
+        # The clock lives at this impure edge on purpose: `render` stays a pure function so the
+        # same findings always produce the same artifact.
+        print(render(findings, version=__version__,
+                     generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
+              end="")
+        return code
     out = sys.stdout if code == 0 else sys.stderr
     for line in lines:
         print(line, file=out)
@@ -1648,6 +1665,10 @@ def build_parser():
     d.add_argument("--target", help="check one registry target (default: all)")
     d.add_argument("--offline", action="store_true",
                    help="skip the live bench probe (config checks only)")
+    d.add_argument("--receipt", action="store_true",
+                   help="render the run as one pasteable artifact, with hostnames, addresses, "
+                        "user identifiers and credential paths removed. Nothing is transmitted — "
+                        "sharing it is your decision")
 
     se = sub.add_parser("seal", help="operator CONTAIN: seal the broker — every governed write "
                                      "(including mint) is refused until `pacioli unseal`. A "
@@ -1753,7 +1774,7 @@ def main(argv=None, env=None):
             return cmd_anchor_write(env, args.target, args.out)
         return cmd_anchor_check(env, args.target, args.infile)
     if args.command == "doctor":
-        return cmd_doctor(env, args.target, args.offline)
+        return cmd_doctor(env, args.target, args.offline, receipt=args.receipt)
     if args.command == "seal":
         return cmd_seal(env, args.reason, args.target)
     if args.command == "unseal":

@@ -36,7 +36,7 @@ consented, with that residual published in the README rather than discovered lat
 document makes ERPNext submit others (`Payment Ledger Entry`, ledger machinery) inside that same
 save, and a human cannot mint a marker for a document whose name does not exist until the submit is
 already running. So consent is required for the OUTERMOST act only; nested writes carry it. See
-:func:`_inside_another_write` for the mechanism, why it is nesting depth rather than a per-request
+:func:`_enclosing_governed_act` for the mechanism, why it is nesting depth rather than a per-request
 stack, and which direction it fails in. Found by the live run on 2026-07-26 after 402 green unit
 tests, because the test double was a single document and could not model a cascade.
 
@@ -68,7 +68,7 @@ CANCEL = "cancel"
 # Frame names frappe uses when it writes ONE document, and the module they must belong to.
 # KNOWLEDGE-PINNED against frappe 16 `model/document.py`: `insert` (:431) and `_save` (:552) each own
 # a single document write and each call `run_before_save_methods`, which fires the handlers below.
-# The MODULE is part of the signal, not decoration — see `_inside_another_write`.
+# The MODULE is part of the signal, not decoration — see `_enclosing_governed_act`.
 _WRITE_FRAMES = frozenset({"_save", "insert"})
 _DOCUMENT_MODULE = "frappe.model.document"
 
@@ -98,34 +98,61 @@ def _writing_document(frame):
 #
 #   1. That cache is written IMMEDIATELY after a fresh `get_doc` on a miss (`:2248-2254`), strictly
 #      before any handler has run, so the object written there carries no stamp yet.
-#   2. Structurally, a stamp alone licenses NOTHING. `_inside_another_write` only rides when a LIVE
+#   2. Structurally, a stamp alone licenses NOTHING. `_enclosing_governed_act` only rides when a LIVE
 #      `frappe.model.document` write frame is holding that document on this stack. A flag that
 #      survived into redis cannot manufacture a frame, so a stale stamp cannot license a later act
 #      the way stale per-request state could.
 #
 # (2) is the load-bearing one and it does not depend on frappe's caching behaviour staying put.
+#
+# Its VALUE is the act consent was established for (``SUBMIT`` / ``CANCEL``), not a bare True. A
+# bare True was the 0.9.6 shape and it is what let a submit marker license a cancel: the ride
+# decision could see THAT an enclosing act was governed but not WHICH act, so it could not refuse
+# the crossing. See :func:`_may_ride`.
 _CONSENT_ESTABLISHED = "pacioli_consent_established"
+
+# Stamped on a document object that was CREATED inside a governed act, by :func:`after_insert`.
+#
+# Why this exists rather than reading ``flags.in_insert`` at submit time. ``in_insert`` answers "is
+# ``Document.insert`` on the stack RIGHT NOW", not "did this act create this document": frappe
+# clears it at ``model/document.py:482`` and ``:507``, so ERPNext's ordinary two-step idiom —
+# ``doc.save()`` then ``doc.submit()`` — reaches ``before_submit`` with the flag FALSE on a document
+# the act itself just created. That refused documents no human could ever mint a marker for and
+# aborted the whole governed act (``serial_batch_bundle.py:1166``/``:1172``,
+# ``depreciation.py:245-249``). ``in_insert`` was a PROXY for "created by this act" that held only
+# for cascades that create and submit in a single ``insert()`` call.
+#
+# It carries the same narrow guarantees as ``_CONSENT_ESTABLISHED`` above, for the same reason: a
+# stamp alone licenses NOTHING, because it is only ever READ when a live enclosing governed write
+# frame is on this stack. A stamp that survived into redis cannot manufacture that frame.
+_CREATED_IN_ACT = "pacioli_created_in_act"
+
+
+def _flag_value(doc, key):
+    """The raw stamp, or ``None``. ``_CONSENT_ESTABLISHED`` carries the ACT it was established for,
+    not a bare True, because the ride decision needs to know which act it would be riding."""
+    flags = getattr(doc, "flags", None)
+    if flags is None:
+        return None
+    try:
+        return flags.get(key)
+    except AttributeError:
+        return getattr(flags, key, None)
 
 
 def _flag_get(doc, key):
-    flags = getattr(doc, "flags", None)
-    if flags is None:
-        return False
-    try:
-        return bool(flags.get(key))
-    except AttributeError:
-        return bool(getattr(flags, key, False))
+    return bool(_flag_value(doc, key))
 
 
-def _flag_set(doc, key):
+def _flag_set(doc, key, value=True):
     flags = getattr(doc, "flags", None)
     if flags is None:
         return
     try:
-        flags[key] = True
+        flags[key] = value
     except (TypeError, AttributeError):
         try:
-            setattr(flags, key, True)
+            setattr(flags, key, value)
         except Exception:  # noqa: BLE001 — a stamp we cannot record must not break the write
             pass
 
@@ -147,9 +174,15 @@ def _same_document(a, b):
     return (getattr(a, "doctype", None), a_name) == (getattr(b, "doctype", None), b_name)
 
 
-def _inside_another_write(doc):
-    """True when this act is happening INSIDE the write of a DIFFERENT document, i.e. it is a
-    CONSEQUENCE of an act already being governed rather than an act of its own.
+def _enclosing_governed_act(doc):
+    """The ACT (``SUBMIT``/``CANCEL``) of the nearest enclosing write of a DIFFERENT document that
+    already established consent, or ``None``. Non-``None`` means this act is happening INSIDE
+    another act, i.e. it is a CONSEQUENCE of an act already being governed rather than an act of
+    its own.
+
+    Returned as the act rather than a bool since 0.10.0: knowing an enclosing act was governed is
+    not enough to decide the ride, because a marker binds to ONE act and a cascade can cross from
+    one to the other. See :func:`_may_ride`.
 
     **Why this exists.** Found by the live run on 2026-07-26, and by no unit test: with the gate on
     and a valid marker present, a governed submit still failed. The Sales Invoice's own check passed,
@@ -210,10 +243,13 @@ def _inside_another_write(doc):
 
     **A third residual, published late.** `Document.run_before_save_methods` returns early when
     `flags.ignore_validate` is set (`model/document.py:1399-1400`), BEFORE `before_submit` or
-    `before_cancel` is ever run — so this gate does not see those acts at all. ERPNext sets it and
-    changes docstatus anyway in at least two places, including a consolidated Sales Invoice CANCEL
-    (`pos_invoice_merge_log.py:431-432`), which reverses GL entries. The flag is not remotely
-    settable (`flags` is in `RESERVED_KEYWORDS` for both `update` and `set`, and `frappe.call`'s
+    `before_cancel` is ever run — so this gate does not see those acts at all. Instances verified in
+    erpnext v16: a consolidated Sales Invoice CANCEL (`pos_invoice_merge_log.py:431-432`), which
+    reverses GL entries, and a `Serial and Batch Bundle` SUBMIT (`stock_controller.py:2517-2521`).
+    The second one was added 2026-07-28 and matters more than its line count suggests: the first is
+    a POS edge case, the second sits in ordinary material-transfer flow, so an operator sizing this
+    residual from the earlier text would have undercounted it. The flag is not remotely settable
+    (`flags` is in `RESERVED_KEYWORDS` for both `update` and `set`, and `frappe.call`'s
     `get_newargs` pops it), so this is a coverage limit rather than an attacker lever — but it is a
     real third residual and the docstring previously claimed there were only two.
 
@@ -226,62 +262,113 @@ def _inside_another_write(doc):
     frame = sys._getframe(1)
     while frame is not None:
         other = _writing_document(frame)
-        if other is not None and not _same_document(other, doc) and _flag_get(other, _CONSENT_ESTABLISHED):
-            return True
+        if other is not None and not _same_document(other, doc):
+            established = _flag_value(other, _CONSENT_ESTABLISHED)
+            if established:
+                return established
         # A different document IS being written, but this gate never established consent for it.
         # Keep walking rather than concluding anything: an OUTER frame may still be the governed
         # act, and a consequence of a consequence legitimately rides the original.
         frame = frame.f_back
-    return False
+    return None
 
 
-def _may_ride(doc, action):
+def _may_ride(doc, action, enclosing_act):
     """May this act ride the consent established for the enclosing act it is a consequence of?
 
-    Split by ACT, because the signal that answers "the human could not have named this document"
-    only exists on one of them.
+    One question decides both branches: **could a human have named this document when they minted
+    the marker?** If yes, they could have been asked, so this act needs its own consent. If no, the
+    act is a consequence and rides. The two branches differ only in which signal answers it.
 
-    **SUBMIT — require ``flags.in_insert``.** The document must have been CREATED by the act, not
-    merely NAMED during it. Riding on "an enclosing governed act is in progress" alone licensed
-    pre-existing drafts the caller named in the request body: submitting a Sales Invoice with
-    ``update_stock`` carries the item row's ``serial_and_batch_bundle`` LINK straight out of the body
-    (``stock_controller.py:1069``), and ``serial_batch_bundle.py:441-449`` then does
-    ``frappe.get_doc("Serial and Batch Bundle", <that name>)`` and submits it. ``in_insert`` is
-    frappe's own signal for the distinction, set at ``model/document.py:478`` immediately before
-    ``run_before_save_methods()`` at ``:479`` fires ``before_submit`` and cleared at ``:482``.
+    **SUBMIT — the document must have been CREATED by the act.** Riding on "an enclosing governed
+    act is in progress" alone licensed pre-existing drafts the caller named in the request body:
+    submitting a Sales Invoice with ``update_stock`` carries the item row's
+    ``serial_and_batch_bundle`` LINK straight out of the body (``stock_controller.py:1069``), and
+    ``serial_batch_bundle.py:441-449`` then does ``frappe.get_doc("Serial and Batch Bundle",
+    <that name>)`` and submits it.
 
-    **CANCEL — ``in_insert`` is structurally impossible, so requiring it refuses everything.** That
-    was the 0.9.4 regression, and it is the reason this function exists as its own predicate.
-    ``in_insert`` is written in exactly one place in frappe 16 — ``Document.insert`` (``:478``/``:482``
-    and ``:499``/``:507``). ``Document._cancel`` (``:1324-1326``) sets ``docstatus = 2`` and calls
-    ``save()`` -> ``_save()``, which never sets it; and a document being cancelled has a name and is
-    not ``__islocal``, so ``_save`` never delegates to ``insert()`` (``:571-572``). So the flag is
-    FALSE at every ``before_cancel`` frappe can produce, so the ride condition is UNSATISFIABLE on
-    that path by any input: a cascaded cancel could only ever fall through to the marker check and be
-    refused, for a document name no human could have minted a marker against.
+    ``flags.in_insert`` was the signal for that until 0.10.0, and it was a PROXY that did not hold.
+    It answers "is ``Document.insert`` on the stack right now", and frappe clears it at
+    ``model/document.py:482``/``:507``, so ERPNext's ordinary ``doc.save()`` then ``doc.submit()``
+    idiom arrives here with the flag FALSE on a document the act itself created — refusing it and
+    aborting the whole governed act (``serial_batch_bundle.py:1166``/``:1172``,
+    ``depreciation.py:245-249``). So creation is now RECORDED when it happens, by
+    :func:`after_insert`, and ``in_insert`` is kept only as the single-call case it always covered
+    correctly. See ``_CREATED_IN_ACT``.
 
-    **How badly that bites was measured, not assumed** (live, public bench, 2026-07-26 —
-    ``deploy/bench/live-proof-095-cancel.py``). A governed Sales Invoice CANCEL on 0.9.4 **succeeded**:
-    docstatus 2, no refusal. ERPNext reverses that ledger through ``make_reverse_gl_entries`` and
-    ``db_set``-style writes which skip the document lifecycle entirely — the residual this module
-    already publishes — so nothing reached ``before_cancel`` on a second document and there was
-    nothing for the dead ride to deny. **The defect is therefore LATENT, not active**, and the first
-    draft of this docstring claimed the opposite before the bench was asked. It bites the first time
-    any code — ERPNext's or an adopter's — cancels a second document through the lifecycle inside a
-    governed cancel. Fail-CLOSED either way, so never an escape.
+    **CANCEL — the enclosing act must itself be a CANCEL.** A cancel is always of a document that
+    already exists and already has a name, so "was it created by the act" cannot discriminate here
+    and ``in_insert`` is structurally FALSE at every ``before_cancel`` frappe can produce
+    (``Document._cancel`` at ``:1324-1326`` sets ``docstatus = 2`` and calls ``save()`` -> ``_save()``,
+    and a document being cancelled has a name and is not ``__islocal``, so ``:571-572`` never
+    delegates back to ``insert()``). Requiring it refused every cascaded cancel and took UNDO out
+    with it — the 0.9.4 regression.
 
-    **STATED RESIDUAL, not a closed hole.** On the cancel path this restores exactly the 0.9.3
-    predicate — an enclosing act that established its own consent licenses the cancels nested under
-    it — so a cancel of a PRE-EXISTING document that a caller can steer ERPNext into performing
-    inside a governed act would ride. No such lever is known (the amplification vector that motivated
-    0.9.4 reaches ``get_doc(<name>).submit()``, not ``.cancel()``), but "none known" is not "none",
-    and the honest place for that is here rather than a claim that it is closed. Narrowing it needs a
-    signal that a cascaded cancel is a CONSEQUENCE of the enclosing document — frappe's own
-    link-cancel machinery is the candidate, and it has not been walked yet, so it is not asserted.
+    What discriminates instead is the ENCLOSING act. An UNDO legitimately cascades into further
+    undos: cancelling an invoice makes ERPNext cancel the documents it generated
+    (``accounts_controller.py:2001-2005`` cancels the system-generated credit/debit notes, the
+    exchange gain/loss journal and the common-party journal, all through the lifecycle). A SUBMIT
+    cascading into a cancel is a different thing, and it was a real bypass:
+
+      - ``Sales Invoice.on_submit`` (``sales_invoice.py:507``) -> ``process_asset_depreciation`` ->
+        ``depreciate_asset_on_sale`` (``:1508-1516``), which iterates the item rows and does
+        ``frappe.get_doc("Asset", d.asset)`` on a BARE ``Link`` the caller supplies in the request
+        body (no ``read_only``, no ``fetch_from``) -> ``depreciation.py:481`` ->
+        ``asset_depreciation_schedule.py:215-217`` ``current_schedule.cancel()`` on a ``docstatus``
+        1 document, through the lifecycle (only ``should_not_cancel_depreciation_entries`` is set,
+        NOT ``ignore_validate``, so ``before_cancel`` does fire).
+      - ``Unreconcile Payment.on_submit`` (``unreconcile_payment.py:59-64``) walks a child table the
+        caller fills and reaches ``accounts/utils.py:857``/``:859`` ``gain_loss_je.cancel()`` on
+        submitted Journal Entries. Behind a wider grant than slice-one, but the same shape.
+
+    In both, one ``submit`` marker cancelled a caller-named pre-existing document with no marker of
+    its own, and ``consent_verdict``'s marker-to-act binding never ran because the ride path does
+    not call it. Requiring the enclosing act to match closes it: those cancels now fall through to
+    the marker check, which is correct, because the schedule and the journal DO have names a human
+    could be asked to approve.
+
+    **What this costs, stated, and it is not one flow.** Every ERPNext path where a submit cascades
+    into a lifecycle cancel now needs a marker for that cancel as well as for the act itself:
+    asset sale (``sales_invoice.py:507``), partial-quantity asset sale (``:505`` ->
+    ``asset.py:1462`` -> ``:1480``), a credit note against an asset sale (``:1503-1505`` ->
+    ``restore_asset`` -> ``depreciation.py:498-500``), Asset Repair capitalization
+    (``asset_repair.py:202`` -> ``:210``), Asset Shift Allocation
+    (``asset_shift_allocation.py:51-52``), Asset Value Adjustment
+    (``asset_value_adjustment.py:181-184``) and ``Unreconcile Payment`` (``:59-64``). Fail-CLOSED,
+    and named in the refusal message rather than silent.
+
+    That remedy has to be PRESENTABLE, and in the first cut of this fix it was not:
+    ``_presented_consent`` read a single header value and ``consent_verdict`` compared it against the
+    record for the document in hand, so a request could satisfy at most ONE marker while
+    ``pacioli mint`` issues a fresh random token per marker. The cost was therefore not a second
+    marker, it was a hard block with no ordering that worked, and this docstring said otherwise for
+    the length of one review. The consent header now carries several markers; each is still bound to
+    one document and one act and is still spent once.
+
+    **The prior version of this docstring said "No such lever is known."** It was written without
+    the sweep behind it and it was false; the levers above were in the shipped tree the whole time,
+    found 2026-07-28 by reading erpnext v16 rather than this file. The candidate it named as the
+    unwalked risk — frappe's own link-cancel machinery — turned out to be the SAFE one:
+    ``cancel_all_linked_docs`` (``desk/form/linked_with.py:368``) is a flat loop, each cancel's frame
+    pops before the next begins, so no enclosing write frame exists and every one of them falls
+    through to the marker check.
+
+    **Residual that remains, and it is not merely mechanical.** Under a governed CANCEL, a cascaded
+    cancel of a PRE-EXISTING document still rides — the 0.9.3 predicate, restricted to one act. Most
+    instances are the framework undoing its own consequences, but at least one is caller-steered in
+    exactly the shape that was just closed on the submit side: ``Asset Repair.on_cancel``
+    (``asset_repair.py:222``) calls ``cancel_sabb`` (``:215-220``), which does
+    ``frappe.get_doc("Serial and Batch Bundle", row.serial_and_batch_bundle).cancel()`` on a bare
+    ``Link`` the caller fills in the ``stock_items`` child table. So "an undo may cascade into undos"
+    is the JUSTIFICATION for this residual, not a description of everything it admits.
+
+    It stays open because it is load-bearing for UNDO and cannot be narrowed without a signal that a
+    cascaded cancel is a consequence OF THE ENCLOSING DOCUMENT specifically. frappe's link tables are
+    the candidate and have not been walked, so nothing about them is asserted here.
     """
     if action == CANCEL:
-        return True
-    return _flag_get(doc, "in_insert")
+        return enclosing_act == CANCEL
+    return _flag_get(doc, _CREATED_IN_ACT) or _flag_get(doc, "in_insert")
 
 
 def _gated(user):
@@ -312,8 +399,14 @@ def _gated(user):
     return bool(scope is not None and getattr(scope, "require_consent", 0))
 
 
-def _presented_token():
-    """The consent token this act carries, or ``None``.
+def _presented_consent():
+    """The consent this act carries, or ``None``.
+
+    Returns the raw header value. It may name ONE marker or several: one request can perform more
+    than one gated act, since closing the act-crossing bypass means a caller-steered cascaded cancel
+    needs its own human authorisation and it happens inside the enclosing act's request. Splitting
+    is ``consent_verdict``'s (``_presented_candidates``), so the parsing rule lives in the pure core
+    with the comparison it feeds and can be tested without frappe.
 
     ``None`` is the correct answer for a background job, a server script or the bench console: there
     is no request, so there is no header, and a gated principal that cannot present consent is
@@ -340,7 +433,7 @@ def _require_consent(doc, action):
     if not user or not _gated(user):
         return
     # A consequence of an ALREADY-GOVERNED act carries the consent given for that act. See
-    # `_inside_another_write` for why "already governed" is the load-bearing half.
+    # `_enclosing_governed_act` for why "already governed" is the load-bearing half.
     # ...AND this document must have been CREATED BY that act, not merely named during it.
     #
     # CONSENT AMPLIFICATION (redteam 2026-07-26, second pass). Riding on "an enclosing governed act
@@ -361,19 +454,24 @@ def _require_consent(doc, action):
     # `frappe.get_doc(<dict>)` (no name, so `__islocal`) and `_save` delegates to `insert()`
     # (`:571-572`). A document loaded by name and submitted does NOT have it.
     #
-    # ...but ONLY on the submit path. `in_insert` is structurally False at every `before_cancel`, so
-    # requiring it there refused every cascaded cancel and took UNDO out with it. `_may_ride` owns
-    # that split and states the residual it leaves.
-    if _inside_another_write(doc) and _may_ride(doc, action):
+    # ...but ONLY on the submit path, and "created by the act" is RECORDED at `after_insert` rather
+    # than inferred from `in_insert` at submit time — see `_CREATED_IN_ACT` for why the flag alone
+    # was a proxy that missed every two-step `save(); submit()` creation. On the cancel path the
+    # discriminator is the ENCLOSING act instead, because a cancel is always of a document that
+    # already has a name. `_may_ride` owns both splits and states the residual each leaves.
+    enclosing_act = _enclosing_governed_act(doc)
+    if enclosing_act and _may_ride(doc, action, enclosing_act):
         # Propagate custody: a cascade of a cascade (a GL Entry inside a Payment Ledger Entry
         # inside the consented invoice) must keep riding the original act rather than becoming
-        # ungoverned once it is two levels deep.
-        _flag_set(doc, _CONSENT_ESTABLISHED)
+        # ungoverned once it is two levels deep. Stamped with THIS act, so a cancel nested under a
+        # ridden submit is judged against the submit and refused rather than inheriting a cancel
+        # authority from further up the stack.
+        _flag_set(doc, _CONSENT_ESTABLISHED, action)
         return
     doctype = getattr(doc, "doctype", None)
     docname = getattr(doc, "name", None)
     record = _consent_record(doctype, docname) if doctype and docname else None
-    allowed, reason = consent_verdict(_presented_token(), doctype, docname, action, record,
+    allowed, reason = consent_verdict(_presented_consent(), doctype, docname, action, record,
                                       time.time(), user)
     if not allowed:
         _deny(
@@ -409,7 +507,7 @@ def _require_consent(doc, action):
     # Consent for THIS act is now established, so the framework's own consequences of it may ride.
     # Stamped only after the marker is actually spent: an act that was refused, or whose spend could
     # not be confirmed, must not license anything nested beneath it.
-    _flag_set(doc, _CONSENT_ESTABLISHED)
+    _flag_set(doc, _CONSENT_ESTABLISHED, action)
 
 
 def before_submit(doc, method=None):
@@ -421,5 +519,38 @@ def before_submit(doc, method=None):
 def before_cancel(doc, method=None):
     """As :func:`before_submit`, for the reversing act. Cancel writes reversing GL entries, so a
     marker minted to post a document must not spend on reversing it — that binding is
-    ``consent_verdict``'s, and this passes it the act."""
+    ``consent_verdict``'s, and this passes it the act. Since 0.10.0 the RIDE path enforces the same
+    binding independently (:func:`_may_ride`), because riding never reaches ``consent_verdict`` at
+    all and a submit marker was licensing cascaded cancels through it."""
     _require_consent(doc, CANCEL)
+
+
+def after_insert(doc, method=None):
+    """``doc_events`` handler. Records that ``doc`` was CREATED inside an act that already
+    established consent, so a later ``submit()`` on the same object can be recognised as part of
+    that act rather than as a new act needing its own marker.
+
+    **Why a recording hook and not a read of ``flags.in_insert``.** ``in_insert`` is true only while
+    ``Document.insert`` is on the stack, and frappe clears it at ``model/document.py:482``/``:507``.
+    ERPNext's ordinary cascade idiom is two calls — ``doc.save()`` then ``doc.submit()`` — so by the
+    time ``before_submit`` runs, the flag is gone and the document looks exactly like a pre-existing
+    one the caller named. That refused documents no human could mint a marker for and aborted the
+    enclosing governed act. Recording at creation is the only point where the distinction is still
+    visible.
+
+    **Placed at ``after_insert``** (``model/document.py:498``) rather than ``before_insert``
+    (``:473``): it runs inside ``insert``'s own frame, so the frame walk still sees the enclosing
+    governed act, and ``set_new_name`` (``:474``) has already run, so the document has the name that
+    any later refusal message would have to quote.
+
+    **This handler grants nothing on its own.** It writes a stamp that is only ever READ when a live
+    enclosing governed write frame is on the stack (:func:`_may_ride` is unreachable otherwise), and
+    it writes it only when such a frame is ALREADY there. An insert with no governed act enclosing
+    it leaves no stamp, so an ungoverned creation cannot manufacture a later ride.
+
+    Deliberately does NO grant read and NO database work: this is registered on ``doc_events["*"]``
+    and therefore runs on every insert on the site, including on sites that never opted into this
+    app. A ``sys._getframe`` walk with no source lookup is the whole cost.
+    """
+    if _enclosing_governed_act(doc):
+        _flag_set(doc, _CREATED_IN_ACT)
