@@ -18,6 +18,8 @@ end-to-end fact now lives ONLY in the lab re-proof, since Pacioli no longer reso
 Run: ``python3 -m unittest guard.tests.test_enforce`` from the app root. No frappe required.
 """
 import base64
+import datetime
+import os
 import sys
 import types
 import time
@@ -1177,3 +1179,74 @@ class TestNoRequestContextFailsClosed(unittest.TestCase):
         with self.assertRaises(FakePermissionError):
             enforce.check_scope()
         self.assertIn("disabled", enforce.frappe.thrown[0])
+
+
+class TestMarkerExpiryIsReadInTheSITEsClock(unittest.TestCase):
+    """Found on the LIVE books 2026-07-28, minutes after the consent gate was first turned on there.
+
+    ``expires_at`` is a frappe Datetime, stored NAIVE and in the SITE's timezone
+    (``frappe.utils.now_datetime()``). ``_epoch`` called ``.timestamp()`` on it, and Python resolves
+    a naive datetime through the **process's** timezone. ``consent_verdict`` then compares the result
+    against ``time.time()``, which is true UTC.
+
+    So on any site whose ``time_zone`` differs from the container clock — the ordinary frappe
+    deployment, OS in UTC and site in local time — every marker was born expired:
+
+        container OS tz : UTC          site time_zone : America/Chicago
+        minted "now + 10 min"          -> stored 13:31:56
+        _epoch(...) 1785245516   vs   time.time() 1785262916   -> -17400s
+
+    Fail-CLOSED, so never an escape, but it made ``require_consent`` unusable: no governed write
+    could proceed, and the refusal told the operator to mint a fresh marker, which was also expired.
+    Every test here had run with one clock, so nothing could fail on it.
+    """
+
+    NAIVE = datetime.datetime(2026, 7, 28, 13, 31, 56)   # a site-local wall time
+    CHICAGO_EPOCH = 1785263516.0                          # that wall time in America/Chicago, as UTC
+
+    def _epoch_with_site_tz(self, tz_name):
+        fake = FakeFrappe(headers={}, session_user="x")
+        fake.utils = types.SimpleNamespace(get_system_timezone=lambda: tz_name)
+        enforce.frappe = fake
+        return enforce._epoch(self.NAIVE)
+
+    def test_a_naive_expiry_resolves_through_the_SITE_timezone(self):
+        self.assertEqual(self._epoch_with_site_tz("America/Chicago"), self.CHICAGO_EPOCH)
+
+    def test_the_same_wall_time_in_another_zone_is_a_different_instant(self):
+        # The whole point: the site's zone decides, so two sites disagree by their offset.
+        utc = self._epoch_with_site_tz("UTC")
+        self.assertEqual(utc - self._epoch_with_site_tz("America/Chicago"), -5 * 3600)
+
+    def test_it_does_not_depend_on_the_PROCESS_timezone(self):
+        # The defect itself. Same site, two container clocks, one answer.
+        before = os.environ.get("TZ")
+        try:
+            for tz in ("UTC", "Asia/Tokyo", "America/Chicago"):
+                os.environ["TZ"] = tz
+                time.tzset()
+                self.assertEqual(self._epoch_with_site_tz("America/Chicago"), self.CHICAGO_EPOCH,
+                                 f"process TZ {tz} changed the answer")
+        finally:
+            if before is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = before
+            time.tzset()
+
+    def test_an_unreadable_site_timezone_falls_back_to_UTC_not_the_process(self):
+        # Deny-biased: reading a Chicago wall time as UTC makes it expire EARLIER, never later.
+        fake = FakeFrappe(headers={}, session_user="x")
+        fake.utils = types.SimpleNamespace(
+            get_system_timezone=lambda: (_ for _ in ()).throw(RuntimeError("no site")))
+        enforce.frappe = fake
+        self.assertEqual(enforce._epoch(self.NAIVE),
+                         self.NAIVE.replace(tzinfo=datetime.timezone.utc).timestamp())
+
+    def test_an_already_aware_value_is_left_alone(self):
+        aware = self.NAIVE.replace(tzinfo=datetime.timezone.utc)
+        self.assertEqual(self._epoch_with_site_tz("America/Chicago"), self.CHICAGO_EPOCH)
+        fake = FakeFrappe(headers={}, session_user="x")
+        fake.utils = types.SimpleNamespace(get_system_timezone=lambda: "America/Chicago")
+        enforce.frappe = fake
+        self.assertEqual(enforce._epoch(aware), aware.timestamp())

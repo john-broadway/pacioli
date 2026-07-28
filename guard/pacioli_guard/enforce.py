@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime
 import json
 import time
+import zoneinfo
 
 import frappe
 
@@ -449,20 +450,58 @@ def _consent_record(doctype, docname):
     }
 
 
+def _site_timezone():
+    """The SITE's timezone, or ``None`` if it cannot be read. Never the process's.
+
+    A frappe Datetime is stored NAIVE and in the site's own zone
+    (``frappe.utils.now_datetime()``), so the site is the only authority on what wall time a stored
+    expiry means. Reading it through the container clock is what broke 0.10.0 — see :func:`_epoch`.
+    """
+    try:
+        return zoneinfo.ZoneInfo(frappe.utils.get_system_timezone())
+    except Exception:  # noqa: BLE001 — an unreadable site zone must not raise inside the gate
+        return None
+
+
+def _as_instant(moment):
+    """A datetime to epoch seconds, resolving a NAIVE value through the SITE's zone.
+
+    An already-aware value carries its own offset and is left alone. When the site's zone cannot be
+    read we assume UTC rather than the process's zone: it is deterministic, and for a site running
+    behind UTC it makes a marker expire EARLIER than intended, never later.
+    """
+    if moment.tzinfo is not None:
+        return moment.timestamp()
+    return moment.replace(tzinfo=_site_timezone() or datetime.timezone.utc).timestamp()
+
+
 def _epoch(value):
     """Coerce a stored expiry to epoch seconds, or ``None`` if it cannot be read.
 
     ``None`` is the deny-biased answer: `consent_verdict` treats an unreadable expiry as expired,
     so a marker whose lifetime cannot be established is never spendable.
+
+    **The clock domain is the whole difficulty, and 0.10.0 got it wrong.** ``expires_at`` arrives as
+    a naive datetime in the SITE's zone, and this used to call ``.timestamp()`` on it directly —
+    which resolves a naive value through the **process's** zone. ``consent_verdict`` compares the
+    result against ``time.time()``, which is true UTC. On the ordinary frappe deployment (container
+    in UTC, site in local time) the two disagreed by the site's offset, so **every marker was born
+    expired and no governed write could proceed**. Found on a live site at ``America/Chicago``
+    against a UTC container: a marker minted for +10 minutes read as expired by 4h50m. Fail-CLOSED,
+    so never an escape, but it made ``require_consent`` unusable and the refusal told the operator
+    to mint a fresh marker that would be expired too.
+
+    Nothing could fail on it because every test ran in one clock domain, and the lab site was UTC
+    like its container. The dimension the doubles lacked was the difference between two clocks.
     """
     if value is None:
         return None
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, datetime.datetime):
-        return value.timestamp()
+        return _as_instant(value)
     for parse in (
-        lambda v: datetime.datetime.fromisoformat(str(v)).timestamp(),
+        lambda v: _as_instant(datetime.datetime.fromisoformat(str(v))),
         float,
     ):
         try:

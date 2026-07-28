@@ -3,6 +3,39 @@
 Least-privilege API capability scoping for Frappe/ERPNext. Honest pre-1.0 semver.
 Distribution name `pacioli-guard`; Frappe app / import module `pacioli_guard`.
 
+## 0.10.1 — 2026-07-28 — every consent marker was born expired on a non-UTC site
+
+PATCH, and it is the difference between `require_consent` working and being unusable. Found on a
+live site minutes after the gate was turned on there for the first time.
+
+`expires_at` is a frappe Datetime: stored **naive**, in the **site's** timezone
+(`frappe.utils.now_datetime()`). `_epoch` called `.timestamp()` on it, and Python resolves a naive
+datetime through the **process's** timezone. `consent_verdict` then compares that against
+`time.time()`, which is true UTC. On the ordinary frappe deployment — container clock in UTC, site
+in local time — the two disagreed by the site's offset:
+
+```
+container OS tz : UTC            site time_zone : America/Chicago
+marker minted "now + 10 min"  -> stored 13:31:56
+_epoch(...)  1785245516   vs   time.time()  1785262916   ->  -17400s
+```
+
+**Every marker was expired the instant it was minted, so no governed write could ever proceed** —
+and the refusal told the operator *"this consent marker has expired — mint a fresh one"*, which
+would be expired too. Fail-CLOSED, so never an escape, but it made the gate a wall and the remedy
+message a lie.
+
+**Fixed:** a naive expiry now resolves through the **site's** zone (`_site_timezone`, read from
+`frappe.utils.get_system_timezone`). An already-aware value carries its own offset and is untouched.
+When the site's zone cannot be read the value is treated as UTC rather than as process-local:
+deterministic, and for a site behind UTC it expires a marker EARLIER than intended, never later.
+
+**Why nothing caught it.** Every test in this package ran in one clock domain, and the lab site was
+UTC like its container, so the two agreed and the full positive path passed there. The dimension the
+doubles lacked was the existence of a second clock. Five new tests pin it, including one that drives
+the same site zone under three different process zones and demands one answer; reverting the fix
+turns four of them red.
+
 ## 0.10.0 — 2026-07-28 — the ride crossed acts, and "created by the act" was a proxy
 
 MINOR, because it changes what a governed seat is allowed to do in both directions. Found by an
