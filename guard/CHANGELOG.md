@@ -3,6 +3,59 @@
 Least-privilege API capability scoping for Frappe/ERPNext. Honest pre-1.0 semver.
 Distribution name `pacioli-guard`; Frappe app / import module `pacioli_guard`.
 
+## 0.11.0 — 2026-07-29 — site-wide resource access is finally sayable
+
+MINOR. Adds `allow_all_doctypes`, a Check on **API Key Scope**: grant every DocType without
+listing them, for the verbs you have allowed. Defaults **off**.
+
+**The defect it closes.** Since 0.8.0 this project has documented site-wide access as expressible
+— "one literal `"*"` row, visible in the grant where an auditor will see it" — in `scope.py` and
+in the README. **That gesture never worked.** `API Key Scope DocType.ref_doctype` is a validated
+`Link` to DocType; frappe's `Document._validate_links` runs on insert *and* save and walks child
+rows, and `get_invalid_links` skips only falsy values. `"*"` is truthy and no DocType is named
+`"*"`, so the row raised `LinkValidationError` and never stored. The decision core honored a value
+the grant document could not hold.
+
+It failed **closed**: an unstorable row leaves the allowlist empty, and an empty allowlist denies
+(the 0.8.0 fix for GHSA-hm86-xvfq-hc58, working as intended). So no grant was ever wider than it
+appeared and there is no advisory here. What was wrong was the documentation: it promised a
+capability the product did not have.
+
+**Why it survived four releases.** Every test covering the wildcard built its `ApiScope` from a
+dict, through the pure core. The core is covered exhaustively and *nothing in the suite crossed the
+document boundary*, so no test could notice that the document refused the value the core honored.
+The new `test_grant_document_seam.py` tests that seam, and is written fix-agnostically: it asserts
+that site-wide is expressible **through the document**, not which mechanism provides it.
+
+**Scope of the new flag.** It widens exactly one axis. The check runs after the control-plane deny
+and after verb narrowing, so:
+
+- verbs still apply — `allow_all_doctypes` + read-only stays read-only;
+- `API Key Scope`, `API Key Scope Method`, `API Key Scope DocType` and `Pacioli Consent Marker`
+  remain unreachable, as they are before any grant is consulted;
+- `allow_resource` is still required — this widens the resource branch, it does not switch it on;
+- the method branch is untouched;
+- a request whose DocType cannot be resolved (`/api/resource/` with no segment, which classifies
+  with `doctype == ""`) is **refused**, not swept in by the breadth flag. Caught by the second-lens
+  review of this change before release, not after.
+
+Absence reads as off in both the pure core and the frappe glue, and the column defaults to 0, so
+`bench migrate` cannot switch a live credential to site-wide. Note the direction: `enforce_workflow`
+and `require_consent` read absence as off so an upgrade never starts *refusing*; this one reads
+absence as off so an upgrade never starts *granting*.
+
+**Compatibility.** The `"*"` sentinel is still honored, deliberately — grants created
+programmatically (with `flags.ignore_links`) carry it, and refusing them would break credentials
+already issued. It is legacy, not the recipe.
+
+Live-proven on a real ERPNext (frappe 16.25.0 / erpnext 16.26.0): the `"*"` row reproduced
+`LinkValidationError: Could not find Row #1: DocType: *`; the same grant expressed with the Check
+saved clean with a plain `insert()`; `bench migrate` added `allow_all_doctypes tinyint(4) NOT NULL
+DEFAULT 0`; and over HTTP with an **empty** allowlist, `DocType` and `Currency` returned 200 while
+the control plane and every write returned 403.
+
+471 tests.
+
 ## 0.10.1 — 2026-07-28 — every consent marker was born expired on a non-UTC site
 
 PATCH, and it is the difference between `require_consent` working and being unusable. Found on a

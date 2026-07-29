@@ -116,6 +116,12 @@ def _scope_from_doctype(user):
         # pure core must read that absence as OFF. A gate that switched itself on during an
         # upgrade would start refusing every submit a live broker makes.
         require_consent=getattr(doc, "require_consent", None),
+        # The site-wide resource grant, threaded exactly like the two gates above but for the
+        # MIRROR reason: those read None as OFF so an upgrade never starts REFUSING; this reads
+        # None as OFF so an upgrade never starts GRANTING. A doc written before `bench migrate`
+        # added the column has no attribute at all, and that absence must not widen a live
+        # credential to every DocType on the site.
+        allow_all_doctypes=getattr(doc, "allow_all_doctypes", None),
     )
 
 

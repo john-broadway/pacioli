@@ -97,12 +97,23 @@ user whose API key you're scoping:
   even if a pattern here matches it.
 - `allow_resource` — defaults **false** (method-only; denies raw `/api/resource` CRUD).
 - `resource_doctypes` — when `allow_resource` is true, the DocType allowlist. **Empty denies**
-  (as of 0.8.0), matching `methods`: a grant that names nothing permits nothing. Site-wide resource
-  access stays expressible because wanting it is legitimate, but it must be *said* — one literal
-  `"*"` row, visible in the grant where an auditor will see it. Everything granted here is still
-  bounded by the user's own roles; scope narrows, never widens.
+  (as of 0.8.0), matching `methods`: a grant that names nothing permits nothing. Everything granted
+  here is still bounded by the user's own roles; scope narrows, never widens.
   > Before 0.8.0 an empty allowlist permitted **every** DocType. That was a security defect with a
   > published advisory. If you are on 0.6.3 or earlier, upgrade.
+- `Allow All DocTypes` (`allow_all_doctypes`) — the **site-wide resource grant**, defaults **off**.
+  Ticking it grants every DocType without listing them, for the verbs you have allowed.
+  > **0.8.0 through 0.10.1 documented this as a literal `"*"` row in `resource_doctypes`, and that
+  > gesture never worked.** `ref_doctype` is a validated `Link` to DocType, so frappe refused to
+  > store `"*"` (`LinkValidationError`) and site-wide access was not actually expressible. It failed
+  > *closed* — an unstorable row left the allowlist empty, which denies — so no grant was ever wider
+  > than it looked, but the documentation described a capability that did not exist. Fixed in 0.11.0.
+  > The `"*"` row is still honored for grants created programmatically, and is not the recipe.
+
+  It widens exactly one axis. The check runs **after** the control-plane deny and **after** verb
+  narrowing, so it grants breadth of *DocType* and never breadth of *verb*, and it never reaches
+  `API Key Scope` / `Pacioli Consent Marker`. A request whose DocType cannot be resolved is still
+  refused. Absence reads as off, so upgrading never switches it on.
 - `Allow Read` / `Allow Create` / `Allow Write` / `Allow Delete` — the **per-credential resource
   verbs** (all default on). A DocType allowlist alone admits *every* verb, so a credential meant to
   *read* invoices also POSTs/PUTs/DELETEs them. Untick the verbs you don't want and the same

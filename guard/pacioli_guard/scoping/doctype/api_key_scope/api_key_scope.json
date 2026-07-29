@@ -3,7 +3,7 @@
  "allow_rename": 0,
  "autoname": "field:user",
  "creation": "2026-07-01 00:00:00.000000",
- "description": "A scoped credential is bound to this allowlist. Scope only ever narrows a credential's capabilities relative to the user's own role permissions — it never widens them. Caveat: a generic RPC method in Methods (e.g. frappe.client.set_value or frappe.client.*) is matched by name only; Resource DocTypes does NOT constrain which DocType such a method touches. Grant generic RPC methods with care.",
+ "description": "A scoped credential is bound to this allowlist. Scope only ever narrows a credential's capabilities relative to the user's own role permissions \u2014 it never widens them. Caveat: a generic RPC method in Methods (e.g. frappe.client.set_value or frappe.client.*) is matched by name only; Resource DocTypes does NOT constrain which DocType such a method touches. Grant generic RPC methods with care.",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
@@ -13,6 +13,7 @@
   "enforce_workflow",
   "require_consent",
   "allow_resource",
+  "allow_all_doctypes",
   "verb_read",
   "verb_create",
   "verb_write",
@@ -40,7 +41,7 @@
   },
   {
    "default": "0",
-   "description": "Max requests per fixed one-minute window; 0 = no limit. Best-effort velocity damping via the site cache (a cache flush resets the counter) — containment, not tamper-evident accounting.",
+   "description": "Max requests per fixed one-minute window; 0 = no limit. Best-effort velocity damping via the site cache (a cache flush resets the counter) \u2014 containment, not tamper-evident accounting.",
    "fieldname": "rate_limit_per_minute",
    "fieldtype": "Int",
    "label": "Rate Limit (per minute)"
@@ -65,6 +66,13 @@
    "fieldname": "allow_resource",
    "fieldtype": "Check",
    "label": "Allow Resource"
+  },
+  {
+   "default": "0",
+   "description": "Grant EVERY DocType on this site, without listing them. Verb limits, the kill switch and the rate limit still apply, and the guard\u2019s own control plane stays unreachable. Leave OFF unless site-wide read is genuinely the grant you mean.",
+   "fieldname": "allow_all_doctypes",
+   "fieldtype": "Check",
+   "label": "Allow All DocTypes"
   },
   {
    "default": "1",

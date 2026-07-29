@@ -1764,3 +1764,106 @@ class TestControlPlaneUngrantable(unittest.TestCase):
         s = ApiScope.from_dict({"allow_resource": True,
                                 "resource_doctypes": ["API Key Scope Audit"]})
         self.assertTrue(is_permitted(s, "resource", ("API Key Scope Audit", "read")))
+
+
+class TestAllowAllDoctypes(unittest.TestCase):
+    """The operator-sayable site-wide resource grant.
+
+    `RESOURCE_DOCTYPE_WILDCARD` ("*") was honored by this core and UNSTORABLE in the grant
+    document, because `ref_doctype` is a validated Link to DocType (2026-07-29). `allow_all_doctypes`
+    is the sayable form. It grants breadth on the DOCTYPE axis ONLY: verbs, the kill switch, the
+    rate limit and the control-plane deny all still apply on top of it, because a grant that
+    widened more than the one axis it names is how an operator gets surprised.
+    """
+
+    ALL = {"allow_resource": True, "allow_all_doctypes": True,
+           "resource_verbs": ["read"]}
+
+    def test_grants_any_doctype_without_listing_it(self):
+        s = ApiScope.from_dict(self.ALL)
+        for dt in ("Sales Invoice", "Journal Entry", "Some Custom App DocType", "DocType"):
+            self.assertTrue(is_permitted(s, "resource", (dt, "read")), dt)
+
+    def test_does_not_widen_the_verb_axis(self):
+        # The whole point of the discovery seat: breadth of doctype, NOT breadth of verb.
+        s = ApiScope.from_dict(self.ALL)
+        for verb in ("write", "create", "delete"):
+            self.assertFalse(is_permitted(s, "resource", ("Sales Invoice", verb)), verb)
+
+    def test_does_not_reach_the_control_plane(self):
+        # Hard deny runs BEFORE any grant. A credential that can rewrite its own API Key Scope is
+        # not scoped -- floor audit F2. Site-wide must not become a way around that.
+        s = ApiScope.from_dict(self.ALL)
+        for dt in ("API Key Scope", "API Key Scope Method", "API Key Scope DocType",
+                   "Pacioli Consent Marker", "api key scope", "PACIOLI CONSENT MARKER"):
+            self.assertFalse(is_permitted(s, "resource", (dt, "read")), dt)
+
+    def test_absent_reads_as_off(self):
+        # Absence is not an opt-in. A grant written before this field existed must behave exactly
+        # as it did, or `bench migrate` silently widens every credential on the site.
+        s = ApiScope.from_dict({"allow_resource": True, "resource_doctypes": ["ToDo"]})
+        self.assertFalse(s.allow_all_doctypes)
+        self.assertFalse(is_permitted(s, "resource", ("Sales Invoice", "read")))
+        self.assertTrue(is_permitted(s, "resource", ("ToDo", "read")))
+
+    def test_off_leaves_the_empty_allowlist_denying(self):
+        # F1 (GHSA-hm86-xvfq-hc58) stays fixed: empty list + flag off is still deny-all.
+        s = ApiScope.from_dict({"allow_resource": True, "resource_doctypes": [],
+                                "allow_all_doctypes": False})
+        self.assertFalse(is_permitted(s, "resource", ("ToDo", "read")))
+
+    def test_string_zero_is_off_not_truthy(self):
+        # Frappe hands back "0"/"false" from some paths; bare bool("0") is True and would flip a
+        # site-wide grant ON. Same deny-biased coercion as every other security Check here.
+        for falsey in ("0", "false", "False", "", "no"):
+            s = ApiScope.from_dict({"allow_resource": True, "allow_all_doctypes": falsey})
+            self.assertFalse(s.allow_all_doctypes, falsey)
+            self.assertFalse(is_permitted(s, "resource", ("ToDo", "read")), falsey)
+
+    def test_needs_allow_resource_as_well(self):
+        # It widens the doctype axis of the resource branch; it does not switch that branch on.
+        s = ApiScope.from_dict({"allow_resource": False, "allow_all_doctypes": True})
+        self.assertFalse(is_permitted(s, "resource", ("ToDo", "read")))
+
+    def test_kill_switch_and_the_method_branch_are_untouched(self):
+        s = ApiScope.from_dict({**self.ALL, "methods": []})
+        self.assertFalse(is_permitted(s, "method", "frappe.client.get_list",
+                                      method_resolved=True))
+
+    def test_from_grant_threads_it(self):
+        s = ApiScope.from_grant(True, [], [], resource_verbs=["read"], allow_all_doctypes=True)
+        self.assertTrue(s.allow_all_doctypes)
+        self.assertTrue(is_permitted(s, "resource", ("Sales Invoice", "read")))
+        self.assertFalse(is_permitted(s, "resource", ("API Key Scope", "read")))
+
+    def test_from_grant_none_reads_as_off(self):
+        s = ApiScope.from_grant(True, [], ["ToDo"], resource_verbs=["read"],
+                                allow_all_doctypes=None)
+        self.assertFalse(s.allow_all_doctypes)
+        self.assertFalse(is_permitted(s, "resource", ("Sales Invoice", "read")))
+
+    def test_legacy_wildcard_row_still_honored(self):
+        # The discovery seat minted 2026-07-29 carries a forced "*" row. Removing support would
+        # break a credential that is already in someone's hands.
+        s = ApiScope.from_dict({"allow_resource": True,
+                                "resource_doctypes": [RESOURCE_DOCTYPE_WILDCARD],
+                                "resource_verbs": ["read"]})
+        self.assertTrue(is_permitted(s, "resource", ("Sales Invoice", "read")))
+        self.assertFalse(is_permitted(s, "resource", ("API Key Scope", "read")))
+
+    def test_an_unresolvable_doctype_is_not_swept_in(self):
+        """"Everything" must not quietly include "nothing in particular".
+
+        `/api/resource/` with no trailing segment classifies as a RESOURCE call with
+        `doctype == ""` (classify: `segs[0] if segs else ""`). `_is_control_plane("")` is False and
+        the verb check passes, so a naive `allow_all_doctypes -> return True` GRANTS a call whose
+        target could not be resolved. Every other path denies it, because "" is in no allowlist.
+
+        That would be a fail-OPEN inside a fail-closed file, and it contradicts the posture
+        enforce.py states for exactly this situation (floor audit F6): an unclassifiable call from
+        a scoped credential is a refusal, not a pass.
+        """
+        s = ApiScope.from_dict(self.ALL)
+        self.assertEqual(classify("/api/resource/", "GET"), ("resource", ("", "read")))
+        for empty in ("", None, "   "):
+            self.assertFalse(is_permitted(s, "resource", (empty, "read")), repr(empty))

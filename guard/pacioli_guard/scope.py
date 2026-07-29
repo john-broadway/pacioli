@@ -164,6 +164,11 @@ class ApiScope:
     resource_verbs: frozenset = None
     enforce_workflow: bool = False
     require_consent: bool = False
+    # The operator-sayable site-wide resource grant. Appended at the END of the field list on
+    # purpose: inserting next to `allow_resource` where it reads best would shift every positional
+    # argument after it, and a security dataclass is the worst place to rely on nobody having
+    # constructed one positionally.
+    allow_all_doctypes: bool = False
 
     @classmethod
     def from_dict(cls, d):
@@ -184,12 +189,16 @@ class ApiScope:
             # Same coercion and the same off-by-default posture: a grant predating this gate
             # must behave exactly as it did, or an upgrade starts denying live credentials.
             require_consent=_coerce_flag(d.get("require_consent")),
+            # Deny-biased for the opposite reason to the two above: those default OFF so an upgrade
+            # does not start REFUSING; this defaults OFF so an upgrade does not start GRANTING.
+            # `bool("0")` is True, which would switch a site-wide grant on from a frappe string.
+            allow_all_doctypes=_coerce_flag(d.get("allow_all_doctypes")),
         )
 
     @classmethod
     def from_grant(cls, allow_resource, method_patterns, resource_doctypes,
                    enabled=None, rate_limit_per_minute=None, resource_verbs=None,
-                   enforce_workflow=None, require_consent=None):
+                   enforce_workflow=None, require_consent=None, allow_all_doctypes=None):
         """Build from the structured *API Key Scope* DocType fields — the pure seam the frappe
         glue feeds (an ``allow_resource`` Check plus two child-table allowlists, the CONTAIN pair
         — the ``enabled`` kill switch + ``rate_limit_per_minute`` — the per-credential
@@ -212,6 +221,7 @@ class ApiScope:
                 "resource_verbs": resource_verbs if resource_verbs is None else list(resource_verbs),
                 "enforce_workflow": enforce_workflow,
                 "require_consent": require_consent,
+                "allow_all_doctypes": allow_all_doctypes,
             }
         )
 
@@ -410,9 +420,22 @@ _UNGRANTABLE_METHOD_DOCTYPES_FOLDED = frozenset(
 # site, which made the two child tables read as parallel allowlists while behaving oppositely, and
 # made the documented operator gesture — tick the master ``allow_resource`` Check, save, fill the
 # table afterwards — the widest grant this app can express, reaching the guard's own control plane.
-# Site-wide access is a legitimate thing to want, so it stays expressible; it just has to be SAID,
-# with one literal wildcard row that an auditor can see in the grant doc. Spelling borrowed from
-# frappe's own ``doc_events["*"]`` convention rather than inventing a sentinel.
+# Site-wide access is a legitimate thing to want, so it stays expressible — but say it with the
+# ``allow_all_doctypes`` Check on the parent, NOT with this sentinel.
+#
+# CORRECTED 2026-07-29. This comment used to read "it just has to be SAID, with one literal
+# wildcard row that an auditor can see in the grant doc", and that gesture was IMPOSSIBLE:
+# ``API Key Scope DocType.ref_doctype`` is a validated ``Link`` to DocType, frappe's
+# ``_validate_links`` walks child rows on insert AND save, and no DocType is named "*" — so the
+# row raises ``LinkValidationError`` and never stores. The core honored a value the document could
+# not hold, and every test covering it built its ``ApiScope`` from a dict, so nothing crossed the
+# boundary to notice. It failed CLOSED (unstorable ⇒ empty allowlist ⇒ deny, F1 working), which is
+# why it was a remediation-path defect rather than a bypass — but our own copy claimed a capability
+# the product did not have.
+#
+# The sentinel is STILL HONORED, deliberately: grants created programmatically (with
+# ``flags.ignore_links``) carry it, including a credential minted before the Check existed, and
+# dropping it would refuse a key already in someone's hands. It is legacy, not the recipe.
 RESOURCE_DOCTYPE_WILDCARD = "*"
 
 # The guard's OWN control plane — ungrantable on BOTH branches (floor audit F2, 2026-07-26).
@@ -497,6 +520,21 @@ def is_permitted(scope, kind, target, *, method_resolved=False):
         # every verb), and it honors an all-unticked grant as deny-all rather than full access.
         if scope.resource_verbs is not None and verb not in scope.resource_verbs:
             return False
+        # The site-wide grant, checked AFTER the control-plane deny and AFTER verb narrowing, so it
+        # widens exactly ONE axis: which doctypes, never which verbs and never the guard's own
+        # control plane. A flag that widened more than the axis it names is how an operator ticks
+        # one box and gets a different grant than the one they read.
+        if scope.allow_all_doctypes:
+            # ...but only for a call whose target actually resolved. `/api/resource/` with no
+            # trailing segment classifies as a RESOURCE call with doctype "" (see `classify`), and
+            # `_is_control_plane("")` is False, so a bare `return True` here would GRANT a request
+            # whose doctype could not be determined — while every other branch below denies it,
+            # because "" is in no allowlist. That is a fail-OPEN inside a fail-closed file, and it
+            # contradicts the posture enforce.py states for this exact case (floor audit F6): an
+            # unclassifiable call from a scoped credential is a refusal. "Everything" must not
+            # quietly include "nothing in particular". (Found by the second lens on this fix,
+            # 2026-07-29, before it shipped.)
+            return isinstance(doctype, str) and bool(doctype.strip())
         # Empty allowlist denies — see RESOURCE_DOCTYPE_WILDCARD for why this changed and what the
         # explicit opt-in is. A wildcard row grants every doctype EXCEPT the hard-denied ones above.
         if not scope.resource_doctypes:
