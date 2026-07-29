@@ -3,6 +3,62 @@
 Least-privilege API capability scoping for Frappe/ERPNext. Honest pre-1.0 semver.
 Distribution name `pacioli-guard`; Frappe app / import module `pacioli_guard`.
 
+## 0.12.0 — 2026-07-29 — the gate can be requested and not loaded, and now it says so
+
+MINOR. `pacioli_guard.api.consent_status` gains two fields: **`gate_registered`** (are our
+`doc_events` handlers actually in the running site's registry) and **`consent_enforced`** (the
+conjunction with `require_consent` — **the only one of the three an operator should act on**).
+
+**No enforcement path changed.** `enforce.py`, `act.py` and `scope.py` are untouched. This release
+cannot alter what is or is not refused; it only makes the floor able to report on itself.
+
+**The defect it closes.** `require_consent` is a flag on a grant — it records what the operator
+ASKED FOR. Nothing in guard ever checked whether the machinery that honours it is loaded, and on
+2026-07-29 those two came apart on a live, public, customized ERPNext v16 bench:
+
+- `require_consent` was `1`.
+- The installed `hooks.py` was byte-identical to source and declared all three `doc_events`.
+- `frappe.get_hooks("doc_events")["*"]` returned `None` for every one of them.
+
+A stale hooks cache, on a site first created back when guard shipped `auth_hooks` only. The two
+gates live at two altitudes and only one of them was up: **scope** rides `auth_hooks`, so scope
+enforcement worked perfectly — out-of-scope reads refused, writes refused, the floor naming itself
+in the response body. That made the floor look present. **Consent** rides `doc_events` and was not
+there at all. A `run_doc_method` submit with no marker returned 200 and moved the ledger. A SUBMIT
+marker spent on a CANCEL moved it back.
+
+`consent_status` reported `require_consent: True` throughout. That is the endpoint whose own module
+docstring says it exists because "an install can upgrade and still be wide open to the bypass the
+gate was built to close — and nothing anywhere would say so." It was the same class of hole one
+layer deeper, and the endpoint was answering the wrong question: a declared intention is not an
+enforced one. So it probes now instead of declaring.
+
+**This is a deployment condition, not a code defect** — no version of guard mis-decided anything,
+and the packaged artifact was correct on disk. No advisory is filed. But an install whose cache
+predates its consent support has been running an inert gate while its grant said otherwise, and
+could not have known. **Operators on `require_consent`: read `consent_enforced`.** If it is false
+while `require_consent` is true, clear the site cache and re-read it, then prove it with a refusal.
+
+**Deny-biased, like the rest of the module.** Anything unprovable reports NOT registered. A
+half-loaded gate (`before_submit` present, `before_cancel` absent) is **not** registered — consent
+to post would otherwise be spendable on a reversal, which is the exact thing `before_cancel`
+refuses. Another app's `before_submit` does not count as ours.
+
+**Residual, stated rather than glossed.** `gate_registered` proves the handlers are REGISTERED, not
+that they FUNCTION: a handler listed in the registry whose module failed to import at call time
+would report `true` and still fail open. It is not a substitute for a live refusal receipt. The only
+thing that proves a gate holds is watching it refuse.
+
+**Disclosure.** `gate_registered: false` is more actionable to a credential-holder than
+`require_consent` alone — it says "consent is inert here." It is reported anyway, because the caller
+must already hold a valid credential with this method in its allowlist, could learn the same fact by
+simply attempting the write, and an operator unable to see an inert gate is by far the worse failure.
+The endpoint remains authenticated-only, argument-free, and reports on `frappe.session.user` alone.
+
+Tests: +10, driven against the real broken registry shape (values `None`), a half-loaded gate, an
+impostor handler, and a probe that cannot look. Verified by injecting an always-`true` regression and
+confirming six of them go red. Suite 481 green.
+
 ## 0.11.0 — 2026-07-29 — site-wide resource access is finally sayable
 
 MINOR. Adds `allow_all_doctypes`, a Check on **API Key Scope**: grant every DocType without

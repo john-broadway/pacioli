@@ -504,3 +504,88 @@ class TestConsentStatusSelfReport(unittest.TestCase):
         out = api.consent_status()
         self.assertTrue(out["require_consent"])          # still established
         self.assertEqual(out["resource_posture"], "unknown")   # never reported as fine
+
+
+# ---- The gate can be REQUESTED and not LOADED, and only a probe can tell -----------------------
+# 2026-07-29, public bench: `require_consent` was 1, the installed hooks.py was byte-identical to
+# source and declared all three doc_events, and `get_hooks("doc_events")["*"]` returned None for
+# every one of them (stale cache from a site created when guard shipped auth_hooks only). Scope
+# rode auth_hooks and worked, so the floor looked present. A submit with no marker returned 200
+# and moved the ledger. 471 tests were green throughout, because they test the code and the bug
+# was in the registry -- so the probe that closes it gets tests that fail on the real broken shape.
+class TestGateRegisteredProbe(unittest.TestCase):
+    def _probe(self, hooks):
+        # Patch the module object `api` actually holds, not sys.modules["frappe"] by name:
+        # sibling tests in this file rebind the stub, so patching by name passed alone and
+        # failed in suite order. Patch what the code under test dereferences.
+        from pacioli_guard import api
+        api.frappe.get_hooks = (hooks if callable(hooks) else (lambda name: hooks))
+        return api._gate_registered()
+
+    def test_both_handlers_loaded_is_registered(self):
+        self.assertTrue(self._probe({"*": {
+            "before_submit": ["pacioli_guard.act.before_submit"],
+            "before_cancel": ["pacioli_guard.act.before_cancel"]}}))
+
+    def test_the_2026_07_29_bench_state_is_NOT_registered(self):
+        """The exact observed shape: keys present, values None."""
+        self.assertFalse(self._probe({"*": {"before_submit": None, "before_cancel": None}}))
+
+    def test_empty_registry_is_not_registered(self):
+        self.assertFalse(self._probe({}))
+
+    def test_a_half_loaded_gate_is_not_registered(self):
+        """submit gated and cancel not is not 'mostly fine' -- consent to post would be spendable
+        on a reversal, which is the very thing before_cancel exists to refuse."""
+        self.assertFalse(self._probe({"*": {
+            "before_submit": ["pacioli_guard.act.before_submit"]}}))
+
+    def test_another_apps_handler_does_not_count(self):
+        """Presence of SOME before_submit is not presence of OURS."""
+        self.assertFalse(self._probe({"*": {
+            "before_submit": ["someone_else.before_submit"],
+            "before_cancel": ["someone_else.before_cancel"]}}))
+
+    def test_a_bare_string_entry_still_counts(self):
+        """frappe hands back a str rather than a list for a single handler."""
+        self.assertTrue(self._probe({"*": {
+            "before_submit": "pacioli_guard.act.before_submit",
+            "before_cancel": "pacioli_guard.act.before_cancel"}}))
+
+    def test_it_is_deny_biased_when_it_cannot_look(self):
+        """Cannot establish -> NOT established. Never 'probably fine'."""
+        def boom(_name):
+            raise RuntimeError("no site context")
+        self.assertFalse(self._probe(boom))
+
+
+class TestConsentStatusReportsEnforcementNotIntention(unittest.TestCase):
+    """`require_consent` alone actively misled on 2026-07-29. The conjunction is the answer."""
+
+    def _status(self, require_consent, registered):
+        from pacioli_guard import api
+        api.frappe.session = types.SimpleNamespace(user="broker@example.com")
+        api.frappe.db = types.SimpleNamespace(
+            get_value=lambda dt, a, b=None, **k: ("SCOPE-1" if b == "name" else require_consent))
+        api.frappe.get_hooks = lambda name: ({"*": {
+            "before_submit": ["pacioli_guard.act.before_submit"],
+            "before_cancel": ["pacioli_guard.act.before_cancel"]}} if registered else {})
+        real_posture = api._resource_posture
+        api._resource_posture = lambda user: "narrow"
+        self.addCleanup(setattr, api, "_resource_posture", real_posture)
+        return api.consent_status()
+
+    def test_requested_but_not_loaded_reports_NOT_enforced(self):
+        out = self._status(require_consent=1, registered=False)
+        self.assertTrue(out["require_consent"])       # the grant asks for it
+        self.assertFalse(out["gate_registered"])      # the machinery is absent
+        self.assertFalse(out["consent_enforced"])     # so the honest answer is NO
+
+    def test_requested_and_loaded_reports_enforced(self):
+        out = self._status(require_consent=1, registered=True)
+        self.assertTrue(out["consent_enforced"])
+
+    def test_loaded_but_not_requested_is_not_enforced_for_this_credential(self):
+        out = self._status(require_consent=0, registered=True)
+        self.assertTrue(out["gate_registered"])
+        self.assertFalse(out["consent_enforced"])

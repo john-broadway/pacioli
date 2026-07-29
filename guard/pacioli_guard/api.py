@@ -26,6 +26,55 @@ from pacioli_guard.scope import RESOURCE_DOCTYPE_WILDCARD
 
 SCOPE_DOCTYPE = "API Key Scope"
 
+# The handlers that ARE the consent gate. Named here so the probe below checks for the real
+# thing rather than for the mere presence of some `before_submit` on the site.
+CONSENT_HANDLERS = {
+    "before_submit": "pacioli_guard.act.before_submit",
+    "before_cancel": "pacioli_guard.act.before_cancel",
+}
+
+
+def _gate_registered():
+    """Is the consent gate ACTUALLY in this site's ``doc_events`` registry?
+
+    ``require_consent`` is a REQUEST recorded on a document. This is the RECEIPT: it asks the
+    running site whether the handlers that enforce that request are loaded. The two can disagree,
+    and when they do, the flag is the one that lies.
+
+    Earned on 2026-07-29, on the public bench. ``require_consent`` was ``1``, the installed
+    ``hooks.py`` was byte-identical to source and declared all three ``doc_events``, and
+    ``frappe.get_hooks("doc_events")["*"]`` returned ``None`` for every one of them — a stale
+    hooks cache from a site created back when guard shipped ``auth_hooks`` only. Scope enforcement
+    rode ``auth_hooks`` and worked perfectly, which made the floor look present. Consent rode
+    ``doc_events`` and was not there at all. A submit with no marker returned 200 and moved the
+    ledger. The card said governed; the room was open.
+
+    ``consent_status`` reported ``require_consent: True`` throughout, and was useless for catching
+    it, because a declared intention is not an enforced one. So: probe, never declare.
+
+    Deny-biased, like everything else in this module: anything that cannot be established is
+    reported as NOT established. An exception here means we could not prove the gate is loaded,
+    which is exactly the state an operator must be told about.
+
+    **Residual, stated because the field would otherwise overclaim.** This proves the handlers are
+    REGISTERED, not that they FUNCTION. A handler listed in the registry whose module fails to
+    import at call time would report ``True`` here and still fail open at the moment it mattered.
+    So ``True`` means "the wiring the stale-cache class of failure destroys is present" — it is not
+    a substitute for the live refusal receipt. The only thing that proves a gate holds is watching
+    it refuse, which is why the bench matrix exists and why it runs the negative cases first.
+    """
+    try:
+        star = (frappe.get_hooks("doc_events") or {}).get("*") or {}
+        for event, handler in CONSENT_HANDLERS.items():
+            entries = star.get(event) or []
+            if isinstance(entries, str):
+                entries = [entries]
+            if handler not in entries:
+                return False
+        return True
+    except Exception:  # noqa: BLE001 — a diagnostic must never traceback into the auth path
+        return False
+
 
 def _resource_posture(user):
     """How wide is THIS credential's resource branch: ``off`` / ``denies_all`` / ``all_doctypes`` /
@@ -65,15 +114,26 @@ def consent_status():
     """Report whether THIS credential is consent-gated. Never reports on anyone else.
 
     Returns ``guard_version``, ``user``, ``scoped`` (does this credential have a grant at all),
-    ``require_consent``, and ``resource_posture`` (see :func:`_resource_posture`). An unscoped
-    credential is reported as ``scoped: False`` — that is the loudest possible state, because an
-    unscoped credential is not governed at all.
+    ``require_consent``, ``gate_registered``, ``consent_enforced``, and ``resource_posture``
+    (see :func:`_resource_posture`). An unscoped credential is reported as ``scoped: False`` —
+    that is the loudest possible state, because an unscoped credential is not governed at all.
+
+    ``require_consent`` is what the grant ASKS FOR. ``gate_registered`` is whether the machinery
+    that honours it is loaded (see :func:`_gate_registered`). **``consent_enforced`` is the only
+    one of the three an operator should act on**, because it is the conjunction — and on
+    2026-07-29 the first was ``True`` while the second was ``False`` on a live public site, so
+    reporting the request alone actively misled. A caller reading ``require_consent`` and
+    concluding "gated" is making the same mistake this endpoint exists to prevent.
     """
     user = frappe.session.user
+    registered = _gate_registered()
     name = frappe.db.get_value(SCOPE_DOCTYPE, {"user": user}, "name")
     if not name:
         return {"guard_version": __version__, "user": user, "scoped": False,
-                "require_consent": False, "resource_posture": "unknown"}
+                "require_consent": False, "gate_registered": registered,
+                "consent_enforced": False, "resource_posture": "unknown"}
     value = frappe.db.get_value(SCOPE_DOCTYPE, name, "require_consent")
     return {"guard_version": __version__, "user": user, "scoped": True,
-            "require_consent": bool(value), "resource_posture": _resource_posture(user)}
+            "require_consent": bool(value), "gate_registered": registered,
+            "consent_enforced": bool(value) and registered,
+            "resource_posture": _resource_posture(user)}

@@ -186,6 +186,16 @@ read-only with no docstatus/data mutation):
   no body to launder a target through. It exists so an operator can be told `require_consent` is
   off, because a silent insecure default is how a bypass hides.
 
+  Since **0.12.0** it also reports **`gate_registered`** and **`consent_enforced`**, because
+  `require_consent` being *on* turned out not to be enough either. It is a flag on a grant — it
+  records what was asked for. The consent gate itself rides `doc_events`, and a site whose hooks
+  cache predates its consent support can carry that flag while the handlers are not registered at
+  all. Scope rides `auth_hooks`, so scope keeps refusing perfectly and the floor looks present while
+  no act is being consented. `consent_enforced` is the conjunction, and it is the field to act on.
+  It is deny-biased: a half-loaded gate, another app's handler, or a probe that cannot look all read
+  as not registered. It proves the handlers are *registered*, not that they *function* — only
+  watching a refusal proves that.
+
 **Anything else is denied even if a grant pattern fnmatches it** — a new frappe RPC is denied until
 reviewed, instead of open until enumerated. SAFE_METHODS membership is necessary-not-sufficient
 (the grant must still name it), and the **admission criterion** is strict: read-only, no
