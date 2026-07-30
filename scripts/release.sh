@@ -88,8 +88,27 @@ fi
 if [ "$PKG" = broker ]; then
   if [ -x broker/.venv/bin/python ] && [ -x "$TOOLVENV/bin/pip-audit" ]; then
     REQS="$(mktemp)"
-    uv pip freeze --python broker/.venv/bin/python 2>/dev/null | grep -vE '^-e |pacioli' > "$REQS"
-    "$TOOLVENV/bin/pip-audit" -r "$REQS" || RC=1
+    # --color never is load-bearing, not cosmetic. uv colourises its own output when it decides a
+    # terminal is attached, and the escape codes land IN the requirements file
+    # ("\e[1ma2a-sdk\e[0m==1.1.1"), which pip-audit cannot parse. The audit then does not run at
+    # all. Caught 2026-07-30 cutting 0.34.2: the same command had produced a clean file hours
+    # earlier, so this depends on the environment rather than on anything in the repo.
+    uv pip freeze --color never --python broker/.venv/bin/python 2>/dev/null \
+      | grep -vE '^-e |pacioli' > "$REQS"
+    # Refuse on an unparseable file rather than letting a green line stand for an audit that never
+    # happened. A requirements line is `name==version`; anything else here means the generator, not
+    # the dependency, is broken.
+    # Counted, not `grep -q`. In some shells `grep` is a wrapper function (Claude Code routes it
+    # to ugrep) whose -q exit code does not reflect -v selection, so a -q guard silently never
+    # fires while -c and -n are correct. Measured 2026-07-30. Count, then compare.
+    REQS_BAD="$(command grep -cvE '^[A-Za-z0-9._-]+==[^[:space:]]+$' "$REQS" 2>/dev/null || true)"
+    if [ ! -s "$REQS" ] || [ "${REQS_BAD:-1}" != "0" ]; then
+      printf 'release: pip-audit input is not clean requirements — the audit did NOT run.\n' >&2
+      command grep -nvE '^[A-Za-z0-9._-]+==[^[:space:]]+$' "$REQS" 2>/dev/null | head -3 | cat -A >&2
+      RC=1
+    else
+      "$TOOLVENV/bin/pip-audit" -r "$REQS" || RC=1
+    fi
     rm -f "$REQS"
   else
     printf 'release: skipping pip-audit — need broker/.venv (with extras) + pip-audit in the tooling venv.\n' >&2

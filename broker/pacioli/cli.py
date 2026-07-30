@@ -15,6 +15,7 @@ seal key is never in reach of the consent step (least exposure).
 from __future__ import annotations
 
 import argparse
+import math
 import secrets
 import sys
 
@@ -99,28 +100,39 @@ def cmd_mint(env, plan_id, target, ttl):
                 print(f"          - {node}")
     if plan.projected_gl:
         sides = [(_gl_side(row, "debit"), _gl_side(row, "credit")) for row in plan.projected_gl]
-        # One unreadable row makes the TOTAL wrong, and a wrong total understates the act. Say so
-        # rather than print a number that looks authoritative; partial sums are the silent failure
-        # this whole disclosure exists to avoid.
-        unreadable = any(debit is None or credit is None for debit, credit in sides)
-        if unreadable:
-            print(f"        projected GL: {len(plan.projected_gl)} line(s), totals unavailable: "
-                  f"the projected rows are not in a readable shape, so no balance check was made")
+        readable = [(debit, credit) for debit, credit in sides
+                    if debit is not None and credit is not None]
+        total_rows = len(sides)
+        unread = total_rows - len(readable)
+        # Degrade PER ROW, not all-or-nothing. 0.34.1 blanked the whole disclosure on any single
+        # unreadable row, which threw away real information: a genuine imbalance 0.34.0 had caught
+        # went silent, and a cascade concatenates every node's rows, so one bad row in a 25-node
+        # graph blanked all 25.
+        if readable:
+            debits = sum(debit for debit, _ in readable)
+            credits = sum(credit for _, credit in readable)
+            partial = f" (readable rows only; {unread} of {total_rows} could not be read)" if unread else ""
+            print(f"        projected GL: {total_rows} line(s), "
+                  f"debits {debits:,.2f} / credits {credits:,.2f}{partial}")
         else:
-            debits = sum(debit for debit, _ in sides)
-            credits = sum(credit for _, credit in sides)
-            print(f"        projected GL: {len(plan.projected_gl)} line(s), "
-                  f"debits {debits:,.2f} / credits {credits:,.2f}")
-            # The house law, on the consent line: no debit without a credit. A balanced entry nets
-            # to zero, so printing the NET would have shown "0.00" for every healthy plan and told
-            # the human nothing. The magnitude is the size of the act; the imbalance is the alarm.
-            #
-            # This sits INSIDE the readable branch on purpose: an alarm that cannot distinguish
-            # "balanced" from "unread" is not an alarm. The unreadable branch above says outright
-            # that no balance check was made, rather than staying silent and reading as healthy.
-            if round(debits - credits, 2) != 0:
-                print(f"  RISK: projected entry DOES NOT BALANCE "
-                      f"(off by {debits - credits:,.2f}) — no debit without a credit")
+            print(f"        projected GL: {total_rows} line(s), totals unavailable")
+        if unread:
+            # RISK, not quiet metadata. Being unable to read what we are disclosing is the
+            # strongest reason to slow a human down, so it may not render at the same weight as an
+            # ordinary line count.
+            print(f"  RISK: {unread} of {total_rows} projected GL row(s) could not be read, so the "
+                  f"balance check was NOT made")
+        # The house law, on the consent line: no debit without a credit. A balanced entry nets to
+        # zero, so printing the NET would have shown "0.00" for every healthy plan and told the
+        # human nothing. The magnitude is the size of the act; the imbalance is the alarm.
+        #
+        # Only claimed on a COMPLETE read. An unread row may be the balancing side, so asserting
+        # imbalance from a partial one is a false alarm, and a false alarm is the same class of lie
+        # as a false all-clear. The readable subtotal is still printed above, so a human can see a
+        # discrepancy we decline to assert.
+        elif round(debits - credits, 2) != 0:
+            print(f"  RISK: projected entry DOES NOT BALANCE "
+                  f"(off by {debits - credits:,.2f}) — no debit without a credit")
     for flag in plan.risk_flags:
         print(f"  RISK: {flag}")
     print(f"ttl:    {ttl}s")
@@ -140,6 +152,14 @@ def cmd_mint(env, plan_id, target, ttl):
 # 0.33.2 every real disclosure summed to 0.00 and the imbalance alarm below could never fire.
 _GL_DEBIT_IDX = 2
 _GL_CREDIT_IDX = 3
+# Pinned EXACTLY, not as a minimum. `fields` above is ten long, and a row of any other length is a
+# row this positional read does not understand. A minimum-length check is the dangerous version:
+# if ERPNext ever inserts a NUMERIC column before debit (its own GL report already carries
+# `balance` and `debit_in_account_currency` nearby), every index shifts, BOTH sides shift together
+# so the entry still nets to zero, the imbalance alarm stays quiet, and the human is shown the
+# wrong magnitude at the consent moment. That is this exact bug re-armed, so the length is the
+# guard against it.
+_GL_ROW_LEN = 10
 
 
 def _gl_side(row, side):
@@ -151,21 +171,29 @@ def _gl_side(row, side):
     made the imbalance check unreachable.
     """
     if isinstance(row, dict):
+        # The CANCEL path (`plan_cancel`/`plan_cascade_cancel`) really does carry dict rows: they
+        # come from `get_gl_entries`, which validates them at its own seam. Both shapes are live.
         value = row.get(side)
     elif isinstance(row, (list, tuple)):
-        index = _GL_DEBIT_IDX if side == "debit" else _GL_CREDIT_IDX
-        if len(row) <= index:
+        if len(row) != _GL_ROW_LEN:
             return None
-        value = row[index]
+        value = row[_GL_DEBIT_IDX if side == "debit" else _GL_CREDIT_IDX]
     else:
         return None
     # ERPNext writes the unused side of a row as "" rather than 0.
     if value is None or value == "":
         return 0.0
+    # A bool is not a money value, and `float(True)` is 1.0. `get_gl_entries` already refuses
+    # non-bool numbers at its seam; the preview path had no equivalent.
+    if isinstance(value, bool):
+        return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    # `float("nan")` and `float("inf")` do NOT raise, so a bare try/except lets them through and
+    # the disclosure prints "debits nan". Every other money reader here applies the same defense.
+    return number if math.isfinite(number) else None
 
 
 def cmd_verify(env, target, expected_head):

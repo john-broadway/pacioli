@@ -166,18 +166,25 @@ class TestMintCli(unittest.TestCase):
         self.assertIn("totals unavailable", out)
         self.assertNotIn("debits 0.00 / credits 0.00", out)
 
-    def test_mint_states_totals_unavailable_when_a_money_column_is_not_a_number(self):
+    def test_mint_counts_a_non_numeric_money_column_as_unread_not_as_zero(self):
         """A full-length row whose debit column holds junk is unreadable, not zero.
 
         Distinct from the short-row case: this one reaches float() and raises, so it exercises the
         exception path rather than the length guard. Mutation testing found that path untested.
+
+        Retargeted in 0.34.2: the row is now reported as unread and the other row still totals,
+        rather than blanking the whole disclosure. The property under test is unchanged — the junk
+        must never be scored 0.0 — but it is now observable as a count instead of an absence.
         """
         junk = [list(r) for r in self.BENCH_GL]
         junk[0][2] = "n/a"  # a debit column that is present, full length, and not a number
         pid = self._plan_with_gl(junk, plan_id="pnan")
         rc, out = self._mint(plan_id=pid)
         self.assertEqual(rc, 0, out)
-        self.assertIn("totals unavailable", out)
+        self.assertIn("1 of 2", out)
+        self.assertIn("could not be read", out)
+        # scoring the junk as 0.0 would have made this a complete, balanced-looking read
+        self.assertNotIn("debits 0.00 / credits 1,450.00", out)
         self.assertNotIn("DOES NOT BALANCE", out)
 
     def test_mint_refuses_an_unknown_plan(self):
@@ -314,3 +321,81 @@ class TestMintDisclosesTheActNotJustThePlanId(unittest.TestCase):
         _, out = self._mint("p1")
         self.assertNotIn("DOES NOT BALANCE", out)
         self.assertIn("1,450.00", out)
+
+
+class TestGlDisclosureDegradesPerRow(unittest.TestCase):
+    """0.34.1 made ANY unreadable row blank the whole disclosure and skip the balance check.
+
+    That lost information a human needs: a genuine imbalance 0.34.0 caught went silent, and a
+    cascade concatenates every node's rows (tools.py), so one bad row blanked all of them. Total
+    what IS readable, say plainly how much was not, and do not assert balance on a partial read —
+    a false alarm is the same class of lie as a false all-clear.
+    """
+
+    BENCH_ROW_LEN = 10
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        d = Path(self.dir.name)
+        (d / "targets.toml").write_text(REG)
+        self.env = {"PACIOLI_REGISTRY": str(d / "targets.toml"),
+                    "PACIOLI_STATE_DIR": str(d), "K": "kk", "S": "ss"}
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def _row(self, debit="", credit=""):
+        return ["2026-07-25", "1310 - Debtors - HBW", debit, credit,
+                "4110 - Sales - HBW", "Customer", "Two Rivers", "", "Sales Invoice", "SI-1"]
+
+    def _mint_with(self, rows, plan_id="pdeg"):
+        store = open_store(self.env, "prod")
+        from pacioli.plan import new_plan
+        store.record_plan(new_plan(plan_id, "prod", "v1", "2026-07-01", docname="SI-1",
+                                   projected_gl=rows))
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            cmd_mint(self.env, plan_id=plan_id, target=None, ttl=900)
+        return out.getvalue() + err.getvalue()
+
+    def test_a_readable_majority_still_reports_its_totals(self):
+        """The lens's case: 0.34.0 caught this -450.00, 0.34.1 went silent on it."""
+        rows = [self._row(debit=1000.0), self._row(credit=1450.0), self._row(debit="n/a")]
+        out = self._mint_with(rows)
+        self.assertIn("debits 1,000.00 / credits 1,450.00", out)
+        self.assertIn("1 of 3", out)
+
+    def test_an_unreadable_row_is_announced_as_RISK_not_as_quiet_metadata(self):
+        """The case where we cannot read what we are disclosing is the strongest reason to slow a
+        human down, so it may not render at the same weight as an ordinary count."""
+        out = self._mint_with([self._row(debit=1000.0), self._row(debit="n/a")])
+        risk_lines = [ln for ln in out.splitlines() if ln.strip().startswith("RISK:")]
+        self.assertTrue(any("could not be read" in ln for ln in risk_lines), out)
+
+    def test_a_partial_read_does_not_assert_the_entry_is_unbalanced(self):
+        """A missing row may be the balancing side. Claiming imbalance from a partial read is a
+        false alarm, which is the same class of lie as a false all-clear."""
+        out = self._mint_with([self._row(debit=1000.0), self._row(debit="n/a")])
+        self.assertNotIn("DOES NOT BALANCE", out)
+
+    def test_an_inserted_column_is_unreadable_rather_than_silently_wrong(self):
+        """If ERPNext inserts a numeric column before debit, positional reads shift. Both sides
+        shift together, so the entry still nets to zero and the alarm stays quiet while the human
+        is shown the wrong magnitude. The row length is pinned so that becomes unreadable."""
+        shifted = [self._row(debit=1000.0)[:2] + [999.0] + self._row(debit=1000.0)[2:]]
+        self.assertEqual(len(shifted[0]), self.BENCH_ROW_LEN + 1)
+        out = self._mint_with(shifted)
+        self.assertNotIn("999.00", out)
+        self.assertIn("could not be read", out)
+
+    def test_a_non_finite_amount_is_unreadable(self):
+        """float('nan') does not raise, so it sails through a bare try/except and prints
+        'debits nan'. Every other money reader in this package applies math.isfinite."""
+        out = self._mint_with([self._row(debit=float("nan")), self._row(credit=1450.0)])
+        self.assertNotIn("nan", out.lower())
+        self.assertIn("could not be read", out)
+
+    def test_a_boolean_is_not_a_money_value(self):
+        """float(True) is 1.0. get_gl_entries already refuses non-bool numbers at its seam."""
+        out = self._mint_with([self._row(debit=True), self._row(credit=1450.0)])
+        self.assertIn("could not be read", out)

@@ -6,6 +6,53 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.34.2 — 2026-07-30 — one unreadable row no longer blanks the whole disclosure
+
+PATCH. Bug fix only, no interface change. Closes a regression 0.34.1 introduced and three gaps an
+adversarial pass found around it. Every finding here came from a redteam of 0.34.1, not from the
+suite, which was green throughout.
+
+**The regression.** 0.34.1 made ANY single unreadable row blank the totals AND skip the balance
+check for the entire entry. That threw away information the human needs: an imbalance 0.34.0 had
+caught went silent, and a cascade concatenates every node's rows, so one bad row in a 25-node graph
+blanked all 25. The disclosure now degrades PER ROW:
+
+```
+projected GL: 3 line(s), debits 1,000.00 / credits 1,450.00 (readable rows only; 1 of 3 could not be read)
+RISK: 1 of 3 projected GL row(s) could not be read, so the balance check was NOT made
+```
+
+The readable subtotal is stated, the shortfall is named, and imbalance is NOT asserted from a
+partial read: an unread row may be the balancing side, and a false alarm is the same class of lie as
+a false all-clear. The human can still see the 1,000 against 1,450 and judge it.
+
+**The row length is now pinned exactly, not as a minimum.** This is the sharpest finding. ERPNext
+builds `gl_data` from a ten-element `fields` literal in `controllers/stock_controller.py`. If a
+future version inserts a NUMERIC column before `debit` (its own GL report already carries `balance`
+and `debit_in_account_currency` nearby), every index shifts, BOTH sides shift together so the entry
+still nets to zero, the alarm stays quiet, and the human is shown a wrong magnitude at the consent
+moment. That is precisely the 0.34.1 bug re-armed. A row of any length but ten is now unreadable.
+
+**`math.isfinite`, and bools are not money.** `float("nan")` and `float("inf")` do not raise, so
+they passed the try/except and the disclosure printed `debits nan`. `float(True)` is 1.0.
+`get_gl_entries` already refused both at its own seam; the preview path had no equivalent. Noted as
+an asymmetry rather than a bypass: it failed loud either way.
+
+**The unreadable notice is now `RISK:`.** It rendered at the same weight as an ordinary line count.
+Being unable to read what you are disclosing is the strongest reason to slow a human down.
+
+**On the dict rows.** The review suggested the dict-shaped GL fixtures in the suite were wrong
+because `ledger_preview` never returns them. Checked before acting, and that is only half true:
+`plan_cancel`/`plan_cascade_cancel` build `projected_gl` from `get_gl_entries`, which really does
+return dicts. Both shapes are live and both stay supported. The actual gap was that the LIST shape
+had no coverage at all until 0.34.1, which is why the 0.00 bug shipped green for three releases.
+
+**Verification.** Six new tests, six mutations, all fatal: restoring all-or-nothing, loosening the
+length pin to a minimum, dropping `isfinite`, dropping the bool guard, demoting the notice out of
+`RISK:`, and asserting imbalance on a partial read. Two of the new tests failed BEFORE the fix by
+demonstrating the defects rather than describing them: an inserted column rendered `999.00` as
+money, and a NaN printed as `nan`.
+
 ## 0.34.1 — 2026-07-30 — the consent disclosure was reporting 0.00, and the balance alarm could not fire
 
 PATCH. Bug fix only, no interface change. `cmd_mint`'s projected-GL summary showed
