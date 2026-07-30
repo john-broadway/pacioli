@@ -60,7 +60,7 @@ from pacioli_guard.enforce import (
     _scope_from_doctype,
     _scope_from_legacy_field,
 )
-from pacioli_guard.scope import consent_verdict
+from pacioli_guard.scope import MINT_ROUTE_HINT, consent_verdict
 
 SUBMIT = "submit"
 CANCEL = "cancel"
@@ -71,6 +71,23 @@ CANCEL = "cancel"
 # The MODULE is part of the signal, not decoration — see `_enclosing_governed_act`.
 _WRITE_FRAMES = frozenset({"_save", "insert"})
 _DOCUMENT_MODULE = "frappe.model.document"
+
+# ERPNext's ledger-PREVIEW frames, and the module they must belong to. Deliberately a SEPARATE
+# constant, recogniser and act-lookup from the write-frame set above, and `_enclosing_governed_act`
+# is NOT touched. That function's two previous implementations BOTH FAILED OPEN (0.9.1 counted write
+# frames; 0.9.2 accepted "a different document is being written"), so the new trust this feature
+# needs goes in a new function whose own failure direction can be reasoned about on its own.
+#
+# KNOWLEDGE-PINNED against erpnext 16 `controllers/stock_controller.py`:
+#   `show_accounting_ledger_preview` (:2058) and `show_stock_ledger_preview` (:2071) each
+#   `doc.run_method("before_gl_preview" | "before_sl_preview")`, then call
+#   `get_accounting_ledger_preview` (:2088) / `get_stock_ledger_preview`, then `frappe.db.rollback()`
+#   (:2066 / :2080). The preview REALLY POSTS and then rolls the transaction back.
+_PREVIEW_FRAMES = frozenset({
+    "show_accounting_ledger_preview", "get_accounting_ledger_preview",
+    "show_stock_ledger_preview", "get_stock_ledger_preview",
+})
+_PREVIEW_MODULE = "erpnext.controllers.stock_controller"
 
 
 def _writing_document(frame):
@@ -273,6 +290,63 @@ def _enclosing_governed_act(doc):
     return None
 
 
+def _previewing_document(frame):
+    """The document an ERPNext ledger-PREVIEW frame is previewing, or None.
+
+    Same two-part signal as :func:`_writing_document` and for the same reason: the name alone is
+    ambiguous, the module pins it to ERPNext's own preview machinery where `doc` is by construction
+    the document being previewed.
+    """
+    if frame.f_code.co_name not in _PREVIEW_FRAMES:
+        return None
+    if frame.f_globals.get("__name__") != _PREVIEW_MODULE:
+        return None
+    local = frame.f_locals
+    return local.get("doc") if local.get("doc") is not None else None
+
+
+def _previewing_governed_act(doc):
+    """The act of an enclosing PREVIEW of a DIFFERENT document that already established consent.
+
+    **Why this exists.** ERPNext previews a posting by performing it and rolling back
+    (`stock_controller.py:2058-2066`). The posting creates and submits cascaded documents —
+    `Payment Ledger Entry` first — and `before_submit` fires on each. Those documents do not exist
+    until the preview runs, so no human could have minted a marker naming them; it is the same
+    situation `_enclosing_governed_act` exists for, arriving down a path that is not a document
+    write. During a preview the previewed document is NOT being written, so no
+    `frappe.model.document` write frame holds it, and the write-frame walk correctly finds nothing.
+
+    **Why it is a separate function.** `_enclosing_governed_act` has failed OPEN twice and its safety
+    argument is precisely that a stamp licenses nothing without a live frappe write frame holding the
+    document. Widening that function would put this feature inside that argument. This one is
+    additive, is consulted only after the write-frame walk has already found nothing, and can be
+    reasoned about and tested by itself.
+
+    **What it trusts, stated narrowly.** One thing: that an enclosing frame belonging to ERPNext's
+    preview module holds a document THIS gate has already stamped `_CONSENT_ESTABLISHED` — which
+    only :func:`_establish_consent_for_preview` sets, and only after verifying a live, human-minted,
+    document-and-act-bound marker for that exact document. No marker, no stamp, no ride.
+
+    **Direction of failure.** If ERPNext renames or moves these functions, no preview frame is
+    recognised, the cascaded documents fall through to the marker check, and the PREVIEW is refused.
+    The product breaks loudly and nothing ungoverned is admitted. Same direction as the write walk.
+
+    **Residual.** A preview does not spend the marker (see :func:`_establish_consent_for_preview`), so
+    one marker can drive many previews inside its TTL. A preview commits nothing — ERPNext rolls the
+    transaction back — so this buys an attacker repeated projections of a posting a human already
+    authorised, not a posting. Stated rather than left implicit.
+    """
+    frame = sys._getframe(1)
+    while frame is not None:
+        other = _previewing_document(frame)
+        if other is not None and not _same_document(other, doc):
+            established = _flag_value(other, _CONSENT_ESTABLISHED)
+            if established:
+                return established
+        frame = frame.f_back
+    return None
+
+
 def _may_ride(doc, action, enclosing_act):
     """May this act ride the consent established for the enclosing act it is a consequence of?
 
@@ -460,6 +534,11 @@ def _require_consent(doc, action):
     # discriminator is the ENCLOSING act instead, because a cancel is always of a document that
     # already has a name. `_may_ride` owns both splits and states the residual each leaves.
     enclosing_act = _enclosing_governed_act(doc)
+    # Consulted ONLY when the write-frame walk found nothing, so this can never widen an answer the
+    # existing walk already gave. A preview is not a document write, so its cascade arrives here with
+    # no enclosing write frame at all. See `_previewing_governed_act`.
+    if not enclosing_act:
+        enclosing_act = _previewing_governed_act(doc)
     if enclosing_act and _may_ride(doc, action, enclosing_act):
         # Propagate custody: a cascade of a cascade (a GL Entry inside a Payment Ledger Entry
         # inside the consented invoice) must keep riding the original act rather than becoming
@@ -491,7 +570,7 @@ def _require_consent(doc, action):
             f"cannot see (OAuth Bearer, desk sessions, background jobs, the scheduler, server "
             f"scripts, the bench console). It does NOT see a write that sets "
             f"`flags.ignore_validate`, or one that skips the document lifecycle entirely "
-            f"(raw SQL, `db_update`/`db_set` field writes).",
+            f"(raw SQL, `db_update`/`db_set` field writes). {MINT_ROUTE_HINT}.",
         )
         return
     # The spend IS the single-use check — see `_claim_consent`. Losing it denies, and it fails
@@ -501,7 +580,8 @@ def _require_consent(doc, action):
             "consent (document layer)",
             f"This credential presented a consent marker for {doctype} {docname} that could not be "
             f"spent: it was already used by another request, or the spend could not be confirmed. "
-            f"Markers are single-use — a human mints a fresh one with `pacioli mint`.",
+            f"Markers are single-use — a human (not this credential) creates a fresh Pacioli "
+            f"Consent Marker for this document and act, bound to a new token. {MINT_ROUTE_HINT}.",
         )
         return
     # Consent for THIS act is now established, so the framework's own consequences of it may ride.
@@ -514,6 +594,85 @@ def before_submit(doc, method=None):
     """``doc_events`` handler. ``method`` is optional because frappe's ``Document.hook`` composer
     inspects the signature and calls a handler either as ``f(doc, method)`` or ``f(doc)``."""
     _require_consent(doc, SUBMIT)
+
+
+def _establish_consent_for_preview(doc):
+    """Require, for a PREVIEW of a submit, the same consent the submit itself needs. Do not spend it.
+
+    **Why consent moved to cover the preview** (John's ruling, 2026-07-29). ERPNext previews a posting
+    by performing it and rolling back, so with consent enforced the preview's own cascade was refused
+    and `plan_submit` could not complete. Every option that lets the preview through WITHOUT consent
+    means teaching this gate to believe a caller's claim that a write will be rolled back, and the
+    gate cannot verify that claim. So the preview is gated instead of exempted: previewing a submit
+    requires the marker for that submit.
+
+    **The consequence, stated because it changes the ceremony.** Consent is now minted BEFORE the plan
+    rather than after it. A human authorises "submit this draft", then the projection is produced
+    under that authority. They no longer see the projected GL before consenting — they see the draft,
+    which is the document they are consenting to, and the projection becomes disclosure rather than a
+    precondition. That is a real change to PLAN -> CONSENT -> PROVE and it is John's call, not an
+    implementation detail smuggled in here.
+
+    **Why the marker is NOT spent.** A preview commits nothing, and the marker has to survive for the
+    act it previews or consenting once would authorise a projection instead of a posting. Single-use
+    still means single POSTING: `_require_consent` spends it at the real submit. The cost is that one
+    marker can drive many previews inside its TTL, which is stated in `_previewing_governed_act`.
+
+    **Fails CLOSED and quietly on anything unexpected.** An ungated user returns immediately, so this
+    is inert on any site that never opted in. A gated user with no valid marker is denied, which
+    refuses the preview and nothing else.
+    """
+    user = getattr(getattr(frappe, "session", None), "user", None)
+    if not user or not _gated(user):
+        return
+    # Already established for this document in this request: a nested preview, or a preview inside a
+    # governed act. Nothing to verify and nothing to re-stamp.
+    if _flag_value(doc, _CONSENT_ESTABLISHED):
+        return
+    doctype = getattr(doc, "doctype", None)
+    docname = getattr(doc, "name", None)
+    record = _consent_record(doctype, docname) if doctype and docname else None
+    # SUBMIT, not a new "preview" act: the human authorised a posting, and this is that posting being
+    # rehearsed. Inventing a third act would mean a marker that authorises a preview and nothing
+    # else, which is a second ceremony for no gain.
+    allowed, reason = consent_verdict(_presented_consent(), doctype, docname, SUBMIT, record,
+                                      time.time(), user)
+    if not allowed:
+        _deny(
+            "consent (preview)",
+            f"This credential requires human consent to submit a document, and {reason}. Refused "
+            f"for the ledger PREVIEW of {doctype} {docname}. ERPNext previews a posting by "
+            f"performing it and rolling back, so a preview needs the same marker as the submit it "
+            f"previews. A human (not this credential) must create a Pacioli Consent Marker on this "
+            f"site for this exact document with action '{SUBMIT}', bound to a token they generate, "
+            f"and that token is presented in the {CONSENT_HEADER} header on the plan call. It is "
+            f"NOT spent by the preview, so the same marker still spends on the submit itself. "
+            f"{MINT_ROUTE_HINT}.",
+        )
+        return
+    # Stamped WITHOUT spending. `_previewing_governed_act` is what reads this, and only for documents
+    # the preview itself creates.
+    _flag_set(doc, _CONSENT_ESTABLISHED, SUBMIT)
+
+
+def before_gl_preview(doc, method=None):
+    """``doc_events`` handler on ERPNext's ACCOUNTING-ledger preview entry point.
+
+    `show_accounting_ledger_preview` calls `doc.run_method("before_gl_preview")`
+    (`stock_controller.py:2062`) BEFORE it posts, and frappe's `run_method` composes
+    `doc_events["*"][method]` (`model/document.py:1252` -> `hook.composer` :1643-1650), so this fires
+    ahead of the posting it needs to authorise.
+    """
+    _establish_consent_for_preview(doc)
+
+
+def before_sl_preview(doc, method=None):
+    """As :func:`before_gl_preview`, for the STOCK-ledger preview (`stock_controller.py:2076`).
+
+    Registered for the same reason: `show_stock_ledger_preview` also posts and rolls back (:2080),
+    so it can cascade submits the same way.
+    """
+    _establish_consent_for_preview(doc)
 
 
 def before_cancel(doc, method=None):
@@ -548,9 +707,23 @@ def after_insert(doc, method=None):
     it writes it only when such a frame is ALREADY there. An insert with no governed act enclosing
     it leaves no stamp, so an ungoverned creation cannot manufacture a later ride.
 
+    **Both walks, for the same reason :func:`_require_consent` needs both.** Inside a ledger PREVIEW
+    the previewed document is not being written, so no ``frappe.model.document`` write frame holds it
+    and the write walk correctly finds nothing. A preview that creates a document in ERPNext's
+    ordinary two-step idiom therefore recorded no creation, and the later ``submit`` arrived looking
+    exactly like a pre-existing draft the caller named — refused, taking the whole preview with it
+    (``serial_batch_bundle.py:1166``/``:1172``, reached from a preview with ``update_stock``). Added
+    0.13.0, after the asymmetry was reproduced against real frames rather than argued from the code.
+
+    This widens nothing that the preview walk did not already license at :func:`_require_consent`:
+    the stamp is still only ever READ by :func:`_may_ride`, which is unreachable unless an enclosing
+    governed act — write or preview — is found on the live stack at submit time. A pre-existing draft
+    the caller named inside a preview still gets no stamp, because ``after_insert`` never runs for it.
+
     Deliberately does NO grant read and NO database work: this is registered on ``doc_events["*"]``
     and therefore runs on every insert on the site, including on sites that never opted into this
-    app. A ``sys._getframe`` walk with no source lookup is the whole cost.
+    app. Two ``sys._getframe`` walks with no source lookup are the whole cost, and the second runs
+    only when the first found nothing.
     """
-    if _enclosing_governed_act(doc):
+    if _enclosing_governed_act(doc) or _previewing_governed_act(doc):
         _flag_set(doc, _CREATED_IN_ACT)

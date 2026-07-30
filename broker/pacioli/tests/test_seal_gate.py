@@ -418,7 +418,10 @@ class FakeClient:
                        date_field="posting_date"):
         return [dict(d) for d in self.docs.values()]
 
-    def ledger_preview(self, company, doctype, docname):
+    def ledger_preview(self, company, doctype, docname, consent=None):
+        # `consent` mirrors the real client since guard 0.13.0's preview gate — the seal tests
+        # never present one, and must keep passing without one (this file's whole point is that an
+        # UNSEALED store behaves byte-identically).
         return {"gl_columns": [], "gl_data": [{"account": "Debtors", "debit": 100.0}]}
 
     def get_period_locks(self, company, doctype, posting_date):

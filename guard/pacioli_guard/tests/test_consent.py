@@ -80,12 +80,52 @@ class TestTheRefusalTextDoesNotLie(unittest.TestCase):
         `pacioli-guard` ships no console script at all — its documented deployment is a bare
         `bench install-app` on a customer bench, with no broker anywhere near it. Telling that
         operator to run `pacioli mint` names a command their shell does not have.
+
+        **Strengthened 2026-07-29 from "name the package" to "do not name it at all", because the
+        command cannot do the job even where it IS installed.** `pacioli mint` takes a `plan_id`
+        positionally and writes a plan-bound marker into the BROKER's own store
+        (`store.mint_marker(token, plan_id, ...)`). It never connects to the books and never
+        creates the `Pacioli Consent Marker` row that this gate reads. Naming it sends an operator
+        to build the wrong object in the wrong place — which the old conditional assertion allowed,
+        since it only checked that the package was attributed.
         """
         allowed, reason = verdict(action="submit", record=None)
         self.assertFalse(allowed)
-        if "pacioli mint" in reason:
-            self.assertIn("pacioli", reason.split("pacioli mint")[1][:200],
-                          "if the CLI is named, the text must say which package ships it")
+        self.assertNotIn("pacioli mint", reason)
+
+    def test_the_remedy_names_the_object_to_create_and_not_the_desk_form(self):
+        """It must name what has to EXIST, and not a form that refuses the operator.
+
+        The first fix for the `pacioli mint` lie said "in the desk UI" instead — and that is a
+        second lie for a mechanical reason: `token_hash` is `reqd: 1` AND `read_only: 1` on the
+        DocType with no default, and `PacioliConsentMarker.before_insert` sets only `minted_by`.
+        So the desk form cannot supply a mandatory field and the save cannot succeed. There is
+        also nowhere in that form to see the raw token, which the human must generate and keep out
+        of the credential's reach. Naming the desk UI would send an operator to a form that
+        refuses them, which is the same defect wearing a friendlier hat.
+        """
+        allowed, reason = verdict(action="submit", record=None)
+        self.assertFalse(allowed)
+        self.assertIn("Pacioli Consent Marker", reason)
+        self.assertNotIn("desk", reason.lower())
+        # The token is the human's to generate — say so, because the marker stores only its hash.
+        self.assertIn("token", reason.lower())
+
+    def test_the_remedy_names_the_route_THIS_package_actually_ships(self):
+        """Now that one exists, the refusal has to point at it.
+
+        The route was struck from every refusal because there genuinely was none — the only way to
+        mint was an ad-hoc script in a container. `pacioli_guard.mint.mint_consent_marker` (0.13.0)
+        is that route, it lives in THIS package, and it is reachable with `bench execute` on the
+        books box. A refusal that describes the object but not the way to make it leaves the
+        operator exactly as stuck as before, just more accurately.
+        """
+        allowed, reason = verdict(action="submit", record=None)
+        self.assertFalse(allowed)
+        self.assertIn("pacioli_guard.mint.mint_consent_marker", reason)
+        self.assertIn("bench", reason.lower())
+        # Still must not name the broker CLI, which cannot make this object.
+        self.assertNotIn("pacioli mint", reason)
 
 
 class TestConsentVerdict(unittest.TestCase):
@@ -589,3 +629,222 @@ class TestConsentStatusReportsEnforcementNotIntention(unittest.TestCase):
         out = self._status(require_consent=0, registered=True)
         self.assertTrue(out["gate_registered"])
         self.assertFalse(out["consent_enforced"])
+
+
+class TestPlanConsentMarker(unittest.TestCase):
+    """The pure half of the human mint route.
+
+    Until now the only way to create a floor marker was an ad-hoc script running as Administrator
+    inside the container (`docs/plans/2026-07-26-consent-ceremony-decision.md` records this as
+    Option B's outstanding cost). That is why every refusal had to be rewritten to promise no route:
+    there wasn't one. Michelle's books have consent enforced and zero markers ever minted, so the
+    first governed write attempted there needs a route a human can actually take.
+
+    Randomness and the clock stay OUT of this function — the caller passes the token and `now` —
+    so the row it computes is fully determined and testable, exactly like `consent_verdict`.
+    """
+
+    def plan(self, **over):
+        from pacioli_guard.scope import plan_consent_marker
+        kw = {"ref_doctype": "Sales Invoice", "ref_docname": "ACC-SINV-2026-00004",
+              "ref_action": "submit", "token": GOOD, "ttl_seconds": 900, "now": 1000}
+        kw.update(over)
+        return plan_consent_marker(**kw)
+
+    def test_it_stores_the_hash_and_never_the_token(self):
+        ok, reason, row = self.plan()
+        self.assertTrue(ok, reason)
+        self.assertEqual(row["token_hash"], consent_token_hash(GOOD))
+        # The whole point of hash-only storage: reading every row must not yield a spendable token.
+        self.assertNotIn(GOOD, repr(row))
+
+    def test_it_binds_the_document_and_the_act(self):
+        ok, _, row = self.plan()
+        self.assertTrue(ok)
+        self.assertEqual(row["ref_doctype"], "Sales Invoice")
+        self.assertEqual(row["ref_docname"], "ACC-SINV-2026-00004")
+        self.assertEqual(row["ref_action"], "submit")
+
+    def test_the_expiry_is_now_plus_the_ttl(self):
+        ok, _, row = self.plan(now=1000, ttl_seconds=900)
+        self.assertTrue(ok)
+        self.assertEqual(row["expires_at"], 1900)
+
+    def test_it_never_pre_burns_a_marker(self):
+        ok, _, row = self.plan()
+        self.assertTrue(ok)
+        self.assertEqual(row["burned"], 0)
+
+    def test_it_does_not_set_minted_by(self):
+        """`before_insert` binds `minted_by` from the session and OVERWRITES what the caller sends.
+        Emitting it here would imply this function establishes separation. It does not; the server
+        does, and floor audit F3 exists because a caller-supplied value is worth nothing."""
+        ok, _, row = self.plan()
+        self.assertTrue(ok)
+        self.assertNotIn("minted_by", row)
+
+    def test_an_unknown_act_is_refused(self):
+        # The gate only ever asks about submit/cancel, and the DocType's Select allows only those.
+        # A marker for "delete" would be a row nothing can spend, sitting in the books looking like
+        # consent.
+        for bad in ("delete", "amend", "SUBMIT", "", None):
+            ok, reason, row = self.plan(ref_action=bad)
+            self.assertFalse(ok, f"{bad!r} must be refused")
+            self.assertIsNone(row)
+            self.assertIn("act", reason.lower())
+
+    def test_a_blank_document_is_refused(self):
+        for field in ("ref_doctype", "ref_docname"):
+            for bad in ("", "   ", None):
+                ok, reason, row = self.plan(**{field: bad})
+                self.assertFalse(ok, f"{field}={bad!r} must be refused")
+                self.assertIsNone(row)
+
+    def test_a_ttl_outside_the_short_lived_range_is_refused(self):
+        # Mirrors the broker CLI's own 1..86400 range: a consent grant is meant to be short-lived,
+        # and an unbounded TTL is a standing permission wearing a marker's clothes.
+        for bad in (0, -1, 86_401, None, "900"):
+            ok, reason, row = self.plan(ttl_seconds=bad)
+            self.assertFalse(ok, f"ttl={bad!r} must be refused")
+            self.assertIsNone(row)
+            self.assertIn("ttl", reason.lower())
+
+    def test_a_weak_or_missing_token_is_refused(self):
+        """The token is the whole secret. A short one is guessable, and a blank one hashes to a
+        constant every other blank-token marker shares."""
+        for bad in ("", None, "short", 12345):
+            ok, reason, row = self.plan(token=bad)
+            self.assertFalse(ok, f"token={bad!r} must be refused")
+            self.assertIsNone(row)
+            self.assertIn("token", reason.lower())
+
+    def test_a_nonfinite_clock_is_refused(self):
+        # `consent_verdict` already refuses a NaN `now` because the expiry compare goes silently
+        # false. Minting under the same clock must not produce a row that verify would then reject.
+        for bad in (float("nan"), float("inf"), None, "1000"):
+            ok, reason, row = self.plan(now=bad)
+            self.assertFalse(ok, f"now={bad!r} must be refused")
+            self.assertIsNone(row)
+
+
+class TestTheExpiryReaderRefusesAnUnusableNumber(unittest.TestCase):
+    """`_epoch`'s stated contract is "unreadable = None = treated as expired" — deny-biased. An
+    independent review (2026-07-29) found the read side missing the very `isfinite` guard the write
+    side (`plan_consent_marker`) got in this same change.
+
+    `_epoch(float("inf"))` returned `inf`, and `consent_verdict` compares `now >= expires_at`.
+    `now >= inf` is False under IEEE-754, so such a marker NEVER expires — permanently valid,
+    the exact opposite of the deny-biased contract. Same for NaN, where every comparison is False.
+
+    Not reachable through the current writer (a `DATETIME(6)` column rejects "inf"), so this is a
+    defect-in-waiting rather than a live bypass — but the write side was hardened against precisely
+    this and the reader it was modelled on was not.
+    """
+
+    def _epoch(self, value):
+        import sys
+        import types
+        sys.modules.setdefault("frappe", types.ModuleType("frappe"))
+        from pacioli_guard import enforce
+        return enforce._epoch(value)
+
+    def test_a_non_finite_expiry_reads_as_unreadable(self):
+        for bad in (float("inf"), float("-inf"), float("nan")):
+            self.assertIsNone(self._epoch(bad), f"{bad!r} must be unreadable, never an instant")
+
+    def test_a_real_epoch_number_still_reads(self):
+        # The guard must not break the legitimate numeric path.
+        self.assertEqual(self._epoch(1785380000), 1785380000.0)
+        self.assertEqual(self._epoch(1785380000.5), 1785380000.5)
+
+    def test_an_unreadable_expiry_makes_consent_verdict_refuse(self):
+        """The property that actually matters: unreadable must mean REFUSED, end to end."""
+        allowed, reason = verdict(record=record(expires_at=float("inf")))
+        self.assertFalse(allowed, "a marker with a non-finite expiry must not authorise anything")
+        self.assertIn("expired", reason.lower())
+
+    def test_a_non_finite_CLOCK_also_refuses(self):
+        """The other side of the same comparison. `nan >= expires_at` is False too, so an unreadable
+        clock would have made every live marker pass the expiry check. The broker's pure consent core
+        has guarded this since it was written; this one did not until now."""
+        for bad in (float("nan"), float("inf"), None, "1000", True):
+            allowed, reason = verdict(now=bad)
+            self.assertFalse(allowed, f"now={bad!r} must refuse, not authorise")
+            self.assertIn("expired", reason.lower())
+
+
+class TestAMarkerIsImmutableAfterMinting(unittest.TestCase):
+    """The clamp a review asked for (2026-07-29), as a pure decision.
+
+    `before_insert` binds `minted_by`, but it fires ONLY on create. So every authoritative field on a
+    minted marker was editable afterwards by anything with doctype write permission: the F3 binding
+    did not survive an UPDATE, and `expires_at_epoch` — introduced as *the* authoritative expiry —
+    had no protection at all. `read_only` is a form property and walls off no API write; no
+    `permlevel` is declared. Reaching it needs `System Manager` and the doctype is in
+    `_UNGRANTABLE_DOCTYPES`, so a scoped api-key credential is hard-denied — but `is_permitted`
+    returns True for a credential with NO grant row, and OAuth `Bearer` never reaches `check_scope`.
+
+    ⭐ **`burned` must stay mutable**, or spending a marker becomes impossible. It is spent by a raw
+    `UPDATE ... WHERE burned = 0` (`enforce._claim_consent`) which skips the document lifecycle
+    entirely, so this clamp never sees the spend — but a field-level allowance is the honest way to
+    say so rather than relying on that.
+    """
+
+    def _violations(self, before, after):
+        from pacioli_guard.scope import immutable_marker_violations
+        return immutable_marker_violations(before, after)
+
+    def _row(self, **over):
+        row = {"ref_doctype": "Sales Invoice", "ref_docname": "ACC-SINV-2026-00004",
+               "ref_action": "submit", "token_hash": consent_token_hash(GOOD),
+               "expires_at": "2026-07-29 22:00:00", "expires_at_epoch": 1785380000.0,
+               "burned": 0, "minted_by": HUMAN}
+        row.update(over)
+        return row
+
+    def test_an_unchanged_marker_is_fine(self):
+        self.assertEqual(self._violations(self._row(), self._row()), [])
+
+    def test_burning_a_marker_is_allowed(self):
+        # The one field that must move. Spending happens outside the document layer anyway, but a
+        # clamp that blocked it would be a gate that stops the gate.
+        self.assertEqual(self._violations(self._row(), self._row(burned=1)), [])
+
+    def test_extending_the_authoritative_expiry_is_refused(self):
+        """The reason this exists: a bigger epoch makes a marker effectively immortal."""
+        self.assertEqual(self._violations(self._row(), self._row(expires_at_epoch=9e9)),
+                         ["expires_at_epoch"])
+
+    def test_rewriting_the_readable_expiry_is_refused(self):
+        self.assertIn("expires_at",
+                      self._violations(self._row(), self._row(expires_at="2030-01-01 00:00:00")))
+
+    def test_rebinding_the_minter_is_refused(self):
+        """Floor audit F3's property, now surviving an UPDATE. If a credential can re-stamp
+        `minted_by` after the fact it can name any other principal as its minter and satisfy the
+        separation check with a string it chose itself."""
+        self.assertEqual(self._violations(self._row(), self._row(minted_by=AGENT)),
+                         ["minted_by"])
+
+    def test_swapping_the_token_is_refused(self):
+        self.assertIn("token_hash",
+                      self._violations(self._row(), self._row(token_hash=consent_token_hash("other"))))
+
+    def test_repointing_the_marker_at_another_document_is_refused(self):
+        """Consent is bound to ONE document and ONE act. Editing that binding after minting is the
+        same escalation as forging the marker, with fewer steps."""
+        for field, value in (("ref_docname", "ACC-SINV-2026-99999"),
+                             ("ref_doctype", "Journal Entry"),
+                             ("ref_action", "cancel")):
+            with self.subTest(field):
+                self.assertEqual(self._violations(self._row(), self._row(**{field: value})), [field])
+
+    def test_every_changed_field_is_named_at_once(self):
+        # An operator fixing a refusal should see the whole problem, not one field per attempt.
+        got = self._violations(self._row(), self._row(minted_by=AGENT, expires_at_epoch=9e9))
+        self.assertEqual(sorted(got), ["expires_at_epoch", "minted_by"])
+
+    def test_a_missing_previous_version_reports_nothing(self):
+        """On INSERT there is no prior document, and nothing is being changed. The glue passes
+        `get_doc_before_save()`, which frappe returns as None on create."""
+        self.assertEqual(self._violations(None, self._row()), [])

@@ -44,7 +44,10 @@ only exists at authentication time, so this gate can only live here, and that bo
 to it.
 
 *Was this act consented?* That is a property of a document, so it is enforced on the document, via
-`doc_events` on `before_submit` and `before_cancel`. Every path that **posts to the ledger** through
+`doc_events` on `before_submit` and `before_cancel`, plus `before_gl_preview` and `before_sl_preview`
+since guard 0.13.0. The last two gate a **rehearsal** of a posting rather than a posting: ERPNext
+previews a ledger by performing it and rolling the transaction back, so previewing a submit requires
+the same marker the submit requires, and does not spend it. Every path that **posts to the ledger** through
 the ORM passes it: REST, `run_doc_method`, `frappe.client.submit`, `frappe.client.insert` with a
 submitted body, the desk Save/Submit endpoint, bulk submit, a raw docstatus field write followed by a
 save, a background job, a server script, and the bench console. **Consent does not inherit the credential gate's transport boundary.**
@@ -132,7 +135,8 @@ session, overwriting anything the caller supplies, so that separation is establi
 self-reported.
 
 This gate is enforced on the **document**, not on the request: `doc_events` `before_submit` /
-`before_cancel`. That is deliberate and it is the difference between governing one door and
+`before_cancel`, and since guard 0.13.0 `before_gl_preview` / `before_sl_preview` as well. That is
+deliberate and it is the difference between governing one door and
 governing the act. A credential holder who avoids the api-key REST path entirely, via an OAuth
 token, a desk session, a background job, a server script or the bench console, **still meets this
 gate**.

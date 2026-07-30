@@ -47,6 +47,44 @@ ORM passes it, including the ones the credential hook never sees. It is inert fo
 grant that sets `require_consent`, so installing this app does not change a site that has not opted
 in.
 
+**`doc_events` `before_gl_preview` / `before_sl_preview` — was this REHEARSAL consented?** (0.13.0.)
+ERPNext previews a ledger by performing the posting and rolling the transaction back
+(`controllers/stock_controller.py`), so a preview is a write that does not land. Previewing a submit
+therefore requires the same marker the submit requires, and **does not spend it**: the real submit
+still spends it, so single-use still means a single posting. The preview is gated rather than exempted
+because every alternative means believing a caller's claim that a write will be rolled back, and a
+document-layer gate sees documents, not transaction outcomes.
+
+Two consequences worth knowing before you turn this on:
+
+- **The floor marker must now exist BEFORE the plan**, not after it. A human authorises "submit this
+  draft" and the projection is produced under that authority, so the projected GL becomes disclosure
+  rather than a precondition. No chicken-and-egg: the marker binds to a document, not to a plan.
+- **The broker half is `pacioli` 0.34.0.** Guard 0.13.0 alone gates the preview while a broker at
+  0.33.3 has no way to present a marker, so `plan_submit` is refused. Fail-closed, and the two halves
+  are only useful together.
+
+**Minting a marker: `pacioli_guard.mint.mint_consent_marker`** (0.13.0). Until then this package
+demanded a marker and shipped no way to make one, which bit hardest where it was least visible: a site
+with `require_consent` on and no marker ever minted could not complete its first governed write.
+
+```
+bench --site <site> execute pacioli_guard.mint.mint_consent_marker \
+  --kwargs '{"ref_doctype": "Sales Invoice", "ref_docname": "ACC-SINV-2026-00004",
+             "ref_action": "submit", "ttl_seconds": 900}'
+```
+
+**Deliberately not whitelisted.** An HTTP mint endpoint would be reachable by exactly the api-key
+credentials this floor exists to constrain, and a credential that can mint its own consent signs its
+own permission slip. Books side only. It generates the token, prints it once, stores only the
+SHA-256, and discloses the act so the operator sees what they are authorising from something other
+than the agent's narration.
+
+🔴 **Upgrading to 0.13.0 needs `bench migrate` AND `bench clear-cache`, in that order.** The release
+adds a field and two `doc_events` keys. Skip the migrate and **every** governed write refuses; skip
+the cache clear and previews stay refused. Both fail closed, and both look like the upgrade did
+nothing. `SECURITY.md` has the detail.
+
 **What walks around both hooks, stated rather than discovered:**
 
 1. Writes that skip the document lifecycle entirely: raw SQL, and `db_update`-style field writes,

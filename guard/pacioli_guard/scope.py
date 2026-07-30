@@ -11,6 +11,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import unicodedata
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
@@ -357,7 +358,14 @@ def _classify_v2_full(path, http_method):
 SAFE_METHODS = frozenset({
     "frappe.auth.get_logged_user",                                         # read-only identity probe (doctor)
     "frappe.desk.form.linked_with.get_submitted_linked_docs",               # read-only linked-doc lookup (UNDO graph)
-    "erpnext.controllers.stock_controller.show_accounting_ledger_preview",  # read-only PLAN preview (savepoint→rollback)
+    # NOT read-only — it POSTS and rolls back. This comment said "read-only PLAN preview
+    # (savepoint→rollback)" until 2026-07-29, which contradicted the very finding that put a consent
+    # gate on the preview: `show_accounting_ledger_preview` runs the real posting machinery, cascades
+    # real submits, then calls `frappe.db.rollback()`. NET-effect read-only, mechanism emphatically
+    # not. It stays on this list because it commits nothing and so cannot mutate the books — but do
+    # not read membership here as "this call is inert", because a future reviewer did, and the
+    # document layer had to be gated to make it safe (act.before_gl_preview).
+    "erpnext.controllers.stock_controller.show_accounting_ledger_preview",
     # This app's own diagnostic, added 2026-07-25. It earns a place on this deliberately tiny
     # list by the same test the others pass: it takes NO arguments, writes nothing, and reports
     # only on `frappe.session.user`, so it cannot be pointed at another credential or another
@@ -1072,6 +1080,150 @@ def consent_token_hash(token):
     return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
 
 
+# The acts a marker can authorise. The gate only ever asks about these two, and the DocType's own
+# Select allows only these two, so a row naming anything else is a marker nothing can ever spend —
+# consent-shaped clutter in the books. Amend is deliberately absent: creating a corrected draft
+# posts nothing and needs no marker (the broker's `amend_*` tools say so); submitting that draft is
+# the irreversible step and takes its own submit marker.
+CONSENT_ACTS = ("submit", "cancel")
+
+# A consent grant is meant to be SHORT-LIVED. Same range the broker CLI's `--ttl` enforces, for the
+# same reason: an unbounded TTL is a standing permission wearing a marker's clothes.
+_TTL_MIN, _TTL_MAX = 1, 86_400
+
+# The token is the entire secret, and it is compared by hash. A short one is guessable offline from
+# a leaked row; a blank one hashes to a constant that every other blank-token marker shares. The
+# floor is well below what `secrets.token_urlsafe(24)` produces (32 chars), so this refuses fat
+# fingers and placeholders, never a real machine-minted token.
+_TOKEN_MIN_LEN = 16
+
+# ONE DEFINITION of the route a blocked operator is sent to, because it appears in three refusals and
+# the last time advice was duplicated across them it went stale in two places and stayed correct in
+# none. It names a dotted path in THIS package, reachable with `bench execute` on the books box —
+# never the broker's `pacioli mint`, which ships separately, needs a plan_id, and writes a
+# plan-bound marker into the broker's own store rather than a Pacioli Consent Marker in the books.
+MINT_ROUTE_HINT = ("On the books box: bench --site <site> execute "
+                   "pacioli_guard.mint.mint_consent_marker")
+
+
+def plan_consent_marker(ref_doctype, ref_docname, ref_action, token, ttl_seconds, now):
+    """Compute the `Pacioli Consent Marker` row for one act on one document. Pure, deny-biased.
+
+    Returns ``(True, None, row)`` or ``(False, reason, None)``. ``row`` carries ``token_hash`` and
+    **never the token**.
+
+    ⚠️ **``row`` is NOT ready to insert as-is, and this docstring used to say it was.** Corrected
+    2026-07-29: ``row["expires_at"]`` is an epoch instant — the domain ``consent_verdict`` compares
+    in — while the ``Pacioli Consent Marker`` DocType stores a frappe ``Datetime``, i.e. NAIVE in the
+    SITE's zone. :func:`pacioli_guard.mint.mint_consent_marker` therefore discards this key and
+    composes the stored value from ``frappe.utils.now_datetime()`` instead. A caller who trusted the
+    old wording and did ``frappe.get_doc({**row})`` would write a raw epoch number into a Datetime
+    column. Given the clock-domain bugs this project has already shipped twice, a field named
+    ``expires_at`` that means something different from the ``expires_at`` on the schema is exactly
+    the trap worth naming rather than leaving for the next caller to find.
+
+    **Why this exists.** Until now the only way to create a floor marker was an ad-hoc script run as
+    Administrator inside the container — proof that the mechanism worked, not a route a human could
+    take (`docs/plans/2026-07-26-consent-ceremony-decision.md`, Option B's outstanding cost). That
+    absence is why every refusal in this package had to be rewritten to promise no route, and it
+    matters most where it is least visible: a site with `require_consent` on and no marker ever
+    minted cannot complete its first governed write.
+
+    **Randomness and the clock stay out**, exactly like :func:`consent_verdict`. The caller supplies
+    ``token`` and ``now``, so the row this computes is fully determined and testable without a bench,
+    and minting cannot silently disagree with verifying about what time it is.
+
+    **``minted_by`` is NOT emitted here.** It is bound server-side by
+    ``PacioliConsentMarker.before_insert``, which OVERWRITES whatever the caller sends. Emitting it
+    would imply this function establishes the separation property; it does not, and floor audit F3
+    exists precisely because a caller-supplied value is worth nothing.
+    """
+    for label, value in (("document type", ref_doctype), ("document name", ref_docname)):
+        if not isinstance(value, str) or not value.strip():
+            return (False, f"a {label} is required to bind the marker to one document", None)
+    if not isinstance(ref_action, str) or ref_action not in CONSENT_ACTS:
+        return (False, f"the act must be one of {', '.join(CONSENT_ACTS)} — "
+                       f"a marker for {ref_action!r} is one nothing could ever spend", None)
+    if not isinstance(token, str) or len(token.strip()) < _TOKEN_MIN_LEN:
+        return (False, f"the token must be at least {_TOKEN_MIN_LEN} characters of "
+                       f"high-entropy text generated out of the acting credential's reach", None)
+    if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) \
+            or not _TTL_MIN <= ttl_seconds <= _TTL_MAX:
+        return (False, f"the ttl must be an integer from {_TTL_MIN} to {_TTL_MAX} seconds — "
+                       f"consent is short-lived by design", None)
+    if isinstance(now, bool) or not isinstance(now, (int, float)) or not math.isfinite(now):
+        return (False, "the current time is unreadable, so an expiry cannot be computed; "
+                       "refusing rather than minting a marker with a meaningless lifetime", None)
+    return (True, None, {
+        "ref_doctype": ref_doctype.strip(),
+        "ref_docname": ref_docname.strip(),
+        "ref_action": ref_action,
+        "token_hash": consent_token_hash(token),
+        "expires_at": now + ttl_seconds,
+        "burned": 0,
+    })
+
+
+# Every field on a minted marker that must never move again. `burned` is deliberately ABSENT: it is
+# the one field that has to change, when the marker is spent.
+IMMUTABLE_MARKER_FIELDS = ("ref_doctype", "ref_docname", "ref_action", "token_hash",
+                           "expires_at", "expires_at_epoch", "minted_by")
+
+
+def immutable_marker_violations(before, after):
+    """Which authoritative fields an update is trying to change. Pure. ``[]`` means the update is fine.
+
+    **Why this is needed at all.** ``PacioliConsentMarker.before_insert`` binds ``minted_by``, but
+    ``before_insert`` fires only on CREATE. So every field on a minted marker stayed editable
+    afterwards by anything holding doctype write permission — the floor-audit-F3 binding did not
+    survive an UPDATE, and ``expires_at_epoch``, introduced as *the* authoritative expiry, had no
+    guard at all. A bigger epoch makes a marker effectively immortal; a re-stamped ``minted_by`` lets
+    a credential name any other principal as its minter and satisfy the separation check with a
+    string it chose itself; a repointed ``ref_docname`` is forgery with fewer steps. ``read_only`` is
+    a FORM property and walls off no API write (this package's own controller docstring says so), and
+    no ``permlevel`` is declared on any field.
+
+    Reaching that write needs ``System Manager``, and the DocType is in ``_UNGRANTABLE_DOCTYPES`` so a
+    SCOPED api-key credential is hard-denied — but ``is_permitted`` returns True for a credential with
+    no grant row at all, and OAuth ``Bearer`` never reaches ``check_scope``. Pre-existing exposure,
+    not introduced with the epoch field, and closed here.
+
+    ``before`` is ``None`` on insert (frappe's ``get_doc_before_save()`` returns None then), which
+    reports nothing — an insert changes no existing value.
+
+    Compared as STRINGS, deliberately. A frappe Datetime can arrive as ``datetime`` on one side and a
+    string on the other depending on how the document was loaded, and ``!=`` across those types would
+    report a spurious violation and block a legitimate save. Stringifying makes the comparison about
+    the value rather than the representation, and any real edit still differs as text.
+    """
+    if before is None:
+        return []
+    changed = []
+    for name in IMMUTABLE_MARKER_FIELDS:  # not `field` — that is a dataclasses import in this module
+        was, now = _field_of(before, name), _field_of(after, name)
+        if str(was) != str(now):
+            changed.append(name)
+    return changed
+
+
+def _field_of(row, key):
+    """Read a field from a mapping or a frappe doc — the same shape tolerance ``_consent_field`` needs."""
+    if isinstance(row, dict):
+        return row.get(key)
+    return getattr(row, key, None)
+
+
+def _usable_instant(value):
+    """Is this a real, comparable moment? Numbers only, and finite ones.
+
+    Guards the expiry comparison in :func:`consent_verdict`. ``bool`` is excluded on purpose — a
+    ``True`` expiry is nonsense that would otherwise read as epoch 1.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
+
+
 def _consent_field(record, key):
     """Read a field from a marker record, whether it arrives as a mapping or a frappe doc."""
     if record is None:
@@ -1178,14 +1330,39 @@ def consent_verdict(presented, doctype, docname, action, record, now, principal)
         # it. Both were observed live. A refusal is the one message an operator is guaranteed to
         # read, at the moment they are blocked; sending them after a command their shell does not
         # have is a lie that costs them real time.
+        #
+        # The CLI mention is now GONE rather than merely attributed to its package (2026-07-29).
+        # Attribution was not enough: `pacioli mint` cannot produce this object even where it IS
+        # installed. It takes a `plan_id` positionally and writes a PLAN-bound marker into the
+        # broker's own store (`store.mint_marker`); it never connects to the books and never
+        # creates a `Pacioli Consent Marker`.
+        #
+        # AND THE REPLACEMENT MUST NOT NAME THE DESK UI EITHER — that was the first fix, and it is
+        # wrong for a mechanical reason. `token_hash` is `reqd: 1` and `read_only: 1` on the
+        # DocType with no default, and `PacioliConsentMarker.before_insert` sets only `minted_by`,
+        # so the desk form cannot satisfy a mandatory field and the save fails. There is also
+        # nowhere in that form to reveal the raw token, which the human generates and keeps out of
+        # this credential's reach.
+        #
+        # The route it DOES name ships in this package (`pacioli_guard.mint`, 0.13.0) and is
+        # reachable with `bench execute` on the books box. Before that existed there was no route to
+        # name, which is why this text described only the object for one iteration.
         return False, (f"no live consent marker for this document and act — a human (not this "
-                       f"credential) must create a Pacioli Consent Marker for this exact document "
-                       f"with action '{action}' before it can proceed. In the desk UI, or with "
-                       f"`pacioli mint` from the separate `pacioli` broker package")
+                       f"credential) must create a Pacioli Consent Marker on this site for this "
+                       f"exact document with action '{action}', bound to a token they generate and "
+                       f"keep out of this credential's reach, before it can proceed. "
+                       f"{MINT_ROUTE_HINT} --kwargs '{{\"ref_doctype\": ..., \"ref_docname\": ..., "
+                       f"\"ref_action\": \"{action}\"}}'")
     if _consent_field(record, "burned"):
         return False, "this consent marker was already used — markers are single-use"
     expires_at = _consent_field(record, "expires_at")
-    if expires_at is None or now >= expires_at:
+    # AN UNUSABLE EXPIRY IS AN EXPIRED ONE. `now >= expires_at` is False for BOTH `inf` and `nan`
+    # under IEEE-754, so a non-finite expiry (or clock) would slip past this check and make the
+    # marker immortal — the inverse of the deny-biased contract. `enforce._epoch` now refuses
+    # non-finite values on the way in, but this core must not depend on its caller having done that:
+    # the broker's own pure consent core has guarded exactly this since it was written, and this one
+    # is the layer that actually decides. Deny-biased, and it refuses both sides of the comparison.
+    if not _usable_instant(expires_at) or not _usable_instant(now) or now >= expires_at:
         return False, "this consent marker has expired — mint a fresh one"
     if (_consent_field(record, "doctype") != doctype
             or _consent_field(record, "docname") != docname):

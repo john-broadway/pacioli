@@ -3,7 +3,7 @@
  "allow_rename": 0,
  "autoname": "hash",
  "creation": "2026-07-25 00:00:00.000000",
- "description": "A single-use proof that a human consented to ONE docstatus-changing act on ONE document. Minted OFF this box (pacioli mint) and landed here as a HASH only \u2014 reading every row on this site must not yield a token anyone can spend. The guard refuses a submit/cancel/amend from a require_consent credential unless a live, matching, unburned marker exists, and burns it on use. This exists because scoping a credential to exactly the calls it makes does not stop whoever holds that credential from making those calls: the broker must be allowed to submit invoices, so its key can submit invoices. Possession of the key was permission to post; now it is not.",
+ "description": "A single-use proof that a human consented to ONE docstatus-changing act on ONE document. Minted by a human OFF this credential's reach and landed here as a HASH only — reading every row on this site must not yield a token anyone can spend. The guard refuses a submit/cancel/amend from a require_consent credential unless a live, matching, unburned marker exists, and burns it on use. This exists because scoping a credential to exactly the calls it makes does not stop whoever holds that credential from making those calls: the broker must be allowed to submit invoices, so its key can submit invoices. Possession of the key was permission to post; now it is not.",
  "doctype": "DocType",
  "editable_grid": 0,
  "engine": "InnoDB",
@@ -13,6 +13,7 @@
   "ref_action",
   "token_hash",
   "expires_at",
+  "expires_at_epoch",
   "burned",
   "minted_by"
  ],
@@ -43,7 +44,7 @@
    "in_standard_filter": 1,
    "label": "Act",
    "reqd": 1,
-   "description": "The one act this consent authorises. Cancel reverses GL entries, so consent to post is not consent to reverse: a submit marker never spends on a cancel. Required \u2014 a marker that names no act binds to nothing and always refuses."
+   "description": "The one act this consent authorises. Cancel reverses GL entries, so consent to post is not consent to reverse: a submit marker never spends on a cancel. Required — a marker that names no act binds to nothing and always refuses."
   },
   {
    "fieldname": "token_hash",
@@ -59,7 +60,15 @@
    "in_list_view": 1,
    "label": "Expires At",
    "reqd": 1,
-   "description": "Hard expiry. An unreadable or absent expiry is treated as expired \u2014 a marker whose lifetime cannot be established is never spendable."
+   "description": "Hard expiry. An unreadable or absent expiry is treated as expired — a marker whose lifetime cannot be established is never spendable."
+  },
+  {
+   "fieldname": "expires_at_epoch",
+   "fieldtype": "Float",
+   "label": "Expires At (epoch seconds)",
+   "precision": "6",
+   "read_only": 1,
+   "description": "The AUTHORITATIVE expiry: the true instant, in epoch seconds, fixed at mint. The Datetime above is the human-readable rendering of the same moment and is only consulted for markers minted before this field existed. Epoch seconds carry no timezone, so a DST transition, an unreadable site zone, or an administrator changing System Settings.time_zone cannot re-time a live marker -- all three of which could, when the naive Datetime was the only source."
   },
   {
    "fieldname": "burned",
@@ -75,7 +84,7 @@
    "fieldtype": "Data",
    "label": "Minted By",
    "read_only": 1,
-   "description": "The principal that landed this marker. Must NOT be the credential the marker authorises \u2014 if the broker's own key can mint markers, a stolen key mints its own permission."
+   "description": "The principal that landed this marker. Must NOT be the credential the marker authorises — if the broker's own key can mint markers, a stolen key mints its own permission."
   }
  ],
  "index_web_pages_for_search": 0,

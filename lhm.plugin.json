@@ -2,7 +2,7 @@
   "identifier": "john-broadway-pacioli",
   "name": "Pacioli — the ERPNext broker you can hand the books",
   "description": "Governed agent access to your ERPNext books — 51 doctypes across accounts, stock, assets, and manufacturing: every write PLANNED, CONSENTED, PROVEN, and UNDOable. No debit without a credit. MCP + A2A doors, one spine.",
-  "version": "0.33.3",
+  "version": "0.34.0",
   "tools": [
     {
       "name": "get_sales_invoice",
@@ -6864,13 +6864,17 @@
     },
     {
       "name": "plan_submit",
-      "description": "PLAN a document submit: dry-run the draft via ERPNext's native ledger preview and record the plan. Returns plan_id, the projected GL impact, and risk flags. Nothing is posted. A human then mints a consent marker for the plan_id, out of band. pacioli_doctype selects the document's DocType (default Sales Invoice) — the plan is BOUND to it, and the matching submit_<doctype> tool must be used to consume it.",
+      "description": "PLAN a document submit: dry-run the draft via ERPNext's native ledger preview and record the plan. Returns plan_id, the projected GL impact, and risk flags. Nothing lands — but nothing is read-only either: ERPNext's preview runs the real posting machinery and rolls back, so no GL survives the call. Because that rollback is still a write, a bench enforcing consent at the floor gates the preview as well. Pass consent_token with a marker minted for this document's SUBMIT before you plan; the preview does not spend it, and the same marker then spends on the submit itself. The broker's own plan-bound marker is a separate thing and is still minted AFTER this call, for the matching submit_<doctype> tool. pacioli_doctype selects the document's DocType (default Sales Invoice) — the plan is BOUND to it, and the matching submit_<doctype> tool must be used to consume it.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "name": {
             "type": "string",
             "description": "Draft document name."
+          },
+          "consent_token": {
+            "type": "string",
+            "description": "Optional. The floor-side consent marker (`API Key Scope.require_consent`) for this document's SUBMIT, minted on the books box by a different principal. Required by benches that enforce consent at the floor, because ERPNext's preview posts and rolls back and so is gated like the submit it previews; harmless on benches that do not. NOT spent here — present the same token to submit_<doctype>. See the guard's SECURITY.md for supported versions."
           },
           "pacioli_target": {
             "type": "string",

@@ -2202,13 +2202,34 @@ _GENERIC_TOOLS = [
         "name": "plan_submit",
         "description": "PLAN a document submit: dry-run the draft via ERPNext's native ledger "
                        "preview and record the plan. Returns plan_id, the projected GL impact, "
-                       "and risk flags. Nothing is posted. A human then mints a consent marker "
-                       "for the plan_id, out of band. pacioli_doctype selects the document's "
-                       "DocType (default Sales Invoice) — the plan is BOUND to it, and the "
-                       "matching submit_<doctype> tool must be used to consume it.",
+                       "and risk flags. Nothing lands — but nothing is read-only either: "
+                       "ERPNext's preview runs the real posting machinery and rolls back, so no "
+                       "GL survives the call. Because that rollback is still a write, a bench "
+                       "enforcing consent at the floor gates the preview as well. Pass "
+                       "consent_token with a marker minted for this document's SUBMIT before you "
+                       "plan; the preview does not spend it, and the same marker then spends on "
+                       "the submit itself. The broker's own plan-bound marker is a separate thing "
+                       "and is still minted AFTER this call, for the matching submit_<doctype> "
+                       "tool. pacioli_doctype selects the document's DocType (default Sales "
+                       "Invoice) — the plan is BOUND to it, and the matching submit_<doctype> "
+                       "tool must be used to consume it.",
         "inputSchema": {
             "type": "object",
             "properties": {"name": {"type": "string", "description": "Draft document name."},
+                           "consent_token": {
+                               "type": "string",
+                               "description": (
+                                   # Names no version, for the reason _schema_write's twin
+                                   # documents: a version floor in a generated agent-facing string
+                                   # went stale within hours once already.
+                                   "Optional. The floor-side consent marker "
+                                   "(`API Key Scope.require_consent`) for this document's SUBMIT, "
+                                   "minted on the books box by a different principal. Required by "
+                                   "benches that enforce consent at the floor, because ERPNext's "
+                                   "preview posts and rolls back and so is gated like the submit "
+                                   "it previews; harmless on benches that do not. NOT spent here "
+                                   "— present the same token to submit_<doctype>. See the guard's "
+                                   "SECURITY.md for supported versions.")},
                            **_TARGET_PROP, **_DOCTYPE_PROP},
             "required": ["name"],
         },
@@ -8103,6 +8124,12 @@ class PacioliBroker:
             return deny
         target, client, store = self._route(args)
         name = args.get("name")
+        # The floor-side marker, for the PREVIEW. ERPNext's native preview posts and rolls back, so
+        # from guard 0.13.0 the floor gates `before_gl_preview` with the same marker as the submit
+        # being previewed — and does NOT spend it there, so the one token covers the preview and
+        # then spends on the real submit. Read here and used ONLY at the preview call below; every
+        # other gate in this method is unchanged. The broker never mints it (see `_governed_write`).
+        consent_token = args.get("consent_token")
         doc = client.get_document(doctype, name)
         if doc.get("docstatus") != 0:
             return _deny(f"{name} is not a draft (docstatus={doc.get('docstatus')}); "
@@ -8260,7 +8287,8 @@ class PacioliBroker:
                        POS_INVOICE):
             preview = {"gl_data": []}
         else:
-            preview = client.ledger_preview(company=company, doctype=doctype, docname=name)
+            preview = client.ledger_preview(company=company, doctype=doctype, docname=name,
+                                            consent=consent_token)
         risk_flags = []
         posting_date = _posting_date_of(doc, doctype)
         # The sentinel guard is load-bearing, not defensive: NO_DATE_FIELD compares

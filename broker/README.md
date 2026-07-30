@@ -562,12 +562,26 @@ truncation or rewrite **since the last pin**, and only that.
 
 ## Operator walkthrough — the actual tool + CLI names
 
+**If the site sets `require_consent` (pacioli-guard 0.7.0+), there is a step 0, on the books box:**
+
+0. **`bench --site <site> execute pacioli_guard.mint.mint_consent_marker`** — mints the **FLOOR**
+   marker, a `Pacioli Consent Marker` bound to a document and an act, by a principal other than the
+   broker's credential. Since guard 0.13.0 the floor gates the ledger *preview* as well as the submit,
+   so this must exist **before** step 1, and its token is passed to `plan_submit` as `consent_token`.
+   The preview does not spend it, so the same marker then spends on the submit itself.
+
+   **These are two different markers and they are minted at opposite ends.** The floor marker binds a
+   *document* and comes first. The broker marker below binds a *plan_id* and comes after the plan.
+   Requires broker 0.34.0; earlier brokers cannot present a floor marker at all.
+
 The agent side (MCP tools, from `pacioli/tools.py`):
 
-1. **`plan_submit(name="SINV-00001")`** — PLAN. Dry-runs the draft via ERPNext's native ledger
-   preview, records the plan, and returns `plan_id`, the projected GL impact, and risk flags.
-   Nothing is posted. The response tells the agent: *"have a human mint a consent marker for this
-   plan_id (`pacioli mint`), then call `submit_sales_invoice` with it."*
+1. **`plan_submit(name="SINV-00001", consent_token=<floor token, if gated>)`** — PLAN. Dry-runs the
+   draft via ERPNext's native ledger preview, records the plan, and returns `plan_id`, the projected
+   GL impact, and risk flags. Nothing **lands**: on a perpetual-inventory site the preview really does
+   post and then roll the transaction back, which is why the floor gates it. The response tells the
+   agent: *"have a human mint a consent marker for this plan_id (`pacioli mint`), then call
+   `submit_sales_invoice` with it."*
 
 The human side, out of band, in a terminal the agent cannot read:
 

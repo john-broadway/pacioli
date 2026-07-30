@@ -10649,10 +10649,20 @@ class ErpnextClient:
         return self._data(self._call("GET", path, params=params))
 
     # --- PLAN ----------------------------------------------------------------------
-    def ledger_preview(self, company, doctype, docname):
-        """ERPNext's native dry-run: savepoint → make_gl_entries in memory → rollback."""
+    def ledger_preview(self, company, doctype, docname, consent=None):
+        """ERPNext's native dry-run: savepoint → make_gl_entries in memory → rollback.
+
+        ``consent`` carries the floor-side marker, exactly as ``submit_document`` does, because
+        that "dry-run" is not a read: ``show_accounting_ledger_preview`` runs the real posting
+        machinery and then calls ``frappe.db.rollback()``. A bench enforcing consent at the
+        document layer therefore sees a submit here and, from guard 0.13.0, gates it on
+        ``before_gl_preview`` — the SAME marker as the submit being previewed, and **not spent by
+        the preview**, so it still spends on the real submit afterwards. A bench that does not
+        enforce consent is unaffected: no token, no header, byte-identical request to before.
+        """
         payload = self._call("POST", f"/api/method/{PREVIEW_METHOD}",
-                             body={"company": company, "doctype": doctype, "docname": docname})
+                             body={"company": company, "doctype": doctype, "docname": docname},
+                             consent=consent)
         if "message" not in payload:
             raise ErpnextError("preview response has no 'message' envelope")
         return payload["message"]

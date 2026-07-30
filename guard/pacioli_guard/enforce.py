@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import time
 import zoneinfo
 
@@ -428,6 +429,33 @@ def check_scope():
     # is acting, and therefore what it may call at all. A door admits; it does not decide.
 
 
+def _expiry_instant(row):
+    """The marker's expiry as epoch seconds. Prefers ``expires_at_epoch``; falls back to the Datetime.
+
+    **Why a second field rather than better arithmetic on the first one.** A naive ``Datetime`` means
+    whatever ``System Settings.time_zone`` says AT SPEND TIME, and that produced three defects with
+    one cause: a TTL spanning a DST transition is off by the shift; an unreadable site zone falls back
+    to UTC and lengthens the marker's life for any site east of UTC; and an administrator changing the
+    site zone silently re-times every live marker. Epoch seconds have no timezone to disagree about,
+    so fixing the representation closes all three at once instead of patching each.
+
+    The Datetime is kept as the human-readable rendering, and is the ONLY source for markers minted
+    before this field existed — an upgrade must not invalidate a marker someone is mid-ceremony with.
+    A present-but-unusable epoch falls through to that same path rather than being trusted; both
+    branches yield ``None`` when unreadable, which ``consent_verdict`` treats as expired.
+
+    ⚠️ **ZERO MEANS UNSET, and that is not a guess** — verified by running the migration on a live
+    bench. A frappe ``Float`` column defaults to **0, not NULL**, so after ``bench migrate`` every
+    marker minted before this field existed reads ``0.0``. Falsiness made the fallback work by
+    accident; it is explicit here instead. A genuine expiry of 0 would be 1970 — already expired by
+    any clock — so reading it as unset costs nothing and never extends a lifetime.
+    """
+    epoch = _finite(row.get("expires_at_epoch"))
+    if epoch:
+        return epoch
+    return _epoch(row.get("expires_at"))
+
+
 def _consent_record(doctype, docname):
     """Load the live consent marker for one document, normalised for the pure core.
 
@@ -438,7 +466,7 @@ def _consent_record(doctype, docname):
         row = frappe.db.get_value(
             CONSENT_DOCTYPE, {"ref_doctype": doctype, "ref_docname": docname},
             ["name", "token_hash", "ref_doctype", "ref_docname", "ref_action",
-             "expires_at", "burned", "minted_by"],
+             "expires_at", "expires_at_epoch", "burned", "minted_by"],
             as_dict=True)
     except Exception:  # noqa: BLE001 — a broken lookup must deny, not open the gate
         return None
@@ -450,7 +478,7 @@ def _consent_record(doctype, docname):
         "doctype": row.get("ref_doctype"),
         "docname": row.get("ref_docname"),
         "action": row.get("ref_action"),
-        "expires_at": _epoch(row.get("expires_at")),
+        "expires_at": _expiry_instant(row),
         "burned": row.get("burned"),
         "minted_by": row.get("minted_by"),
     }
@@ -469,12 +497,41 @@ def _site_timezone():
         return None
 
 
+def _finite(value):
+    """A number, or ``None`` if it is not a usable instant. Deny-biased by construction.
+
+    ``None`` is what ``_epoch``'s callers treat as "expired", so refusing here refuses the marker.
+    `nan` and `inf` both make every ``>=`` comparison False, which would make a marker immortal
+    rather than expired — so they must never leave this module as numbers.
+    """
+    try:
+        number = float(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _as_instant(moment):
     """A datetime to epoch seconds, resolving a NAIVE value through the SITE's zone.
 
     An already-aware value carries its own offset and is left alone. When the site's zone cannot be
-    read we assume UTC rather than the process's zone: it is deterministic, and for a site running
-    behind UTC it makes a marker expire EARLIER than intended, never later.
+    read we assume UTC rather than the process's zone, because it is deterministic.
+
+    🔴 **THE DIRECTION OF THAT FALLBACK IS NOT UNIFORMLY SAFE, and this docstring used to claim it
+    was** ("for a site running behind UTC it makes a marker expire EARLIER than intended, never
+    later" — the qualifier was there, but "never later" read as a general guarantee). Corrected
+    2026-07-29 after an independent review measured it:
+
+    * A site BEHIND UTC (the Americas) — the fallback shortens the marker's life. Fail-CLOSED.
+    * A site AHEAD of UTC — it LENGTHENS it, by the site's offset. **Fail-OPEN.** For
+      ``Asia/Kolkata`` that is +5.5 hours, and Kolkata is not hypothetical: it is frappe's own
+      hardcoded default when ``System Settings.time_zone`` is unset
+      (``frappe/utils/data.py``: ``... or "Asia/Kolkata"``). East of UTC generally, up to +14h.
+
+    So this fallback is a last resort, not a safety net, and the honest summary is that it trades a
+    deterministic wrong answer for a nondeterministic one. The real fix is for the stored value to
+    carry its own offset rather than depend on a mutable global read at spend time; that is a
+    storage change and is recorded as owed.
     """
     if moment.tzinfo is not None:
         return moment.timestamp()
@@ -499,16 +556,25 @@ def _epoch(value):
 
     Nothing could fail on it because every test ran in one clock domain, and the lab site was UTC
     like its container. The dimension the doubles lacked was the difference between two clocks.
+
+    **NON-FINITE VALUES ARE UNREADABLE, and until 2026-07-29 they were not.** ``inf``/``nan`` sailed
+    through the numeric branch untouched, and ``consent_verdict`` compares ``now >= expires_at`` —
+    under IEEE-754 that is False for both, so such a marker NEVER expired. Permanently valid: the
+    exact inverse of this function's own deny-biased contract. Unreachable through the current writer
+    (a ``DATETIME(6)`` column will not store "inf") and so latent rather than live, but the WRITE side
+    (``plan_consent_marker``) was hardened against precisely this hazard in the same change that
+    added it, and this reader — the one that hardening was modelled on — was not. Found by an
+    independent review. One more call site, an alternate store, or a JSON-backed cache turns it live.
     """
     if value is None:
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        return _finite(value)
     if isinstance(value, datetime.datetime):
         return _as_instant(value)
     for parse in (
         lambda v: _as_instant(datetime.datetime.fromisoformat(str(v))),
-        float,
+        lambda v: _finite(float(v)),
     ):
         try:
             return parse(value)

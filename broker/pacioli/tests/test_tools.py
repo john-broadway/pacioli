@@ -1740,6 +1740,7 @@ class FakeClient:
         self.gl_calls = []                     # tracks get_gl_entries(voucher_type, voucher_no)
         self.fail_gl_entries = None             # set to raise, mirroring fail_locks/fail_linked
         self.lock_calls = []                   # tracks get_period_locks(company, doctype, date)
+        self.preview_consents = []             # tracks the consent token each ledger_preview carried
 
     def get_document(self, doctype, name):
         from pacioli.erpnext import ErpnextError
@@ -1765,7 +1766,11 @@ class FakeClient:
                     if all(d.get(k) == v for k, v in filters.items())]
         return [dict(d) for d in rows]
 
-    def ledger_preview(self, company, doctype, docname):
+    def ledger_preview(self, company, doctype, docname, consent=None):
+        # `preview_consents` records what the PLAN tier presented to the floor. ERPNext's preview
+        # posts and rolls back, so from guard 0.13.0 it is gated like the submit it previews —
+        # a None here on a consent-enforcing bench is a refused plan, not a harmless omission.
+        self.preview_consents.append(consent)
         return {"gl_columns": [], "gl_data": [{"account": "Debtors", "debit": 100.0}]}
 
     def submit_document(self, doctype, name, doc=None, consent=None):
@@ -20960,3 +20965,42 @@ class TestWorkflowTransitionConfessesADifferentLanding(unittest.TestCase):
                               {"name": "SI-1", "action": "Approve"})
         self.assertEqual(out["result"]["approved_next_state"], "Pending L2")
         self.assertEqual(out["result"]["workflow_state"], "Pending L2")
+
+
+class TestPlanCarriesConsentToTheFloor(unittest.TestCase):
+    """The BROKER half of guard 0.13.0's preview gate.
+
+    ERPNext's native ledger preview posts and rolls back, so a bench with
+    ``API Key Scope.require_consent`` gates the PLAN call on ``before_gl_preview`` — with the same
+    marker as the submit being previewed, unspent. Before this, ``plan_submit`` had no way to
+    present one and the full PLAN -> CONSENT -> PROVE vertical could not complete on a bench that
+    actually enforced consent: the guard half was proven and the broker half was missing.
+
+    The marker is the FLOOR's (bound to document + act, minted on the books box by another
+    principal), NOT the broker's plan-bound marker — which is why it can exist before a plan_id
+    does, and why no chicken-and-egg arises from presenting it here.
+    """
+
+    def test_plan_submit_presents_the_consent_marker_to_the_preview(self):
+        broker, client, _ = make_broker()
+        out = broker.dispatch("plan_submit", {"name": "SI-1", "consent_token": "floor-marker-1"})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(client.preview_consents, ["floor-marker-1"])
+
+    def test_plan_submit_without_a_marker_presents_none(self):
+        # A bench that does not enforce consent must behave exactly as before — the broker never
+        # invents a token, and an absent one stays absent all the way to the wire.
+        broker, client, _ = make_broker()
+        out = broker.dispatch("plan_submit", {"name": "SI-1"})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(client.preview_consents, [None])
+
+    def test_the_broker_never_mints_the_preview_marker_itself(self):
+        # The whole point of the floor gate: a credential that could mint its own consent is
+        # signing its own permission slip. Whatever reaches the preview must be the caller's
+        # token verbatim — never derived, defaulted, or reused from the plan.
+        broker, client, _ = make_broker()
+        broker.dispatch("plan_submit", {"name": "SI-1", "consent_token": "opaque-abc"})
+        self.assertEqual(client.preview_consents, ["opaque-abc"])
+        for presented in client.preview_consents:
+            self.assertNotIn("SI-1", presented or "")

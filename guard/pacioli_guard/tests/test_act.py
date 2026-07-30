@@ -316,21 +316,31 @@ class TestBackwardCompatibilityAndRegistration(unittest.TestCase):
         act.before_submit(FakeDoc(), "before_submit")
         self.assertIsNone(fake.thrown)
 
-    def test_only_the_two_docstatus_events_GATE(self):
-        # The gates are still exactly the two docstatus transitions. `after_insert` joined the
-        # registration in 0.10.0 and is NOT a third gate: it refuses nothing and reads no grant, it
-        # only records that a document was created inside an already-consented act. Asserted here
-        # so a future handler cannot be added to the wildcard without this test being read.
+    def test_the_registered_wildcard_handlers_are_exactly_these(self):
+        # This test caught the 0.13.0 addition, which is what it is for. Read before widening.
+        #
+        # Two docstatus transitions gate a POSTING. Two preview events gate a REHEARSAL of one:
+        # ERPNext previews by performing the posting and rolling back, so with consent enforced the
+        # preview's own cascade was refused and PLAN could not complete. They REFUSE, so they are
+        # gates three and four, not recorders — but they refuse only a preview and they do not spend
+        # the marker. `after_insert` remains the one non-gate: it reads no grant and refuses nothing.
         from pacioli_guard import hooks
 
-        self.assertEqual(set(hooks.doc_events["*"]),
-                         {"before_submit", "before_cancel", "after_insert"})
-        self.assertEqual(hooks.doc_events["*"]["before_submit"],
-                         "pacioli_guard.act.before_submit")
-        self.assertEqual(hooks.doc_events["*"]["before_cancel"],
-                         "pacioli_guard.act.before_cancel")
-        self.assertEqual(hooks.doc_events["*"]["after_insert"],
-                         "pacioli_guard.act.after_insert")
+        self.assertEqual(
+            set(hooks.doc_events["*"]),
+            {"before_submit", "before_cancel", "after_insert",
+             "before_gl_preview", "before_sl_preview"})
+        for event in ("before_submit", "before_cancel", "after_insert",
+                      "before_gl_preview", "before_sl_preview"):
+            self.assertEqual(hooks.doc_events["*"][event], f"pacioli_guard.act.{event}")
+
+    def test_the_docstatus_gates_are_still_exactly_two(self):
+        """The preview handlers must never become docstatus gates by accident."""
+        from pacioli_guard import hooks
+
+        docstatus_events = {e for e in hooks.doc_events["*"] if e.startswith("before_")
+                            and "preview" not in e}
+        self.assertEqual(docstatus_events, {"before_submit", "before_cancel"})
 
     def test_the_recording_hook_refuses_nothing_and_reads_no_grant(self):
         # Registered on `"*"`, so it runs on every insert on every site including one that never
@@ -1105,3 +1115,285 @@ class TestTheCreationRecordAndTheCustodyChain(unittest.TestCase):
         with self.assertRaises(FakePermissionError):
             _save(si, lambda: (act.before_cancel(si, "before_cancel"), middle()))
         self.assertIn("ADS-PRE-EXISTING", self.fake.thrown[0])
+
+
+def _in_preview_frame(previewed_doc, fn):
+    """Run ``fn()`` beneath a REAL frame that looks like ERPNext's ledger preview.
+
+    The frame walk keys on (function name, module name), so a faithful test has to produce an actual
+    frame with both — not a mock. Built by exec'ing into a globals dict whose ``__name__`` is
+    erpnext's module, which is exactly what `_previewing_document` reads.
+    """
+    g = {"__name__": "erpnext.controllers.stock_controller", "_fn": fn}
+    exec("def get_accounting_ledger_preview(doc, filters=None):\n    return _fn()\n", g)
+    return g["get_accounting_ledger_preview"](previewed_doc)
+
+
+def _in_lookalike_frame(previewed_doc, fn):
+    """Same function NAME, wrong module. The module is half the signal."""
+    g = {"__name__": "attacker.controllers.stock_controller", "_fn": fn}
+    exec("def get_accounting_ledger_preview(doc, filters=None):\n    return _fn()\n", g)
+    return g["get_accounting_ledger_preview"](previewed_doc)
+
+
+class TestConsentCoversThePreview(unittest.TestCase):
+    """0.13.0. ERPNext previews a posting by performing it and rolling back
+    (`stock_controller.py:2058-2066`), so with consent enforced the preview's own cascade was refused
+    and the broker's PLAN step could not complete at all. Consent now covers the preview: previewing a
+    submit needs the marker for that submit, and does not spend it.
+    """
+
+    def test_a_preview_with_NO_marker_is_REFUSED(self):
+        """The preview is gated, not exempted. This is the whole point."""
+        fake = wire(headers={act.CONSENT_HEADER: None}, markers=marker())
+        with self.assertRaises(FakePermissionError):
+            act.before_gl_preview(FakeDoc(), "before_gl_preview")
+        self.assertIn("preview", fake.thrown[0].lower())
+
+    def test_a_stock_preview_with_NO_marker_is_REFUSED(self):
+        fake = wire(headers={act.CONSENT_HEADER: None}, markers=marker())
+        with self.assertRaises(FakePermissionError):
+            act.before_sl_preview(FakeDoc(), "before_sl_preview")
+        self.assertIn("preview", fake.thrown[0].lower())
+
+    def test_a_preview_with_a_valid_marker_is_allowed_and_does_NOT_spend_it(self):
+        """Consenting once must authorise a POSTING, not merely a projection of one."""
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker())
+        act.before_gl_preview(FakeDoc(), "before_gl_preview")
+        self.assertIsNone(fake.thrown)
+        self.assertFalse(any(row["burned"] for row in fake.db.markers.values()),
+                         "a preview commits nothing and must not spend the marker")
+
+    def test_the_marker_survives_the_preview_and_the_real_submit_then_spends_it(self):
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker())
+        act.before_gl_preview(FakeDoc(), "before_gl_preview")
+        self.assertFalse(any(row["burned"] for row in fake.db.markers.values()))
+        act.before_submit(FakeDoc(), "before_submit")
+        self.assertIsNone(fake.thrown)
+        self.assertTrue(all(row["burned"] for row in fake.db.markers.values()),
+                        "single-use still means single POSTING")
+
+    def test_an_ungated_user_previews_untouched(self):
+        """Inert on any site that never opted in, like every other handler here."""
+        fake = wire(gated=False, headers={act.CONSENT_HEADER: None}, markers={})
+        act.before_gl_preview(FakeDoc(), "before_gl_preview")
+        self.assertIsNone(fake.thrown)
+
+    def test_a_cascade_created_INSIDE_a_consented_preview_rides(self):
+        """The failure this feature exists for: a Payment Ledger Entry that did not exist until the
+        preview ran, so no human could have minted a marker naming it."""
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(docname="SI-0001"))
+        invoice = FakeDoc(name="SI-0001")
+        act.before_gl_preview(invoice, "before_gl_preview")
+        ple = FakeDoc(doctype="Payment Ledger Entry", name="PLE-abc", in_insert=True)
+        _in_preview_frame(invoice, lambda: act.before_submit(ple, "before_submit"))
+        self.assertIsNone(fake.thrown, "the preview's own cascade must ride the consent it verified")
+
+    def test_a_two_step_creation_INSIDE_a_consented_preview_rides(self):
+        """ERPNext's ordinary cascade idiom is TWO calls — `doc.save()` then `doc.submit()` — and
+        inside a preview there is no enclosing WRITE frame at all, because the previewed document is
+        not being written. So `after_insert`'s write-frame walk finds nothing, records no creation,
+        and the later submit arrives looking exactly like a pre-existing draft the caller named:
+        refused, and the whole preview dies with it. `serial_batch_bundle.py:1166`/`:1172` is this
+        shape and a preview with `update_stock` reaches it.
+
+        The creation record has to be made from the PREVIEW walk as well as the write walk. This is
+        the same asymmetry `_require_consent` already closed at its own call site.
+        """
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(docname="SI-0001"))
+        invoice = FakeDoc(name="SI-0001")
+        act.before_gl_preview(invoice, "before_gl_preview")
+        sbb = FakeDoc(doctype="Serial and Batch Bundle", name="SBB-NEW", in_insert=False)
+
+        def cascade():
+            # `doc.save()` -> Document.insert -> run_method("after_insert") at document.py:498.
+            insert(sbb, act.after_insert, sbb, "after_insert")
+            # `doc.submit()` -> _submit -> save() -> _save. Named and not `__islocal`, so :571-572
+            # does not delegate back to insert() and `in_insert` stays False.
+            _save(sbb, act.before_submit, sbb, "before_submit")
+
+        _in_preview_frame(invoice, cascade)
+        self.assertIsNone(fake.thrown,
+                          "a document the PREVIEW itself created in two steps must ride the consent "
+                          "the preview verified — no human could have named it")
+
+    def test_after_insert_stamps_ONLY_when_an_enclosing_governed_act_is_found(self):
+        """Asserts on the STAMP, at the altitude the 0.13.0 change was made.
+
+        Found by mutation: replacing `after_insert`'s condition with `if True:` — stamping every
+        insert on the site — turned NO existing test red. The downstream tests could not see it
+        because a stamp licenses nothing on its own (`_may_ride` is unreachable without a live
+        enclosing act), which is a true safety property and also exactly why it hid the mutant. The
+        widened condition therefore needs a check that reads the stamp directly, or "stamps only when
+        it should" is an architectural argument with no test behind it.
+        """
+        wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(docname="SI-0001"))
+        # 1. No enclosing act of any kind: an ordinary insert anywhere on the site.
+        loose = FakeDoc(doctype="Serial and Batch Bundle", name="SBB-LOOSE", in_insert=False)
+        insert(loose, act.after_insert, loose, "after_insert")
+        self.assertFalse(act._flag_get(loose, act._CREATED_IN_ACT),
+                         "an insert outside any governed act must leave no creation record")
+        # 2. Inside a CONSENTED preview: stamped, which is what 0.13.0 added.
+        invoice = FakeDoc(name="SI-0001")
+        act.before_gl_preview(invoice, "before_gl_preview")
+        created = FakeDoc(doctype="Serial and Batch Bundle", name="SBB-NEW", in_insert=False)
+        _in_preview_frame(invoice, lambda: insert(created, act.after_insert, created, "after_insert"))
+        self.assertTrue(act._flag_get(created, act._CREATED_IN_ACT),
+                        "the preview created this document, so the creation must be recorded")
+        # 3. Same shape under a LOOKALIKE module. The module is half the signal on this new edge too.
+        spoofed = FakeDoc(doctype="Serial and Batch Bundle", name="SBB-SPOOF", in_insert=False)
+        _in_lookalike_frame(invoice, lambda: insert(spoofed, act.after_insert, spoofed,
+                                                    "after_insert"))
+        self.assertFalse(act._flag_get(spoofed, act._CREATED_IN_ACT),
+                         "a frame with the right name in the wrong module records nothing")
+
+    def test_a_two_step_creation_under_a_LOOKALIKE_preview_frame_is_REFUSED(self):
+        """The end-to-end fail-closed counterpart of the ride test above. The existing lookalike test
+        covers the single-call cascade; this covers the two-step one the 0.13.0 stamp reaches."""
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(docname="SI-0001"))
+        invoice = FakeDoc(name="SI-0001")
+        act.before_gl_preview(invoice, "before_gl_preview")
+        sbb = FakeDoc(doctype="Serial and Batch Bundle", name="SBB-NEW", in_insert=False)
+
+        def cascade():
+            insert(sbb, act.after_insert, sbb, "after_insert")
+            _save(sbb, act.before_submit, sbb, "before_submit")
+
+        with self.assertRaises(FakePermissionError):
+            _in_lookalike_frame(invoice, cascade)
+        self.assertIn("SBB-NEW", fake.thrown[0])
+
+    def test_the_SAME_cascade_with_NO_preview_frame_is_REFUSED(self):
+        """Fail-closed direction: no recognised preview frame, no ride."""
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(docname="SI-0001"))
+        invoice = FakeDoc(name="SI-0001")
+        act.before_gl_preview(invoice, "before_gl_preview")
+        ple = FakeDoc(doctype="Payment Ledger Entry", name="PLE-abc", in_insert=True)
+        with self.assertRaises(FakePermissionError):
+            act.before_submit(ple, "before_submit")
+        self.assertIsNotNone(fake.thrown)
+
+    def test_a_lookalike_module_does_NOT_license_a_cascade(self):
+        """The function name alone is not the signal. Same lesson as `_writing_document`."""
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(docname="SI-0001"))
+        invoice = FakeDoc(name="SI-0001")
+        act.before_gl_preview(invoice, "before_gl_preview")
+        ple = FakeDoc(doctype="Payment Ledger Entry", name="PLE-abc", in_insert=True)
+        with self.assertRaises(FakePermissionError):
+            _in_lookalike_frame(invoice, lambda: act.before_submit(ple, "before_submit"))
+
+    def test_an_UNCONSENTED_preview_licenses_nothing(self):
+        """No stamp without a verified marker, so nothing can ride an unconsented preview."""
+        fake = wire(headers={act.CONSENT_HEADER: None}, markers=marker(docname="SI-0001"))
+        invoice = FakeDoc(name="SI-0001")
+        with self.assertRaises(FakePermissionError):
+            act.before_gl_preview(invoice, "before_gl_preview")
+        ple = FakeDoc(doctype="Payment Ledger Entry", name="PLE-abc", in_insert=True)
+        with self.assertRaises(FakePermissionError):
+            _in_preview_frame(invoice, lambda: act.before_submit(ple, "before_submit"))
+
+    def test_a_pre_existing_draft_named_by_the_caller_still_does_NOT_ride_a_preview(self):
+        """`_may_ride` is unchanged and still requires creation-by-the-act. A document the caller
+        NAMED could have been put in front of a human, so it needs its own marker even inside a
+        consented preview."""
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(docname="SI-0001"))
+        invoice = FakeDoc(name="SI-0001")
+        act.before_gl_preview(invoice, "before_gl_preview")
+        named = FakeDoc(doctype="Serial and Batch Bundle", name="SBB-1", in_insert=False)
+        with self.assertRaises(FakePermissionError):
+            _in_preview_frame(invoice, lambda: act.before_submit(named, "before_submit"))
+
+    def test_the_previewed_document_itself_still_needs_the_marker_spent(self):
+        """A preview must not become a way to submit the previewed document for free: it is not
+        created by the act, so it cannot ride, and its own submit spends the marker."""
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(docname="SI-0001"))
+        invoice = FakeDoc(name="SI-0001", in_insert=False)
+        act.before_gl_preview(invoice, "before_gl_preview")
+        act.before_submit(invoice, "before_submit")
+        self.assertIsNone(fake.thrown)
+        self.assertTrue(all(row["burned"] for row in fake.db.markers.values()))
+
+
+class TestTheRemedyAnOperatorIsToldToRunActuallyWorks(unittest.TestCase):
+    """A refusal is the one message an operator is guaranteed to read, at the moment they are
+    blocked. ``test_consent.py`` already asserts this for ``consent_verdict``'s own text, but that
+    test reaches exactly ONE of the places this package tells an operator how to get unblocked —
+    so ``pacioli mint`` survived in two others.
+
+    ``pacioli mint`` cannot produce a floor marker. It is a console script in the SEPARATE
+    ``pacioli`` broker distribution (``pacioli-guard`` ships none), it takes a ``plan_id``
+    positionally, and it writes a plan-bound marker into the BROKER's own store via
+    ``store.mint_marker(token, plan_id, ...)`` — it never connects to the books and never creates a
+    ``Pacioli Consent Marker`` row, which is the only thing this gate reads.
+
+    For the PREVIEW refusal the advice is worse than merely wrong, it is circular: ``pacioli mint``
+    refuses without a recorded plan ("the agent must call plan_submit first"), and ``plan_submit``
+    is the call being refused. An operator following the message lands in a closed loop.
+    """
+
+    def _preview_refusal(self):
+        fake = wire(headers={act.CONSENT_HEADER: None}, markers=marker())
+        with self.assertRaises(FakePermissionError):
+            act.before_gl_preview(FakeDoc(), "before_gl_preview")
+        return fake.thrown[0]
+
+    def test_the_preview_refusal_does_not_send_the_operator_around_a_closed_loop(self):
+        self.assertNotIn("pacioli mint", self._preview_refusal())
+
+    def test_the_preview_refusal_names_the_thing_that_must_actually_be_created(self):
+        # What the gate reads is a `Pacioli Consent Marker` for this document and act. Name that,
+        # so the remedy matches the mechanism being enforced.
+        reason = self._preview_refusal()
+        self.assertIn("Pacioli Consent Marker", reason)
+
+    def test_every_refusal_this_module_emits_promises_no_unusable_route(self):
+        """The coverage generalised, because this defect arrived twice in one hour — and asserted
+        on the REAL messages, not on the module source.
+
+        Both banned remedies are things an operator cannot actually do: `pacioli mint` builds a
+        plan-bound marker in the BROKER's store, and the desk form cannot save a marker at all
+        (`token_hash` is `reqd` + `read_only` with no default, and the controller sets only
+        `minted_by`). A refusal may state what must EXIST; it may not name either route.
+
+        This drives all three of `act`'s refusal sites — the plain no-marker refusal, the
+        unspendable-marker refusal, and the preview refusal — because the first fix landed in one
+        of them and left the others lying.
+        """
+        messages = []
+
+        fake = wire(headers={act.CONSENT_HEADER: None}, markers=marker())
+        with self.assertRaises(FakePermissionError):
+            act.before_submit(FakeDoc(), "before_submit")
+        messages.append(fake.thrown[0])
+
+        messages.append(self._preview_refusal())
+
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker())
+        act._claim_consent = lambda record: False
+        try:
+            with self.assertRaises(FakePermissionError):
+                act.before_submit(FakeDoc(), "before_submit")
+        finally:
+            del act._claim_consent
+        messages.append(fake.thrown[0])
+
+        self.assertEqual(len(messages), 3, "every refusal site must be exercised here")
+        for reason in messages:
+            self.assertNotIn("pacioli mint", reason)
+            self.assertNotIn("desk UI", reason)
+            # And each must point at the route this package DOES ship, or the operator is left
+            # accurately described and still stuck.
+            self.assertIn("pacioli_guard.mint.mint_consent_marker", reason)
+            self.assertIn("bench", reason.lower())
+
+    def test_the_unspendable_marker_refusal_does_not_name_the_brokers_plan_bound_cli(self):
+        # act.py's second refusal: a marker that could not be spent. Shipped text, same defect.
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker())
+        act._claim_consent = lambda record: False
+        try:
+            with self.assertRaises(FakePermissionError):
+                act.before_submit(FakeDoc(), "before_submit")
+        finally:
+            del act._claim_consent
+        self.assertIn("single-use", fake.thrown[0])
+        self.assertNotIn("pacioli mint", fake.thrown[0])

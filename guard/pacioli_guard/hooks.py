@@ -36,5 +36,13 @@ doc_events = {
         # ERPNext creates and submits in two separate calls. Added 0.10.0; before it, every
         # `doc.save(); doc.submit()` cascade inside a governed act was REFUSED. See act.py.
         "after_insert": "pacioli_guard.act.after_insert",
+        # NOT gates on a posting — gates on a REHEARSAL of one. ERPNext previews a posting by
+        # performing it and rolling back (`stock_controller.py:2058-2066`), so with consent enforced
+        # the preview's own cascade was refused and the broker's PLAN step could not complete. The
+        # preview now requires the same marker as the submit it previews, and does not spend it.
+        # frappe fires these through `run_method`, which composes `doc_events` exactly as the
+        # lifecycle events above (`model/document.py:1252`). Added 0.13.0.
+        "before_gl_preview": "pacioli_guard.act.before_gl_preview",
+        "before_sl_preview": "pacioli_guard.act.before_sl_preview",
     }
 }

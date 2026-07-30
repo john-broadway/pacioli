@@ -573,3 +573,38 @@ class TestMalformedArgumentsGetAStructuredRefusalNotATraceback(unittest.TestCase
                                       {"name": "SI-1", "plan_id": "nope", "marker": "x"})
         self.assertFalse(out["ok"])
         self.assertNotEqual(out.get("stage"), "request")
+
+
+class PlanSubmitConsentSurface(unittest.TestCase):
+    """``plan_submit`` is a state-changing call on a consent-enforcing bench, and its schema and
+    description have to say so. ERPNext's native preview posts and rolls back, so guard 0.13.0
+    gates the preview on the same marker as the submit — which makes the PLAN tier the first place
+    a caller needs a token, and moves minting BEFORE the plan."""
+
+    def _plan_submit(self):
+        return next(t for t in TOOLS if t["name"] == "plan_submit")
+
+    def test_plan_submit_accepts_an_optional_consent_token(self):
+        schema = self._plan_submit()["inputSchema"]
+        self.assertIn("consent_token", schema["properties"])
+        self.assertEqual(schema["properties"]["consent_token"]["type"], "string")
+        # Optional, exactly like submit/cancel: a bench without the gate must keep working, and
+        # requiring it would break every install that has not turned consent on.
+        self.assertEqual(tuple(schema.get("required", ())), ("name",))
+
+    def test_the_description_does_not_promise_that_nothing_is_written(self):
+        # It used to say "Nothing is posted." full stop. On a perpetual-inventory bench the
+        # preview DOES post and then roll back, which is exactly why the floor gates it — an
+        # agent-facing description that denies the write is the kind of copy this project treats
+        # as a defect, not a nuance.
+        desc = self._plan_submit()["description"]
+        self.assertNotIn("Nothing is posted.", desc)
+        self.assertIn("rolls back", desc)
+
+    def test_the_description_puts_minting_before_the_plan(self):
+        # The old text said a human mints the marker AFTER the plan ("A human then mints..."),
+        # which is the ceremony guard 0.13.0 inverted for the floor marker. A caller following the
+        # old order gets refused at the preview with no way to recover inside the same call.
+        desc = self._plan_submit()["description"]
+        self.assertNotIn("A human then mints a consent marker", desc)
+        self.assertIn("before", desc.lower())

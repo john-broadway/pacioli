@@ -6,6 +6,39 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.34.0 — 2026-07-29 — the broker can present consent at PLAN, because the preview is a write
+
+MINOR. `plan_submit` accepts an optional `consent_token` and forwards it to ERPNext's ledger preview;
+`ErpnextClient.ledger_preview` grows the matching `consent` kwarg. Additive and backward compatible —
+with no token the request is byte-identical to 0.33.3, which is asserted, not assumed.
+
+**What was broken, and it was the broker's half.** `pacioli-guard` 0.13.0 gates the ledger preview on
+consent, because ERPNext previews a posting by performing it and rolling back
+(`controllers/stock_controller.py`). Guard shipped that gate; the broker had no way to satisfy it.
+`ledger_preview` took no consent argument at all, so on a bench with `require_consent` genuinely
+enforced, `plan_submit` was refused at the preview and the full PLAN → CONSENT → PROVE vertical could
+not complete. Only the guard half of that ceremony had ever been proven.
+
+**The two markers are still two markers, and the order is not the same for both.** The FLOOR marker
+(`consent_token`, a `Pacioli Consent Marker` bound to a document and act, minted on the books box by
+another principal) must now exist BEFORE the plan, because the preview is gated on it. The BROKER's
+own marker (`marker`, bound to a recorded `plan_id`, in the broker's store) is unchanged and is still
+minted AFTER the plan. No chicken-and-egg arises: the floor marker binds to a document, not a plan,
+so it can exist before any plan does. The preview does not spend it, so one floor marker covers the
+preview and then spends on the submit.
+
+**The broker still never mints either one.** `consent_token` is passed through verbatim — never
+derived, defaulted, or reused from the plan. A broker that could mint its own consent would be
+signing its own permission slip, which is the bypass the floor gate exists to close.
+
+**`plan_submit`'s description stopped saying "Nothing is posted."** On a perpetual-inventory bench the
+preview does post, and then rolls back. Nothing *lands*, which is the true claim and now the stated
+one; it also no longer tells a caller to mint the marker after the plan, which is the order guard
+0.13.0 inverted for the floor marker.
+
+Only the accounting preview needed this: the broker never calls `show_stock_ledger_preview`, so
+guard's `before_sl_preview` has no broker counterpart.
+
 ## 0.33.3 — 2026-07-26 — the credential stops following redirects, and the Close stops losing a day
 
 PATCH. Redteam findings against the operator surface (`doctor.py`, `close.py`, `anchor`), which no

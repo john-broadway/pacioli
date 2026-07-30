@@ -3,6 +3,398 @@
 Least-privilege API capability scoping for Frappe/ERPNext. Honest pre-1.0 semver.
 Distribution name `pacioli-guard`; Frappe app / import module `pacioli_guard`.
 
+## 0.13.0 — 2026-07-29 — consent covers the preview, because ERPNext previews by posting
+
+MINOR. Two new `doc_events["*"]` handlers, `before_gl_preview` and `before_sl_preview`. A ledger
+preview of a submit now requires the same consent marker as the submit it previews, **and does not
+spend it**.
+
+**The defect it closes, and it is an OUTAGE rather than a hole.** ERPNext previews a posting by
+performing it and rolling the transaction back (`controllers/stock_controller.py:2058-2066`). The
+posting creates and submits cascaded documents, `Payment Ledger Entry` first, and `before_submit`
+fires on each. With `require_consent` genuinely enforced, those were refused, correctly — no marker
+existed for a document that did not exist until the preview ran. So the preview aborted and any
+broker `PLAN` step that projects a ledger could not complete at all. Nothing was ever admitted that
+should have been refused; a governed path simply stopped working, and *"a gate that only says no is
+an outage"* is this project's own line.
+
+**Why it went unnoticed until now.** The two consent ceremonies had never once run together. The
+broker's own plan/marker ceremony was proven in 2026-07-02 with guard 0.1.1, three weeks before
+`require_consent` existed. The floor's ceremony was proven on 2026-07-29. On the bench where both
+were nominally on, the consent gate was inert from a stale hooks cache, so every governed write there
+had run with the floor asleep. An inert gate does not only fail to protect: it hides every
+incompatibility with itself.
+
+**Why the preview is GATED and not EXEMPTED.** Every alternative means teaching this gate to believe
+a caller's claim that a write will be rolled back, and it cannot verify that claim — a document-layer
+gate sees documents, not transaction outcomes. Exempting on an unverifiable claim is the hole the
+whole floor exists to refuse. So consent moved to cover the preview instead.
+
+**The ceremony changes, and this is the cost.** Consent is now minted BEFORE the plan rather than
+after it. A human authorises "submit this draft", and the projection is produced under that
+authority. They no longer see the projected GL before consenting; they see the draft, which is the
+document they are consenting to, and the projection becomes disclosure rather than a precondition.
+
+**The marker is not spent by a preview**, or consenting once would authorise a projection instead of
+a posting. Single-use still means single *posting*: the real submit spends it. Residual, stated: one
+marker can drive many previews inside its TTL. A preview commits nothing, so that buys repeated
+projections of a posting a human already authorised, not a posting.
+
+**`_enclosing_governed_act` is NOT touched.** That function has failed OPEN twice (0.9.1 counted write
+frames; 0.9.2 accepted "a different document is being written") and its safety argument is that a
+stamp licenses nothing without a live `frappe.model.document` write frame holding the document. A
+preview is not a document write, so this feature needed new trust, and the new trust lives in a new
+function, `_previewing_governed_act`, consulted only after the write walk has already found nothing.
+It recognises ERPNext's preview frames by (function name, module) — the same two-part signal, for the
+same reason — and rides only a document this gate already stamped after verifying a real marker.
+
+**Direction of failure:** if ERPNext renames or moves those functions, no preview frame is
+recognised, the cascade falls through to the marker check, and the PREVIEW is refused. Loud, not
+silent.
+
+🔴 **`after_insert` needed the preview walk too, and the first cut of this feature only gave it to
+`_require_consent`.** That asymmetry was recorded as an open question when this branch merged, on the
+grounds that widening a trust path on speculation is how 0.9.1 and 0.9.2 failed OPEN. It is now
+reproduced rather than argued. Inside a preview the previewed document is not being written, so no
+`frappe.model.document` write frame holds it, so `after_insert`'s write-frame walk found nothing and
+recorded no creation. ERPNext's ordinary cascade idiom is two calls, `doc.save()` then `doc.submit()`,
+and by the submit `flags.in_insert` is long cleared. So a document the PREVIEW itself created arrived
+at the gate indistinguishable from a pre-existing draft the caller had named, and was refused:
+`Refused for Serial and Batch Bundle SBB-NEW`, taking the whole preview with it.
+`serial_batch_bundle.py:1166`/`:1172` is that shape and a preview with `update_stock` reaches it.
+
+`after_insert` now consults `_previewing_governed_act` when the write walk finds nothing, which is the
+same order `_require_consent` already used. This widens nothing the preview walk did not already
+license one call site over: the stamp is still only ever read by `_may_ride`, which is unreachable
+without a live enclosing governed act on the stack, and a caller-named pre-existing draft still gets
+no stamp because `after_insert` never runs for it. That last property has its own test.
+
+**Mutation-proven four ways, and the third mutation exposed a missing test rather than confirming an
+existing one.** Reverting to the write-walk alone turns the new ride test red. Dropping the write walk
+turns the original two-step write-path test red, so both halves are load-bearing. Removing the module
+half of the preview frame signal turns three red. But replacing the whole condition with `if True:`,
+stamping every insert on the site, turned **nothing** red: the downstream tests could not see it,
+because a stamp licenses nothing on its own. That is a real safety property and it is also exactly why
+it hid the mutant, so there is now a test that reads the stamp directly at the altitude the change was
+made. "Stamps only when it should" was an architectural argument with no test under it.
+
+🔴 **UPGRADING TO THIS VERSION REQUIRES A SITE CACHE CLEAR, and skipping it is silent.** This release
+adds two NEW `doc_events` keys, and frappe caches the app-hook registry. **A `pip install --upgrade`
+preserves the hook entries already in that cache but does NOT pick up new ones** — verified on a live
+site during this release: after installing 0.13.0 and restarting every service,
+`get_hooks("doc_events")["*"]["before_gl_preview"]` was still `None`, and only
+`cache().delete_value("app_hooks")` + `clear_cache()` made it appear. Until you clear it, the preview
+gate is absent and your PLAN step keeps failing exactly as it did before this fix — so the upgrade
+looks like it did not work. It fails CLOSED (a preview refused, never an ungoverned write), which is
+the right direction, but you will be debugging the wrong thing.
+
+```
+bench --site <your-site> clear-cache      # then confirm:
+# get_hooks("doc_events")["*"]["before_gl_preview"] -> ['pacioli_guard.act.before_gl_preview']
+```
+
+Note that `consent_status.gate_registered` (added 0.12.0) checks `before_submit`/`before_cancel` only,
+so it reports `true` while the preview hooks are missing. That is not a lie — consent *is* enforced,
+more strictly than intended — but it will not warn you about this.
+
+Tests: +12, and `_may_ride` is unchanged so a caller-named pre-existing draft still does not ride a
+preview. Mutation-proven both ways: a preview gate that refuses nothing turns 4 red; a preview frame
+walk that always licenses turns 34 red.
+
+**Live-proven end to end on a real ERPNext v16 site over HTTPS, 9/9** — a preview with no marker
+refused *by this gate* (attributed from the refusal's own words, because a scope refusal names a
+method containing the word "preview" and reads identically otherwise); a preview presenting a marker
+minted by a different principal returning a real projection; the marker unspent by the preview; zero
+GL rows and `docstatus 0` left behind; the same marker then spending on the real submit; and burned
+after. Driver: `deploy/bench/live-proof-preview-consent.py`.
+
+### Also in 0.13.0 — a human can finally mint a marker, and a 900-second marker now lasts 900 seconds
+
+**New: `pacioli_guard.mint.mint_consent_marker`.** The floor has demanded a marker since 0.7.0 and
+this package shipped no way to create one. The only route was an ad-hoc script run as Administrator
+inside the container — proof the mechanism worked, not something an operator could be told to do.
+`docs/plans/2026-07-26-consent-ceremony-decision.md` had this on the books as Option B's outstanding
+cost. It bites hardest where it is least visible: a site with `require_consent` on and no marker ever
+minted cannot complete its first governed write.
+
+```
+bench --site <site> execute pacioli_guard.mint.mint_consent_marker \
+  --kwargs '{"ref_doctype": "Sales Invoice", "ref_docname": "ACC-SINV-2026-00004",
+             "ref_action": "submit", "ttl_seconds": 900}'
+```
+
+**Deliberately NOT whitelisted, and that is the point.** An HTTP mint endpoint would be reachable by
+exactly the api-key credentials this floor exists to constrain, and a credential that can mint its own
+consent is signing its own permission slip. `consent_verdict` refuses a self-minted marker at spend
+time, but that backstop is not a reason to open the door. Books side only, which is Option B's shape.
+It generates the token itself, prints it once, stores only the SHA-256, and discloses the act
+(document, name, act, minter, expiry) so the operator has a view of what they are authorising that
+does not come from the agent's narration — the lesson the broker CLI learned in the 07-26 redteam.
+`minted_by` is not sent: `before_insert` binds it from the session, and floor audit F3 is why a
+caller-supplied value is worth nothing.
+
+🔴 **AND IT FIXED A LIVE DEFECT IN THE OTHER DIRECTION FROM 0.10.0's.** `expires_at` is a naive frappe
+Datetime and `_epoch` resolves it through the **SITE's** zone. 0.10.0 corrected the reader, which had
+been resolving through the *process* zone and making every marker on a non-UTC site born expired. The
+minting script was left writing `datetime.now()` — the process clock — on a comment that said the
+reader used the process clock too. **Measured on a live bench (site `America/Chicago`, container UTC):
+a marker minted for 900 seconds read as 17,980 seconds of remaining life.** Fail-OPEN on lifetime,
+never an escape (still document-bound, act-bound, single-use, minter-separated), but "short-lived by
+design" was off twentyfold. The new module writes `frappe.utils.now_datetime()`, frappe's own
+site-zone naive clock, and the regression test coerces what it wrote with **`enforce._epoch` itself**
+rather than a reimplementation. `deploy/bench/mint-consent-marker.py` corrected too, with the stale
+comment replaced by the measurement.
+
+🔴 **A CORRECTION TO THIS ENTRY'S OWN FIRST DRAFT, which claimed the fix was "mutation-proven".** It
+was proven only in a UTC container. An independent review reproduced the hole: with the process zone
+forced to `America/Chicago` — the same zone the test hardcodes as the SITE zone — and the writer
+reverted to `datetime.now()`, the numeric assertion computes 900s and **passes with the bug fully
+reintroduced**. Nothing in this repo pins CI's timezone, so that test alone was luck. A regression
+test for a "worked in one clock domain, broke in another" bug must not itself depend on which clock
+domain it runs in. Now: a second test asserts the **call** rather than the number (a bare
+`datetime.datetime.now()` raises, whatever zone the host is in), and the numeric test `skipTest`s
+loudly when the two offsets coincide instead of passing blindly. Verified by re-running under
+`TZ=America/Chicago` with the bug restored: the new test fails, the numeric one skips.
+
+Live: minted through `bench execute` on a real bench, lifetime read back through the gate's own
+coercion at **883s** for a 900s TTL minted 17s earlier, then carried through `plan_submit` and the
+submit to `docstatus 1` / 2 GL rows / one marker burned.
+
+### Also in 0.13.0 — every refusal stopped naming a remedy the operator cannot perform
+
+Three refusal messages told a blocked operator to do something impossible. Found while building the
+broker half of this feature, by following the advice the new preview refusal gives.
+
+**`pacioli mint` cannot produce a floor marker, anywhere.** It is a console script in the SEPARATE
+`pacioli` broker distribution (`pacioli-guard` ships none at all), it takes a `plan_id` positionally,
+and it writes a plan-bound marker into the BROKER's own store via `store.mint_marker(token, plan_id)`.
+It never connects to the books and never creates a `Pacioli Consent Marker`, which is the only object
+this gate reads. Three places named it: the new preview refusal, `act.py`'s unspendable-marker refusal,
+and `scope.py`'s `consent_verdict` (shipped since 0.7.0). The DocType's own description — visible in
+the desk UI — said the marker is "Minted OFF this box (pacioli mint)" too.
+
+**For the preview refusal it was worse than wrong, it was circular.** `pacioli mint` refuses without a
+recorded plan ("the agent must call plan_submit first"), and `plan_submit` is the call being refused.
+An operator following that message walks a closed loop while their write fails.
+
+**And the first fix was also wrong**, which is worth recording. It said "in the desk UI" instead — but
+`token_hash` is `reqd: 1` **and** `read_only: 1` on the DocType with no default, and
+`PacioliConsentMarker.before_insert` sets only `minted_by`, so the desk form cannot supply a mandatory
+field and the save fails. There is also nowhere in that form to reveal the raw token, which the human
+must generate and keep out of the credential's reach. For one iteration the refusals therefore stated
+WHAT must exist and named no route at all, because there genuinely was none. That was the honest
+state, not the desired one — which is what prompted `pacioli_guard.mint` above. They now name it.
+
+`scope.py`'s existing test for this only covered `consent_verdict`, which is how the same lie survived
+in two other messages, and it merely required the package to be attributed if the CLI was named. It
+is now absolute, and a new test drives **every** refusal `act.py` emits, asserting on the real emitted
+messages rather than the module source. Mutation-proven: reintroducing the phrase at the one site never
+edited here turns it red.
+
+⭐ That all-sites test earned its keep immediately. With three messages updated it failed on a
+**fourth** nobody had noticed — the ordinary no-marker refusal, the one an operator is most likely to
+ever see. `MINT_ROUTE_HINT` is now a single definition in `scope.py` instead of four copies, because
+the last time this advice was duplicated across these messages it went stale in two places and stayed
+correct in none.
+
+No enforcement path changed by any of this — refusal text and one DocType description only.
+
+### Also in 0.13.0 — findings from an independent review of this branch
+
+Five adversarial lenses over `2e1d31b..c0d7232`, each given the real frappe/erpnext source on disk
+rather than our prose about it. **The two questions the review existed to answer both held**, and both
+were answered from source: no bypass through the preview (frame identity requires the real ERPNext
+module, and `flags` is in frappe's `RESERVED_KEYWORDS` so the consent stamp cannot be caller-supplied;
+`frappe/app.py` rolls back the whole transaction on any exception, so a mid-cascade refusal cannot
+leave a partial commit), and `mint_consent_marker` is genuinely unreachable by an api-key credential
+(`is_whitelisted` is unconditional set membership with no Administrator bypass, and Server Scripts'
+`frappe.call`/`enqueue` both re-enter that same choke point). The floor token also never comes to rest
+anywhere the agent can read it: no column on `plans` for it, absent from the MCP response, and no
+refusal string interpolates it.
+
+What the review found, all fixed here:
+
+- **A test that asserted nothing, guarding this module's central security property.**
+  `test_mint_is_not_whitelisted` read `getattr(fn, "whitelisted", False)` and a `__wrapped__` class
+  name. `frappe.whitelist()` adds to a **set** and sets no attribute, and `getattr(fn, "__wrapped__",
+  "")` is `""` whose class name is `"str"` — so **both assertions pass for a genuinely whitelisted
+  function**, proven by reimplementing the real decorator. Replaced with an AST check on the module's
+  own decorators, which catches both `@frappe.whitelist()` and a bare `@whitelist`, plus a
+  guard-the-guard test so the parser cannot silently find nothing.
+- **`frappe.db.exists(dt, dn)` is truthy when `dt == dn`** — frappe's Single-doctype shortcut applied
+  unconditionally (`database.py`: `# single always exists (!)`). So minting for
+  `("Sales Invoice", "Sales Invoice")` passed the existence check and produced a marker for a
+  document that does not exist, breaking this module's own stated invariant on any typo where the
+  docname equals the doctype. Now uses a `name` lookup, which answers the question actually asked and
+  still handles a real Single correctly.
+- **The DB was queried before input was type-checked.** `exists` accepts a filter dict as its second
+  argument, so an unvalidated `ref_docname` ran a "does ANY row match" query. Refused downstream, but
+  the query had already gone. Validation now runs first.
+- **The token was printed twice.** `bench execute` echoes a function's return value
+  (`frappe/commands/utils.py`), so returning it printed the secret again in an unlabelled JSON blob
+  that a "redact lines containing `token:`" filter misses. Observed for real on first live use. The
+  return no longer carries it; a test now asserts it appears exactly once, and the operator
+  disclosure has content tests it never had.
+- **`ignore_permissions=True` removed.** Redundant under `bench execute` (Administrator bypasses
+  permissions anyway) but it pre-emptively disabled the DocType's System-Manager-only `create`
+  permission, the one other layer that would catch this function being reached from a
+  lower-privileged context by a future refactor.
+- 🔴 **`_epoch` had no `isfinite` guard, so a non-finite expiry made a marker IMMORTAL.**
+  `now >= inf` and `now >= nan` are both False, so such a marker never expired — the inverse of that
+  function's deny-biased contract, and the write side had been hardened against exactly this hazard
+  in this same release while the reader it was modelled on was not. Latent (a `DATETIME(6)` column
+  will not store "inf"), fixed at **both** layers: `_epoch` refuses non-finite, and `consent_verdict`
+  no longer trusts its caller to have done so — which also closes the same hazard on the `now` side.
+- **Two docstrings that were false.** `_as_instant` claimed the UTC fallback makes a marker "expire
+  EARLIER than intended, never later"; east of UTC it expires **later**, +5.5h for `Asia/Kolkata` —
+  which is frappe's own hardcoded default for an unset site zone. And `plan_consent_marker` said
+  `row` "is the field mapping to insert" when `mint.py` discards its `expires_at` because that key is
+  an epoch instant while the column is a site-naive Datetime.
+- **`SAFE_METHODS` still called the preview "read-only"**, contradicting the finding that put a
+  consent gate on it. Membership there is a security decision, so the comment now says what the call
+  actually does.
+
+### And the root cause behind the clock findings is now fixed: the expiry is an INSTANT
+
+🔴🔴 **UPGRADING ALSO NEEDS `bench --site <site> migrate`, AND THIS IS A HARD ORDER, NOT A NICETY**
+(in addition to the cache clear above). This release adds a field.
+
+⚠️ **CORRECTION to this entry's own first draft, which said skipping the migrate "fails soft, not
+closed".** That was wrong, and an independent review traced it through real frappe source.
+`_consent_record` asks for `expires_at_epoch` in its field list without `ignore=True`, and
+`frappe.db.get_values` re-raises a missing-column error unless `ignore` is set
+(`frappe/database/database.py`: `if ignore and (is_missing_column(e) ...): out = None; else: raise`,
+and `ignore` defaults to False). That exception is swallowed by `_consent_record`'s own deny-biased
+`except Exception: return None`, so the gate sees **no marker** rather than falling back to the
+Datetime. Consequence on an unmigrated site: **every** `require_consent` submit, cancel and preview
+refuses with "no live consent marker for this document and act" — indistinguishable from never having
+minted one — until `bench migrate` runs.
+
+That is the SAFE direction (nothing is under-governed) but it is the opposite of what the first draft
+promised, and an operator who trusted "fails soft" and skipped the step in a hurry would find 100% of
+governed writes stopped rather than degraded. Run the migrate.
+
+`Pacioli Consent Marker` gains **`expires_at_epoch`**, and it is the authoritative expiry. The naive
+`Datetime` stays as the human-readable rendering and as the only source for markers minted before the
+field existed. Three separate defects had one cause — a naive Datetime means whatever
+`System Settings.time_zone` says **at spend time** — so they are fixed by changing the
+representation rather than by patching each:
+
+- **DST.** `site_now + timedelta` is naive wall-clock arithmetic. Measured against real 2026
+  `America/Chicago` transitions: **+3600s fail-OPEN** across the doubled fall-back hour, **−3600s
+  fail-CLOSED** across the spring-forward gap. The 900s default was safe by luck; a 24h TTL — this
+  code's own allowed maximum — takes the full hour. Now tested at both boundaries with a frozen
+  clock, which no test could do before, and mutation-proven: restoring naive arithmetic renders
+  `03:10` where the true instant is `04:10` and turns the DST test red on a 3600s divergence.
+- **The UTC fallback direction**, above.
+- **An administrator changing the site timezone** silently re-timed every live marker.
+
+Epoch seconds have no timezone to disagree about, so none of the three can move a live marker's
+lifetime. `plan_consent_marker`'s epoch output is now load-bearing rather than the dead value the
+review flagged, which also retires that finding.
+
+⚠️ **Dogfooding the migration immediately caught something the unit doubles could not:** a frappe
+`Float` column defaults to **0, not NULL**, so after `bench migrate` every pre-existing marker reads
+`expires_at_epoch = 0.0`. The fallback worked only because `0.0` is falsy — luck, not design. Zero is
+now treated as UNSET deliberately (a real expiry of 0 is 1970, already expired by any clock), with a
+test carrying the real post-migration value rather than the `None` the double had assumed. Exactly the
+"the double was more forgiving than reality" class the review had flagged elsewhere.
+
+Live on the migrated bench: column absent before, present after, pre-existing markers still readable,
+a fresh mint storing both fields, the gate confirmed reading the **epoch** one, 887s of life for a
+900s TTL minted 13s earlier, then `plan_submit` → submit → `ACC-SINV-2026-00089` docstatus 1, 2 GL
+rows, one marker burned.
+
+### And a third review round, on the FIXES — four of the replacement tests were themselves vacuous
+
+The fixes above were reviewed too, because "the review is not finished until the fix has been reviewed"
+is the rule that produced this section. Two lenses over the fix range. The epoch-storage fix held
+(a frappe `Float` cannot round-trip as `Decimal` on either backend, so the new guards cannot brick
+consent; no production caller passes a `now` they would reject). The tests did not:
+
+- 🔴 **The "guard the guard" test guarded nothing.** It reimplemented the AST walk inline instead of
+  calling `_decorator_names`, so stubbing the real detector to return `[]` — the precise failure its
+  own docstring named — left it and the security test both green. It now drives the real method over
+  four decorator shapes, and a stub turns it red.
+- 🔴 **The AST whitelist check missed an aliased import** (`from frappe import whitelist as wl`). Now
+  alias-aware, proven by running the detector over a mutated copy of the real module.
+- 🔴 **It is blind to RUNTIME registration and now says so.** `mint_consent_marker =
+  frappe.whitelist()(mint_consent_marker)` and `frappe.whitelisted.add(...)` both genuinely whitelist
+  the function while leaving no decorator to find. Static analysis cannot close that; the residual is
+  stated in the test rather than implied covered, and the reachability argument rests on
+  `is_whitelisted` being unconditional set membership, which was verified in frappe source.
+- 🔴 **`test_the_REAL_post_migration_value_is_zero_not_none` asserted only `assertIsNotNone`**, which
+  passes whether the zero-guard works or wrongly returns `0.0` — also not None. Now asserts the value.
+- 🔴 **`test_the_token_is_printed_exactly_once` could not see the defect it named.** The double-print
+  came from `bench execute` echoing the return value, and the test only counted in-process stdout, so
+  putting the token back in the return left it green. It now simulates bench's own
+  `if ret: print(json.dumps(ret, ...))`.
+
+Confirmed genuinely sound by mutation: the zone-independent clock test (red under both `TZ=UTC` and
+`TZ=America/Chicago`), both DST fixtures (verified against real `zoneinfo` to actually straddle the
+2026 transitions), the two non-finite guards (independent, each catching only its own tests), and
+that `plan_consent_marker`'s epoch output is now load-bearing — severing it turns three tests red.
+
+✅ **CLOSED, and it was reproduced before it was patched.** `after_insert` did not consult
+`_previewing_governed_act`, so a document created by the two-step insert-then-submit idiom inside a
+preview cascade was never stamped and its own `before_submit` refused, killing the preview. This was
+recorded here as owed rather than patched, because adding trust to `after_insert` on speculation is
+how 0.9.1 and 0.9.2 failed OPEN. It is now demonstrated against real frames instead of argued from
+the code, and fixed. See the paragraph in the preview section above for the mechanism, the four
+mutations, and the missing test the second mutation exposed.
+
+🔴 **STILL OWED** (recorded so it is not lost):
+
+- **A minted marker can still be DELETED**, at the same permission level that could previously edit
+  it. The `validate()` clamp below governs UPDATE only; there is no `on_trash`. System-Manager-gated,
+  so out of scope by `SECURITY.md`'s stated policy, and named because deletion removes the audit
+  trail that the clamp exists to protect. A marker that is spent and then deleted leaves a posting
+  with no record of what authorised it.
+- **No DocType-level `validate()` on TTL bounds or token strength**, and minting twice for the same
+  document is untested. Both are mint-time input questions, not spend-time decisions, so neither
+  affects whether an unconsented act is refused.
+### ✅ CLOSED — a minted marker is now immutable except for `burned`
+
+`PacioliConsentMarker.validate()` refuses any post-insert change to `ref_doctype`, `ref_docname`,
+`ref_action`, `token_hash`, `expires_at`, `expires_at_epoch` or `minted_by`. The decision is pure
+(`scope.immutable_marker_violations`) so it is testable bench-free; the controller is glue.
+
+`before_insert` fires only on create, so the floor-audit-F3 `minted_by` binding did not survive an
+UPDATE, and `expires_at_epoch` — introduced above as *the* authoritative expiry — had no guard at all.
+A bigger epoch makes a marker effectively immortal; a re-stamped `minted_by` lets a credential name
+any other principal as its minter and satisfy the separation check with a string it chose itself; a
+repointed `ref_docname` is forgery with fewer steps.
+
+⭐ **`burned` is deliberately outside the immutable set, and the spend was checked before writing
+this.** A marker is spent by a raw `UPDATE ... WHERE burned = 0` in `_claim_consent`, which skips the
+document lifecycle entirely, so `validate` never sees it — but relying on that alone would make the
+clamp one refactor away from stopping the gate it protects.
+
+Live on the bench, all three properties: minting still works; **an Administrator attempting to set
+`expires_at_epoch` to 9999999999 is REFUSED and the stored value is unchanged**; and the marker still
+burns on a real submit (`ACC-SINV-2026-00090` docstatus 1, 2 GL rows, `burned: 1`). Mutation-proven:
+dropping `expires_at_epoch` from the immutable tuple turns two tests red.
+
+Residual, stated: a `System Manager` can still DELETE a marker, and cancel/amend of the referenced
+document is governed elsewhere. This closes tampering, not deletion.
+
+- 🔴 ~~**The `Pacioli Consent Marker` DocType has no `validate()`/`on_update` clamp, so its
+  AUTHORITATIVE fields are mutable AFTER minting.**~~ ✅ **CLOSED, see above.** Sharpened from "no TTL/token-strength validation"
+  after a review named the concrete gap this branch's own self-review missed: `before_insert` fires
+  only on **create**, so the `minted_by` binding added in floor audit F3 does not survive an UPDATE
+  either — and `expires_at_epoch` got no protection at all despite being introduced here as
+  authoritative. `read_only` is a form property and walls off no API write (this package's own
+  controller docstring says so); no `permlevel` is declared on any field. Reaching it needs doctype
+  write permission, which is `System Manager` only, and the doctype is in `_UNGRANTABLE_DOCTYPES` so a
+  scoped api-key credential is hard-denied — but `is_permitted` returns True for a credential with no
+  grant row at all, and OAuth `Bearer` never reaches `check_scope`. **Pre-existing exposure, not
+  widened here** (the old naive `expires_at` carried no `read_only` and no controller guard either),
+  but the right fix is a `validate()` that refuses post-insert changes to `expires_at_epoch`,
+  `expires_at`, `token_hash` and `minted_by`. Deliberately not written at 04:30 on a branch already
+  under review. Minting twice for one document is also still untested.
+- `SECURITY.md` will need a 0.13.0 entry at release: the lifetime skew is the same class and the same
+  field as the 0.10.0→0.10.1 clock defect it already documents.
+
 ## 0.12.0 — 2026-07-29 — the gate can be requested and not loaded, and now it says so
 
 MINOR. `pacioli_guard.api.consent_status` gains two fields: **`gate_registered`** (are our

@@ -2953,6 +2953,25 @@ class TestPreview(unittest.TestCase):
         self.assertEqual(t.calls[0]["body"], {"company": "Example Corp",
                                               "doctype": "Journal Entry", "docname": "JE-1"})
 
+    def test_preview_carries_the_consent_marker_when_one_is_presented(self):
+        # guard 0.13.0: ERPNext's own preview POSTS and rolls back
+        # (`stock_controller.py`'s `frappe.db.rollback()`), so the floor gates
+        # `before_gl_preview` and a preview needs the same marker as the submit it previews. The
+        # header literal is asserted, not the constant, because the wire name is the contract the
+        # guard names independently — a rename must break this.
+        c, t = client([(200, {"message": {"gl_columns": [], "gl_data": []}})])
+        c.ledger_preview(company="Example Corp", doctype="Sales Invoice", docname="SI-1",
+                         consent="raw-marker-token")
+        self.assertEqual(t.calls[0]["headers"]["X-Pacioli-Consent"], "raw-marker-token")
+
+    def test_preview_sends_no_consent_header_when_no_marker_is_presented(self):
+        # The per-call discipline `_call` already documents: consent rides the call, never the
+        # session. A preview on a bench that does not enforce consent must look exactly as it did
+        # before, so an absent token sends no header at all rather than an empty one.
+        c, t = client([(200, {"message": {"gl_columns": [], "gl_data": []}})])
+        c.ledger_preview(company="Example Corp", doctype="Sales Invoice", docname="SI-1")
+        self.assertNotIn("X-Pacioli-Consent", t.calls[0]["headers"])
+
 
 class TestSubmit(unittest.TestCase):
     def test_submit_rides_the_scopeable_doc_method_surface(self):
