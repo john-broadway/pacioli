@@ -98,16 +98,29 @@ def cmd_mint(env, plan_id, target, ttl):
             else:
                 print(f"          - {node}")
     if plan.projected_gl:
-        debits = sum(_gl_side(row, "debit") for row in plan.projected_gl)
-        credits = sum(_gl_side(row, "credit") for row in plan.projected_gl)
-        print(f"        projected GL: {len(plan.projected_gl)} line(s), "
-              f"debits {debits:,.2f} / credits {credits:,.2f}")
-        # The house law, on the consent line: no debit without a credit. A balanced entry nets to
-        # zero, so printing the NET would have shown "0.00" for every healthy plan and told the
-        # human nothing. The magnitude is the size of the act; the imbalance is the alarm.
-        if round(debits - credits, 2) != 0:
-            print(f"  RISK: projected entry DOES NOT BALANCE "
-                  f"(off by {debits - credits:,.2f}) — no debit without a credit")
+        sides = [(_gl_side(row, "debit"), _gl_side(row, "credit")) for row in plan.projected_gl]
+        # One unreadable row makes the TOTAL wrong, and a wrong total understates the act. Say so
+        # rather than print a number that looks authoritative; partial sums are the silent failure
+        # this whole disclosure exists to avoid.
+        unreadable = any(debit is None or credit is None for debit, credit in sides)
+        if unreadable:
+            print(f"        projected GL: {len(plan.projected_gl)} line(s), totals unavailable: "
+                  f"the projected rows are not in a readable shape, so no balance check was made")
+        else:
+            debits = sum(debit for debit, _ in sides)
+            credits = sum(credit for _, credit in sides)
+            print(f"        projected GL: {len(plan.projected_gl)} line(s), "
+                  f"debits {debits:,.2f} / credits {credits:,.2f}")
+            # The house law, on the consent line: no debit without a credit. A balanced entry nets
+            # to zero, so printing the NET would have shown "0.00" for every healthy plan and told
+            # the human nothing. The magnitude is the size of the act; the imbalance is the alarm.
+            #
+            # This sits INSIDE the readable branch on purpose: an alarm that cannot distinguish
+            # "balanced" from "unread" is not an alarm. The unreadable branch above says outright
+            # that no balance check was made, rather than staying silent and reading as healthy.
+            if round(debits - credits, 2) != 0:
+                print(f"  RISK: projected entry DOES NOT BALANCE "
+                      f"(off by {debits - credits:,.2f}) — no debit without a credit")
     for flag in plan.risk_flags:
         print(f"  RISK: {flag}")
     print(f"ttl:    {ttl}s")
@@ -117,15 +130,42 @@ def cmd_mint(env, plan_id, target, ttl):
     return 0
 
 
+# `ledger_preview` returns {"gl_columns": [...], "gl_data": [...]}; the plan keeps only gl_data,
+# whose rows are LISTS, not dicts. Column order is fixed by PREVIEW_METHOD, the one RPC this broker
+# pins: Posting Date, Account, Debit (<ccy>), Credit (<ccy>), Against Account, Party Type, Party, ...
+# The two money columns carry a currency suffix in their names ("Debit (USD)"), which is why they
+# cannot be matched by an exact name and are addressed by position instead.
+#
+# Read off a live bench 2026-07-30. Before that this helper only understood dict rows, so from
+# 0.33.2 every real disclosure summed to 0.00 and the imbalance alarm below could never fire.
+_GL_DEBIT_IDX = 2
+_GL_CREDIT_IDX = 3
+
+
 def _gl_side(row, side):
-    """One GL row's debit or credit, for the mint disclosure. Never raises: this runs on the consent
-    path, and a malformed projection must not stop a human seeing the rest of the act."""
-    if not isinstance(row, dict):
+    """One GL row's debit or credit, or ``None`` when the row is not in a shape we can read.
+
+    Never raises: this runs on the consent path, and a malformed projection must not stop a human
+    seeing the rest of the act. Returns ``None`` rather than ``0.0`` for an unreadable row —
+    a silent zero is indistinguishable from a genuinely zero line, and summing silent zeros is what
+    made the imbalance check unreachable.
+    """
+    if isinstance(row, dict):
+        value = row.get(side)
+    elif isinstance(row, (list, tuple)):
+        index = _GL_DEBIT_IDX if side == "debit" else _GL_CREDIT_IDX
+        if len(row) <= index:
+            return None
+        value = row[index]
+    else:
+        return None
+    # ERPNext writes the unused side of a row as "" rather than 0.
+    if value is None or value == "":
         return 0.0
     try:
-        return float(row.get(side) or 0)
+        return float(value)
     except (TypeError, ValueError):
-        return 0.0
+        return None
 
 
 def cmd_verify(env, target, expected_head):

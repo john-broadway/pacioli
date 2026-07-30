@@ -108,6 +108,78 @@ class TestMintCli(unittest.TestCase):
         db_bytes = (Path(self.dir.name) / "prod.db").read_bytes()
         self.assertNotIn(token.encode(), db_bytes)  # only the hash is at rest
 
+    # ── the GL disclosure, against the row shape the bench actually sends ──────────────────
+    # `ledger_preview` returns {"gl_columns": [...], "gl_data": [...]} and the broker keeps only
+    # gl_data, whose rows are LISTS, not dicts. Observed live on the bench 2026-07-30, columns in
+    # this fixed order: Posting Date, Account, Debit (<ccy>), Credit (<ccy>), Against Account, ...
+    # The currency suffix is why the column cannot be matched by an exact "debit" name.
+    BENCH_GL = [
+        ["2026-07-25", "4110 - Sales - HBW", "", 1450.0, "Two Rivers Bike Co", "", "", "Main - HBW", "", ""],
+        ["2026-07-25", "1310 - Debtors - HBW", 1450.0, "", "4110 - Sales - HBW", "Customer",
+         "Two Rivers Bike Co", "", "Sales Invoice", "ACC-SINV-2026-00006"],
+    ]
+
+    def _plan_with_gl(self, rows, plan_id="pgl"):
+        store = open_store(self.env, "prod")
+        from pacioli.plan import new_plan
+        store.record_plan(new_plan(plan_id, "prod", "v1", "2026-07-01", docname="SI-1",
+                                   projected_gl=rows))
+        return plan_id
+
+    def test_mint_discloses_the_real_totals_for_bench_shaped_rows(self):
+        """A human approving a 1,450.00 posting must not be shown 0.00.
+
+        Fails if _gl_side only understands dict rows: the bench sends lists, so every real
+        disclosure summed to zero from 0.33.2 onward.
+        """
+        pid = self._plan_with_gl(self.BENCH_GL)
+        rc, out = self._mint(plan_id=pid)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("debits 1,450.00 / credits 1,450.00", out)
+
+    def test_mint_raises_the_house_alarm_when_bench_shaped_rows_do_not_balance(self):
+        """No debit without a credit. The alarm must be able to FIRE on real rows.
+
+        Fails if the totals are always 0.0, because 0.0 - 0.0 == 0 makes the imbalance branch
+        unreachable for every plan the bench ever produces.
+        """
+        skewed = [list(r) for r in self.BENCH_GL]
+        skewed[1][2] = 1000.0  # debit 1000 against credit 1450
+        pid = self._plan_with_gl(skewed, plan_id="pskew")
+        rc, out = self._mint(plan_id=pid)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("DOES NOT BALANCE", out)
+        # The SIGN is load-bearing: debits 1000 against credits 1450 is "off by -450.00".
+        # Asserting a bare "450.00" would pass just as happily with the debit and credit
+        # columns swapped, which is the most likely way to get this helper wrong.
+        self.assertIn("off by -450.00", out)
+
+    def test_mint_states_totals_unavailable_rather_than_claiming_zero(self):
+        """An unrecognised row shape must not be rendered as a balanced 0.00 entry.
+
+        A silent 0.00 is indistinguishable from a genuinely empty projection AND suppresses the
+        imbalance alarm, so the disclosure has to say it could not read the rows.
+        """
+        pid = self._plan_with_gl([["only", "two"], ["also", "short"]], plan_id="pjunk")
+        rc, out = self._mint(plan_id=pid)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("totals unavailable", out)
+        self.assertNotIn("debits 0.00 / credits 0.00", out)
+
+    def test_mint_states_totals_unavailable_when_a_money_column_is_not_a_number(self):
+        """A full-length row whose debit column holds junk is unreadable, not zero.
+
+        Distinct from the short-row case: this one reaches float() and raises, so it exercises the
+        exception path rather than the length guard. Mutation testing found that path untested.
+        """
+        junk = [list(r) for r in self.BENCH_GL]
+        junk[0][2] = "n/a"  # a debit column that is present, full length, and not a number
+        pid = self._plan_with_gl(junk, plan_id="pnan")
+        rc, out = self._mint(plan_id=pid)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("totals unavailable", out)
+        self.assertNotIn("DOES NOT BALANCE", out)
+
     def test_mint_refuses_an_unknown_plan(self):
         # Seed genesis via a keyed open first (same precondition every real target has by the
         # time a human ever mints — the agent's plan_submit call already dispatched keyed): a

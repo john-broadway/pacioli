@@ -6,6 +6,46 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.34.1 — 2026-07-30 — the consent disclosure was reporting 0.00, and the balance alarm could not fire
+
+PATCH. Bug fix only, no interface change. `cmd_mint`'s projected-GL summary showed
+`debits 0.00 / credits 0.00` for every real plan, and the "no debit without a credit" check that sits
+beside it was unreachable. Found by the party-baselines live prove against a real bench, not by the
+suite.
+
+**What was broken.** `_gl_side` read a GL row with `row.get(side)` behind an `isinstance(row, dict)`
+guard, returning `0.0` for anything else. But `ledger_preview` returns
+`{"gl_columns": [...], "gl_data": [...]}`, the plan keeps only `gl_data`, and its rows are **lists**.
+So every row scored 0.0 on both sides. Two consequences, the second worse than the first:
+
+1. A human approving a 7,200.00 posting was shown `debits 0.00 / credits 0.00` at the exact moment
+   they were deciding.
+2. The imbalance check computed `round(0.0 - 0.0, 2) != 0`, so `RISK: projected entry DOES NOT
+   BALANCE` could never fire on any plan a real bench produced. The house law had a dead alarm.
+
+Not a bypass: consent was still required, markers were still document- and act-bound, and the floor
+still enforced. This was a disclosure-integrity defect, which for a governance product is close
+enough to the middle to warrant its own release.
+
+**The fix.** `_gl_side` reads list rows by position, pinned to `PREVIEW_METHOD`'s own column contract
+(`Posting Date, Account, Debit (<ccy>), Credit (<ccy>), ...` — the money columns carry a currency
+suffix in their names, which is why they cannot be matched by name). Dict rows keep working
+unchanged.
+
+**And it now refuses to guess.** An unreadable row returns `None` rather than `0.0`, and the
+disclosure prints `totals unavailable: the projected rows are not in a readable shape, so no balance
+check was made`. A silent zero is indistinguishable from a genuinely zero line and is what made the
+alarm unreachable; the balance check now lives inside the readable branch, because an alarm that
+cannot tell "balanced" from "unread" is not an alarm.
+
+**Verification.** Four tests added, all four mutation-proven (drop list support, swap the debit and
+credit indices, return `0.0` instead of `None` on a short row, and the same on a non-numeric column).
+The swap mutant initially survived because the balanced fixture is symmetric and the skewed one
+asserted a bare `"450.00"`; the assertion now pins the sign. The non-numeric mutant also initially
+survived, because the first unreadable-row test used a SHORT row and never reached `float()` — a
+fourth test now covers that path. Re-proven live on the bench: the same `ACC-SINV-2026-00091` that
+rendered `0.00 / 0.00` now renders `debits 7,200.00 / credits 7,200.00`.
+
 ## 0.34.0 — 2026-07-29 — the broker can present consent at PLAN, because the preview is a write
 
 MINOR. `plan_submit` accepts an optional `consent_token` and forwards it to ERPNext's ledger preview;
