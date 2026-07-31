@@ -111,6 +111,33 @@ class TestCheckRegistry(unittest.TestCase):
         self.assertIn(WARN, [level for level, _ in findings])
 
 
+def test_check_party_history_reports_off_so_a_quiet_plan_is_attributable():
+    """A plan carrying no context must be attributable to the feature being OFF rather than to
+    there being nothing to say. Silence with two possible causes is the ambiguity the honesty
+    rails exist to remove."""
+    from pacioli.doctor import OK, check_party_history
+    findings = check_party_history(env={})
+    assert findings
+    level, message = findings[0]
+    assert level == OK
+    assert "off" in message.lower()
+    assert "PACIOLI_PARTY_HISTORY" in message
+
+
+def test_check_party_history_reports_on_when_the_flag_is_set():
+    """Fix round 1: the original assertion (`"on" in message.lower()`) was VACUOUS — the OFF
+    message ends '...plans carry no party context', and 'context' itself contains the substring
+    'on', so it passed for BOTH branches (both return level OK too). Delete the entire ON branch
+    of check_party_history and this test still passed. Asserts a substring the ON message alone
+    can carry, and that the two branches are not the same message."""
+    from pacioli.doctor import OK, check_party_history
+    off_level, off_message = check_party_history(env={})[0]
+    on_level, on_message = check_party_history(env={"PACIOLI_PARTY_HISTORY": "1"})[0]
+    assert on_level == OK
+    assert "ON (PACIOLI_PARTY_HISTORY=1)" in on_message
+    assert on_message != off_message
+
+
 class TestCheckCredentials(unittest.TestCase):
     def setUp(self):
         self.target = load_registry(toml_text=REG).get(None)

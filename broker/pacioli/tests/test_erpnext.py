@@ -73,13 +73,13 @@ class TestSupportedDoctypesConfig(unittest.TestCase):
     def test_all_configured_doctypes_have_their_party_field(self):
         self.assertEqual(SUPPORTED_DOCTYPES[SALES_INVOICE],
                          {"party_field": "customer", "submit_via": "run_method",
-                          "date_field": "posting_date"})
+                          "date_field": "posting_date", "amount_field": "base_grand_total"})
         self.assertEqual(SUPPORTED_DOCTYPES[PURCHASE_INVOICE],
                          {"party_field": "supplier", "submit_via": "run_method",
-                          "date_field": "posting_date"})
+                          "date_field": "posting_date", "amount_field": "base_grand_total"})
         self.assertEqual(SUPPORTED_DOCTYPES[PAYMENT_ENTRY],
                          {"party_field": "party", "submit_via": "run_method",
-                          "date_field": "posting_date"})
+                          "date_field": "posting_date", "amount_field": "base_paid_amount"})
 
     def test_journal_entry_has_no_party_field(self):
         # Journal Entry carries no header-level party at all (only per-line party in its
@@ -209,35 +209,54 @@ class TestSupportedDoctypesConfig(unittest.TestCase):
 
     def test_pos_invoice_is_sales_invoice_shape_exactly(self):
         # POS Invoice breadth (2026-07-21, campaign Wave 2, third row) — the thirteenth supported
-        # doctype, and byte-for-byte IDENTICAL to Sales Invoice's own entry (party_field="customer"
-        # — pos_invoice.json line 217; date_field stays the default "posting_date" — a real field,
-        # line 293, reqd, default "Today"; submit_via="run_method" — confirmed by reading all 1119
-        # lines of pos_invoice.py, no submit()/cancel() override). The SHAPE is a repeat of
-        # Delivery Note's/Purchase Receipt's own "identical to the sibling invoice doctype" finding
-        # — the CONTENT is not: POS Invoice's own submit posts NEITHER a GL Entry NOR a Stock
-        # Ledger Entry at all (POSInvoice.on_submit fully overrides SalesInvoice.on_submit without
-        # calling it — a correction to the pinned dossier, see erpnext.py's module docstring for
-        # the full source-cited finding). That divergence lives entirely in tools.py's risk-flag
-        # layer, never in this config dict.
-        self.assertEqual(SUPPORTED_DOCTYPES[POS_INVOICE], SUPPORTED_DOCTYPES[SALES_INVOICE])
+        # doctype, and byte-for-byte IDENTICAL to Sales Invoice's own entry AT THE TIME
+        # (party_field="customer" — pos_invoice.json line 217; date_field stays the default
+        # "posting_date" — a real field, line 293, reqd, default "Today"; submit_via="run_method"
+        # — confirmed by reading all 1119 lines of pos_invoice.py, no submit()/cancel() override).
+        # The SHAPE is a repeat of Delivery Note's/Purchase Receipt's own "identical to the sibling
+        # invoice doctype" finding — the CONTENT is not: POS Invoice's own submit posts NEITHER a
+        # GL Entry NOR a Stock Ledger Entry at all (POSInvoice.on_submit fully overrides
+        # SalesInvoice.on_submit without calling it — a correction to the pinned dossier, see
+        # erpnext.py's module docstring for the full source-cited finding). That divergence lives
+        # entirely in tools.py's risk-flag layer, never in this config dict.
+        #
+        # **Party-baselines breadth (Sales Invoice gains ``amount_field``, base_grand_total) is
+        # the ONE sanctioned divergence from the identity below** — POS Invoice is deliberately
+        # NOT in that feature's scope yet, so ``amount_field`` is popped before comparing. Every
+        # OTHER key must still match, or the "same shape" this test is named for has quietly
+        # stopped being true — a bare literal alone would not catch Sales Invoice drifting away
+        # from POS Invoice on some future, unrelated key, so both checks stay: the identity-minus-
+        # key form below guards the relationship this test is named for, and the literal guards
+        # POS Invoice's own shape against silent drift.
+        expected = dict(SUPPORTED_DOCTYPES[SALES_INVOICE])
+        expected.pop("amount_field")
+        self.assertEqual(SUPPORTED_DOCTYPES[POS_INVOICE], expected)
         self.assertEqual(SUPPORTED_DOCTYPES[POS_INVOICE],
                          {"party_field": "customer", "submit_via": "run_method",
                           "date_field": "posting_date"})
 
     def test_dunning_is_sales_invoice_shape_exactly(self):
         # Dunning breadth (2026-07-21, campaign Wave 2, fourth row) — the fourteenth supported
-        # doctype, and byte-for-byte IDENTICAL to Sales Invoice's own entry on THIS config dict
-        # (party_field="customer" — dunning.json lines 219-225, reqd: 1, the dossier's citation is
-        # CORRECT here; date_field stays the default "posting_date" — a real field, lines 92-98,
-        # reqd, default "Today"; submit_via="run_method" — confirmed by reading all 276 lines of
-        # dunning.py, no submit()/cancel()/on_submit() override at all). The config-dict SHAPE
-        # match is a repeat of POS Invoice's own finding — the CONTENT is a genuinely different
-        # divergence: Dunning has no make_gl_entries method anywhere in its MRO (it inherits
-        # AccountsController, never StockController), so the native ledger_preview RPC is not just
-        # non-posting but UNCALLABLE — see erpnext.py's module docstring for the full source-cited
-        # finding. That divergence lives entirely in tools.py's plan_submit branch + risk-flag
-        # layer, never in this config dict.
-        self.assertEqual(SUPPORTED_DOCTYPES[DUNNING], SUPPORTED_DOCTYPES[SALES_INVOICE])
+        # doctype, and byte-for-byte IDENTICAL to Sales Invoice's own entry on THIS config dict AT
+        # THE TIME (party_field="customer" — dunning.json lines 219-225, reqd: 1, the dossier's
+        # citation is CORRECT here; date_field stays the default "posting_date" — a real field,
+        # lines 92-98, reqd, default "Today"; submit_via="run_method" — confirmed by reading all
+        # 276 lines of dunning.py, no submit()/cancel()/on_submit() override at all). The
+        # config-dict SHAPE match is a repeat of POS Invoice's own finding — the CONTENT is a
+        # genuinely different divergence: Dunning has no make_gl_entries method anywhere in its
+        # MRO (it inherits AccountsController, never StockController), so the native
+        # ledger_preview RPC is not just non-posting but UNCALLABLE — see erpnext.py's module
+        # docstring for the full source-cited finding. That divergence lives entirely in
+        # tools.py's plan_submit branch + risk-flag layer, never in this config dict.
+        #
+        # **Party-baselines breadth (Sales Invoice gains ``amount_field``, base_grand_total) is
+        # the ONE sanctioned divergence from the identity below** — same correction as POS
+        # Invoice's own test above, and for the same reason: Dunning is deliberately NOT in that
+        # feature's scope yet, so ``amount_field`` is popped before comparing. Both checks stay,
+        # for the same reason POS Invoice's test keeps both.
+        expected = dict(SUPPORTED_DOCTYPES[SALES_INVOICE])
+        expected.pop("amount_field")
+        self.assertEqual(SUPPORTED_DOCTYPES[DUNNING], expected)
         self.assertEqual(SUPPORTED_DOCTYPES[DUNNING],
                          {"party_field": "customer", "submit_via": "run_method",
                           "date_field": "posting_date"})
@@ -1604,6 +1623,27 @@ class TestSupportedDoctypesConfig(unittest.TestCase):
         self.assertIn("party_field", cfg)
         self.assertIsNone(cfg["party_field"])
 
+    def test_amount_field_is_configured_per_doctype_not_assumed(self):
+        """Payment Entry has NO base_grand_total. Verified against erpnext v16 source:
+        payment_entry.json carries paid_amount/base_paid_amount and neither grand_total nor
+        base_grand_total. Asking the bench for a column that does not exist is the unknown-column
+        failure class _list_fields already warns about. Sales Invoice DOES carry base_grand_total
+        (sales_invoice.json, v16 source) — added so party-history has a doctype with real
+        submitted volume to check against; a live-bench probe found zero submitted Purchase
+        Invoices/Payment Entries and 37 submitted Sales Invoices."""
+        self.assertEqual(SUPPORTED_DOCTYPES["Sales Invoice"]["amount_field"], "base_grand_total")
+        self.assertEqual(SUPPORTED_DOCTYPES["Purchase Invoice"]["amount_field"], "base_grand_total")
+        self.assertEqual(SUPPORTED_DOCTYPES["Payment Entry"]["amount_field"], "base_paid_amount")
+
+    def test_no_doctype_claims_base_grand_total_unless_it_has_one(self):
+        """Guard the guard: if someone adds amount_field to more doctypes, this catches a copy-paste
+        of base_grand_total onto a doctype that does not have it."""
+        known_without_base_grand_total = {"Payment Entry", "Journal Entry"}
+        for name, cfg in SUPPORTED_DOCTYPES.items():
+            if cfg.get("amount_field") == "base_grand_total":
+                self.assertNotIn(name, known_without_base_grand_total,
+                                 f"{name} has no base_grand_total field in erpnext v16")
+
 
 class TestAuthAndShape(unittest.TestCase):
     def test_token_auth_header_on_every_call(self):
@@ -2924,6 +2964,64 @@ class TestList(unittest.TestCase):
         self.assertNotIn("grand_total", fields)  # confirmed absent under that literal name
         self.assertNotIn(None, fields)
         self.assertIn("/api/resource/Subcontracting%20Receipt", t.calls[0]["url"])
+
+
+class TestPartyAmountHistory(unittest.TestCase):
+    def test_party_amount_history_filters_to_submitted_only(self):
+        """THE LOAD-BEARING TEST. SECURITY.md: draft saves are NOT gated. If this query counted
+        drafts, an ungated write could manufacture a fake history and SUPPRESS the flag this feature
+        exists to raise. One clause closes it; this test is the guard on that clause."""
+        captured = {}
+
+        class FakeClient(ErpnextClient):
+            def _call(self, method, path, params=None, body=None, consent=None):
+                captured["params"] = params
+                return {"data": []}
+
+        client = FakeClient.__new__(FakeClient)
+        client.party_amount_history(
+            doctype="Purchase Invoice", company="C", party_field="supplier", party="ACME",
+            amount_field="base_grand_total", date_field="posting_date", limit=100)
+
+        filters = json.loads(captured["params"]["filters"])
+        assert ["docstatus", "=", 1] in filters, filters
+
+    def test_party_amount_history_asks_for_the_base_amount_and_orders_newest_first(self):
+        captured = {}
+
+        class FakeClient(ErpnextClient):
+            def _call(self, method, path, params=None, body=None, consent=None):
+                captured["params"] = params
+                return {"data": []}
+
+        client = FakeClient.__new__(FakeClient)
+        client.party_amount_history(
+            doctype="Payment Entry", company="C", party_field="party", party="ACME",
+            amount_field="base_paid_amount", date_field="posting_date", limit=100)
+
+        fields = json.loads(captured["params"]["fields"])
+        assert "base_paid_amount" in fields
+        assert captured["params"]["order_by"] == "posting_date desc"
+        assert captured["params"]["limit_page_length"] == "100"
+
+    def test_party_amount_history_clamps_a_zero_limit_instead_of_going_unlimited(self):
+        """This client has its own F-V1 law elsewhere: ``limit_page_length: "0"`` means UNLIMITED
+        (see get_settling_references/get_gl_entries/get_period_locks). That law is deliberate THERE
+        (exhaustive gate-feeding reads). It must NOT apply here: this is a bounded disclosure read,
+        and limit=0 must not silently fetch a party's entire submitted history."""
+        captured = {}
+
+        class FakeClient(ErpnextClient):
+            def _call(self, method, path, params=None, body=None, consent=None):
+                captured["params"] = params
+                return {"data": []}
+
+        client = FakeClient.__new__(FakeClient)
+        client.party_amount_history(
+            doctype="Purchase Invoice", company="C", party_field="supplier", party="ACME",
+            amount_field="base_grand_total", date_field="posting_date", limit=0)
+
+        assert captured["params"]["limit_page_length"] != "0", captured["params"]
 
 
 class TestPreview(unittest.TestCase):

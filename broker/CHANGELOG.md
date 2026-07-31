@@ -6,6 +6,104 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.35.0 — 2026-07-31 — party-history disclosure at PLAN
+
+MINOR, not a patch: this adds a new `Plan.context` field, a new opt-in environment variable, an
+additive schema migration and two new modules. Backwards compatible in every direction — with
+`PACIOLI_PARTY_HISTORY` unset the behaviour is byte-identical to 0.34.2, an existing state db
+upgrades in place, and old rows read back as an empty context list.
+
+It also carries three disclosure repairs and one render fix found by reviewing the 0.34.1/0.34.2
+work, described below.
+
+### The feature (design: `docs/plans/internal/2026-07-30-party-baselines-design.md`)
+
+`plan_submit` can now add a `context` line (and at most one risk flag) to the recorded plan,
+showing how the document's amount compares to that counterparty's own prior submitted history in
+these books. Off by default, opt-in via a new environment variable, `PACIOLI_PARTY_HISTORY=1`. With
+the variable unset, behaviour is unchanged: no read, no context, no flag.
+
+Adds a new `Plan.context` field, persisted alongside the plan's other recorded fields. The `plans`
+table gains a matching `context` column via an additive migration (`store.py`,
+`_migrate_plans_context`): `ALTER TABLE plans ADD COLUMN context TEXT NOT NULL DEFAULT '[]'`, so an
+existing state db upgrades in place and old rows read back as an empty context list rather than
+NULL or a missing column.
+
+Advisory only. It reads data the governed credential can already read (this party's own prior
+submitted documents), adds nothing but the `context` field and at most one risk flag, and cannot
+permit, refuse, or alter a write. It gates nothing; a plan is produced identically with the feature
+on or off except for this addition.
+
+### Three disclosure holes an adversarial pass found in 0.34.2's own work
+
+All three are in the code 0.34.1/0.34.2 hardened, and all three are the same shape the hardening
+was aimed at — a confident-looking number, or nothing at all, where the honest answer is "we could
+not read this".
+
+**A dict row missing the side being read scored 0.00 and counted as READABLE.** The list branch
+pins its shape exactly; the dict branch pinned nothing, on the reasoning that dict rows only ever
+arrive from `get_gl_entries`, which validates at its own seam. That seam guards the CANCEL
+direction only — `plan_submit` reaches the same helper through `preview.get("gl_data")` with no
+validation at all. A renamed or misspelled amount column would have summed a genuine one-sided
+7,200.00 posting to `debits 0.00 / credits 0.00` with no alarm, and could equally have raised DOES
+NOT BALANCE on an entry that balances. A dict that does not carry the side is now unreadable, not
+zero. Latent rather than live: stock erpnext-16 sends lists on the submit path, so no bench is
+believed to have hit it.
+
+**An empty or absent `gl_data` printed NOTHING about GL at all.** `plan_submit` maps a missing key,
+a null, an empty object and an empty body all to `[]`, and the render had no `else`, so "this
+document posts no GL" and "we could not read the projection" were indistinguishable at the consent
+moment. 0.34.2 hardened the degradation inside that block while the block itself could be skipped
+whole. The line now always renders, and deliberately does not claim the document posts nothing:
+
+```
+projected GL: none provided (not a claim that this document posts none)
+```
+
+**A non-list `gl_data` fabricated a row count.** `list(value or [])` explodes a STRING into one row
+per character, and the consent line printed that length as fact — a permission error echoed back as
+`"Insufficient Permission for GL Entry"` rendered as `projected GL: 36 line(s)`, 36 being the
+length of an error message. A body that is not a list of rows is now ONE unreadable row, reported
+as `1 line(s), totals unavailable` plus its RISK line.
+
+### A reconcile mint printed `- ? ?` for every allocation
+
+Pre-existing, and found by a reviewer reading the reasoning rather than the code. The cascade block
+names every node so a human can check the list rather than skim a count — but a RECONCILE graph is
+not documents. Its nodes are allocation PAIRS carrying `payment_type`/`payment_no` and
+`invoice_type`/`invoice_no`, with no `doctype` and no `docname`, so every one rendered as `- ? ?`:
+an uncheckable list, labelled "documents", with the real names sitting on the plan unprinted. A
+reconcile now reads:
+
+```
+...and ALLOCATES across 1 pair(s):
+  - Payment Entry PAY-1 -> Sales Invoice INV-1  (1,450.00)
+```
+
+An allocated amount that cannot be read is stated rather than dropped.
+
+### On the disclosure scope, stated because it is a behaviour change
+
+The "none provided" line renders for every op EXCEPT `cancel` and `cascade_cancel`. Those two build
+their projection from `get_gl_entries`, which validates every row and returns empty only when the
+ledger genuinely has none — a positive finding they each already flag — so hedging over the top of
+it would put two adjacent lines in one disclosure making opposite claims about the same fact.
+Everything else hedges, including an op this render has never seen: on a never-silent rail the
+fail-safe direction is to say something.
+
+### How this was reviewed
+
+Four independent adversarial passes, each of which broke the one before it. They found, in order:
+the dict-row silent zero and the container-level silence; five surviving mutants against the first
+repair; nine against the second, plus a regression it had shipped; and the same test-fixture defect
+once more in the third, plus a reported mutation kill that had never actually been run. Every
+finding is fixed and pinned by a mutant that turns a named test red. Three prose claims in
+SECURITY.md and this file were found to be FALSE and are corrected in place with the correction
+attached rather than rewritten away.
+
+Not claimed: that the class is closed. The code fixes survived independent attack every round; what
+kept failing was the test fixtures and the claims made about them.
+
 ## 0.34.2 — 2026-07-30 — one unreadable row no longer blanks the whole disclosure
 
 PATCH. Bug fix only, no interface change. Closes a regression 0.34.1 introduced and three gaps an
@@ -16,6 +114,13 @@ suite, which was green throughout.
 check for the entire entry. That threw away information the human needs: an imbalance 0.34.0 had
 caught went silent, and a cascade concatenates every node's rows, so one bad row in a 25-node graph
 blanked all 25. The disclosure now degrades PER ROW:
+
+> **Correction (2026-07-31).** Both scenarios in the paragraph above were demonstrated with
+> hand-built rows and are NOT reachable on a stock bench. 0.34.0 could only score dict rows, and
+> the cancel path that carries dicts validates every amount at the `get_gl_entries` seam, so a
+> cascade row cannot be unreadable. The regression is real against 0.34.1's own intent and the fix
+> stands on that; the evidence quoted for it was overstated. Left in place with the correction
+> attached rather than rewritten, so the record shows what was claimed and what was measured.
 
 ```
 projected GL: 3 line(s), debits 1,000.00 / credits 1,450.00 (readable rows only; 1 of 3 could not be read)

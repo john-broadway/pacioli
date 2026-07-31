@@ -302,3 +302,23 @@ class TestCheckDoctype(unittest.TestCase):
         from pacioli.plan import new_plan
         p = new_plan(plan_id="p", target="t", doc_version="v", posting_date="2026-07-01")
         self.assertEqual(p.doctype, "Sales Invoice")
+
+
+class TestPlanContext(unittest.TestCase):
+    """``context`` (party baselines, 2026-07-30): always-present factual statements about a
+    document's party history, deliberately separate from ``risk_flags`` (things that fired)."""
+
+    def test_plan_carries_context_separately_from_risk_flags(self):
+        """A statement that is always present must not live in a list named 'risk flags', or every
+        plan reads as risky and the human learns to skim the one list that matters."""
+        from pacioli.plan import new_plan
+        p = new_plan("p1", "Purchase Invoice ACC-PINV-1", "v1", "2026-01-01",
+                     context=["14 prior submitted document(s) for ACME."],
+                     risk_flags=[])
+        self.assertEqual(p.context, ["14 prior submitted document(s) for ACME."])
+        self.assertEqual(p.risk_flags, [])
+
+    def test_plan_context_defaults_empty_so_existing_constructions_are_unaffected(self):
+        from pacioli.plan import new_plan
+        p = new_plan("p1", "t", "v1", "2026-01-01")
+        self.assertEqual(p.context, [])

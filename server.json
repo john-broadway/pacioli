@@ -7,12 +7,12 @@
     "url": "https://github.com/john-broadway/pacioli",
     "source": "github"
   },
-  "version": "0.34.2",
+  "version": "0.35.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "pacioli",
-      "version": "0.34.2",
+      "version": "0.35.0",
       "runtimeHint": "uvx",
       "runtimeArguments": [
         { "type": "named", "name": "--from", "value": "pacioli[server]" }

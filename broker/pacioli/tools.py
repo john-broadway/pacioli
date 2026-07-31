@@ -1926,6 +1926,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from pacioli import consent  # noqa: F401 — re-exported for the CLI's mint path
+from pacioli import history
 from pacioli import workflow
 from pacioli.amend import seat_conflict
 from pacioli.cascade import build_cascade, run_cascade
@@ -2798,6 +2799,77 @@ def _payment_entry_risk_flags(doc):
                 "ERPNext only warns (frappe.msgprint, HTTP 200) and does not refuse this over "
                 "REST")
     return flags
+
+
+def _bare_baseline_flag(flag, party):
+    """Strip a party-baseline flag (built by :func:`pacioli.baseline.assess`) down to its KIND and
+    the PARTY before it reaches ``risk_flags`` — fix round 1, 2026-07-30. Unlike ``context``,
+    ``risk_flags`` is echoed straight back to the calling agent in ``plan_submit``'s own JSON
+    response, so the FULL parameterised text (the multiple, the prior max, the K threshold, n) is a
+    closed-form recipe for exactly what magnitude stays quiet.
+
+    **Do not overstate what this buys.** It is hygiene, not a boundary, and a second lens measured
+    the difference on 2026-07-30. `list_documents` accepts arbitrary Frappe filter triples with no
+    consent gate (reads are ungated by design), and `_list_fields` includes the amount, so ONE call
+    like `list_sales_invoices(filters=[["customer","=",X],["docstatus","=",1]], limit=200)` hands
+    an agent every prior amount for that party. `K_DEFAULT` is a public constant, deliberately
+    legible (see :mod:`pacioli.baseline`). Run live against the bench, that call reconstructed the
+    barred text exactly: prior max 2,400.00, n=26, threshold 4,800.00. Barring the flag withholds
+    nothing an adversarial agent cannot compute in one request.
+
+    So this bar is defence in depth against a CARELESS caller, and the disclosure it protects is
+    advisory against a deliberate one. That is a property of ungated reads, not a defect here, but
+    it must not be written up as though the split were a control.
+
+    **This docstring used to say "the human loses nothing: the full text is still in ``context``,
+    unchanged" and that was FALSE when written.** The multiple, the prior max and K existed ONLY in
+    the flag, so barring it deleted them: the human at ``pacioli mint`` was told an amount was out
+    of band and never told by how much, against what, or which rule fired. Corrected 2026-07-30 by
+    having :func:`pacioli.baseline.assess` state the same parameters on the ``context`` side when
+    the band fires. The two texts are deliberately NOT the same string (the context line drops the
+    party name, which its neighbouring lines already carry), so do not restate this as "unchanged".
+    ``test_every_number_barred_from_the_flag_still_appears_in_the_context`` now asserts both halves
+    together, because a claim about what the human keeps is exactly as checkable as a version
+    number.
+
+    Classifies by the flag's own leading label — :func:`pacioli.baseline.assess`'s own docstring
+    states "exactly two flag kinds exist" today (``NOVEL COUNTERPARTY``, ``AMOUNT OUTSIDE RANGE``),
+    so both are named explicitly. The fallback (a label-only strip) is defensive, not expected to
+    fire: it means a third kind was added in ``baseline.py`` without a matching case being added
+    here, and it still refuses to leak the full text unbarred rather than crash.
+    """
+    if flag.startswith("AMOUNT OUTSIDE RANGE"):
+        return f"AMOUNT OUTSIDE RANGE for {party}; see the plan context."
+    if flag.startswith("NOVEL COUNTERPARTY"):
+        return f"NOVEL COUNTERPARTY: {party}; see the plan context."
+    kind = flag.split(":", 1)[0].split(" (", 1)[0]
+    return f"{kind}; see the plan context."
+
+
+def _party_baseline_disclosure(client, doctype, company, doc):
+    """PLAN-time party-history disclosure (party baselines, 2026-07-30). Returns
+    ``(context_lines, flags)``.
+
+    Joins the risk-flag family but returns TWO lists, because this is the one member that also
+    produces an unconditional statement. Inert unless ``PACIOLI_PARTY_HISTORY=1``, and inert for
+    any doctype without an ``amount_field`` in :data:`pacioli.erpnext.SUPPORTED_DOCTYPES`.
+
+    ADVISORY ONLY, and it must never break the plan: :func:`pacioli.history.party_context` catches
+    every exception and converts it to a stated line.
+
+    The two lists deliberately carry DIFFERENT levels of detail (fix round 1): ``context`` is
+    ``party_context``'s own full text, unchanged — human-only, via ``pacioli mint``. ``flags`` is
+    barred down to kind+party by :func:`_bare_baseline_flag` before returning, because ``risk_flags``
+    is the one list ``plan_submit`` echoes back to the calling agent. The party name is read off the
+    same :data:`pacioli.erpnext.SUPPORTED_DOCTYPES` config ``party_context`` itself resolves from
+    (one shared source, not a second guess at it) — never parsed out of the flag text.
+    """
+    if not history.enabled():
+        return [], []
+    out = history.party_context(client, doctype, company, doc)
+    party_field = (SUPPORTED_DOCTYPES.get(doctype) or {}).get("party_field")
+    party = (doc or {}).get(party_field) if party_field else None
+    return out["context"], [_bare_baseline_flag(flag, party) for flag in out["flags"]]
 
 
 def _payment_entry_cancel_references(doc):
@@ -8290,6 +8362,11 @@ class PacioliBroker:
             preview = client.ledger_preview(company=company, doctype=doctype, docname=name,
                                             consent=consent_token)
         risk_flags = []
+        # Party baselines: state how this amount compares to this party's own history in these
+        # books, so a human judges CONTENT before minting a marker. Off unless
+        # PACIOLI_PARTY_HISTORY=1; inert for doctypes with no configured amount_field.
+        plan_context, baseline_flags = _party_baseline_disclosure(client, doctype, company, doc)
+        risk_flags.extend(baseline_flags)
         posting_date = _posting_date_of(doc, doctype)
         # The sentinel guard is load-bearing, not defensive: NO_DATE_FIELD compares
         # lexicographically GREATER than every ISO date (see its plan.py comment), so without the
@@ -8678,6 +8755,7 @@ class PacioliBroker:
             docname=name,
             op="submit",
             doctype=doctype,
+            context=plan_context,
         )
         store.record_plan(plan)
         return {"ok": True, "plan_id": plan.plan_id, "docname": name, "target": target.name,

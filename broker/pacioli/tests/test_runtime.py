@@ -298,12 +298,100 @@ class TestMintDisclosesTheActNotJustThePlanId(unittest.TestCase):
         # A count is a thing a human skims; a list is a thing they check.
         self.assertIn("PE-9", out)
         self.assertIn("DN-9", out)
+        # The count was unpinned: dropping the header line entirely, and hardcoding "1" over a
+        # two-node graph, both survived the whole suite. A fabricated count on a consent line is
+        # the same class as a fabricated total.
+        self.assertIn("CASCADES to 2 more document(s)", out)
+
+    def test_a_reconcile_names_its_allocation_PAIRS_not_question_marks(self):
+        """A reconcile graph node is an allocation pair, not a document.
+
+        Its nodes carry payment_type/payment_no and invoice_type/invoice_no and have no `doctype`
+        and no `docname`, so the generic render printed every one as `- ? ?` — an uncheckable
+        list, labelled "documents", with the real names sitting on the plan unprinted. The block's
+        own comment says a list is a thing a human checks; for reconcile there was nothing to
+        check.
+        """
+        self._record("p1", docname="REC-1", op="reconcile", doctype="Payment Reconciliation",
+                     graph=[{"payment_type": "Payment Entry", "payment_no": "PAY-1",
+                             "invoice_type": "Sales Invoice", "invoice_no": "INV-1",
+                             "allocated_amount": 1450.0}])
+        _, out = self._mint("p1")
+        self.assertNotIn("?", out)
+        self.assertIn("Payment Entry PAY-1", out)
+        self.assertIn("Sales Invoice INV-1", out)
+        self.assertIn("1,450.00", out)
+        # And it must not call an allocation pair a document.
+        self.assertIn("ALLOCATES across 1 pair(s)", out)
+
+    def test_an_unreadable_allocated_amount_says_so_rather_than_vanishing(self):
+        """The same never-silent rail as the GL totals: a money value we cannot read is stated."""
+        self._record("p1", docname="REC-1", op="reconcile", doctype="Payment Reconciliation",
+                     graph=[{"payment_type": "Payment Entry", "payment_no": "PAY-1",
+                             "invoice_type": "Sales Invoice", "invoice_no": "INV-1",
+                             "allocated_amount": "n/a"}])
+        _, out = self._mint("p1")
+        self.assertIn("allocated amount unreadable", out)
 
     def test_risk_flags_reach_the_human(self):
         self._record("p1", docname="SI-1", op="submit", doctype="Sales Invoice",
                      risk_flags=["posting date is in a prior period"])
         _, out = self._mint("p1")
         self.assertIn("prior period", out)
+
+    def test_context_reaches_the_human_before_the_risk_flags(self):
+        """The consent moment (cmd_mint renders a REHYDRATED plan straight from the store) must
+        show the party-baseline disclosure — and show it BEFORE the risk flags, so the numbers
+        arrive before the alarm. Task 5 fix-round 1: this link had ZERO automated proof; a
+        misplaced, mistyped, or mis-ordered context line would have shipped silently green.
+
+        SCOPED HONESTLY (2026-07-31): "before the alarm" holds for `plan.risk_flags`, which is what
+        this asserts. It is NOT true of every line beginning `RISK:` — the GL block renders two of
+        its own above the context (the imbalance alarm, and 0.34.2's unreadable-row notice), and
+        that is deliberate: a GL risk belongs beside the GL summary it qualifies. The unconditional
+        version of this sentence appears in the plan doc and was wrong there too."""
+        self._record("p1", docname="SI-1", op="submit", doctype="Sales Invoice",
+                     context=["14 prior submitted document(s) for ACME."],
+                     risk_flags=["posting date is in a prior period"])
+        _, out = self._mint("p1")
+        self.assertIn("14 prior submitted document(s) for ACME.", out)
+        self.assertLess(out.index("14 prior submitted document(s) for ACME."),
+                        out.index("prior period"),
+                        "context must render before risk flags — the numbers before the alarm")
+
+    def test_the_gl_block_and_the_context_block_compose(self):
+        """The two blocks together, which nothing covered.
+
+        Both merges onto this branch (0.34.1 and then 0.34.2) interleave the GL block with the
+        context render, and every other test is on one side or the other: the GL tests record no
+        context and the context test records no GL.
+
+        CORRECTED CLAIM (2026-07-31): this docstring said a merge nesting the context loop INSIDE
+        `if plan.projected_gl:` would pass "with the whole suite green". Not true — that mutant is
+        caught by `test_context_reaches_the_human_before_the_risk_flags`, which predates this
+        test. The mutant this one uniquely catches is ORDERING: rendering `plan.context` above the
+        GL block leaves every other test green and is red only here. The coverage is real; the
+        justification written into it was not, which is the same defect as the code it guards.
+        """
+        def row(debit="", credit=""):
+            # The bench shape: ten columns, debit at 2 and credit at 3.
+            return ["2026-07-25", "1310 - Debtors - HBW", debit, credit, "4110 - Sales - HBW",
+                    "Customer", "Ridgeline Cyclery", "", "Sales Invoice", "SI-1"]
+
+        # One unreadable row, so the partial-read path runs inside the composition too.
+        rows = [row(debit=1000.0), row(credit=1450.0), row(debit="n/a")]
+        self._record("p1", docname="SI-1", op="submit", doctype="Sales Invoice",
+                     projected_gl=rows,
+                     context=["26 prior submitted Sales Invoice document(s) for Ridgeline."],
+                     risk_flags=["posting date is in a prior period"])
+        _, out = self._mint("p1")
+        self.assertIn("projected GL:", out)
+        self.assertIn("could not be read", out)
+        self.assertIn("26 prior submitted", out)
+        self.assertLess(out.index("projected GL:"), out.index("26 prior submitted"),
+                        "the GL summary renders before the party context")
+        self.assertLess(out.index("26 prior submitted"), out.index("prior period"),
+                        "context must render before the risk flags")
 
     def test_an_unbalanced_projection_is_called_out_loudly(self):
         # The house law on the consent line. A balanced entry nets to zero, so printing the NET
@@ -358,12 +446,278 @@ class TestGlDisclosureDegradesPerRow(unittest.TestCase):
             cmd_mint(self.env, plan_id=plan_id, target=None, ttl=900)
         return out.getvalue() + err.getvalue()
 
+    def _gl_line(self, out):
+        """The single `projected GL:` line. Assertions about the TOTALS line must be made against
+        the totals line: the RISK line below it carries the same "N of M ... could not be read"
+        substring, so `assertIn(..., out)` over the whole output is satisfied by either one."""
+        lines = [ln for ln in out.splitlines() if "projected GL:" in ln]
+        self.assertEqual(len(lines), 1, f"expected exactly one projected-GL line, got: {out}")
+        return lines[0]
+
     def test_a_readable_majority_still_reports_its_totals(self):
-        """The lens's case: 0.34.0 caught this -450.00, 0.34.1 went silent on it."""
+        """0.34.1 blanked the totals on any unreadable row; the readable subtotal survives now.
+
+        (The docstring here used to say "0.34.0 caught this -450.00". It did not: 0.34.0 scored
+        list rows 0.0 across the board, so it caught nothing on this fixture. Corrected 2026-07-31.)
+        """
         rows = [self._row(debit=1000.0), self._row(credit=1450.0), self._row(debit="n/a")]
         out = self._mint_with(rows)
-        self.assertIn("debits 1,000.00 / credits 1,450.00", out)
-        self.assertIn("1 of 3", out)
+        gl_line = self._gl_line(out)
+        self.assertIn("debits 1,000.00 / credits 1,450.00", gl_line)
+        # The shortfall must ride ON the totals line, not only in the RISK line underneath. With
+        # `partial = ""` the human reads "debits 1,000.00 / credits 1,450.00" as a complete total
+        # over a partial read — and asserting "1 of 3" against the whole output stayed green,
+        # because the RISK line says it too. Two paths, one pass signal, neither one asserted.
+        self.assertIn("readable rows only; 1 of 3 could not be read", gl_line)
+
+    def test_an_empty_projection_still_says_something(self):
+        """NEVER SILENT at the container level, not only per row.
+
+        `plan_submit` maps a missing `gl_data` key, a null, an empty object and an empty body all
+        to `[]`, and `ledger_preview` checks only that a `message` key came back. The render had
+        no `else`, so the consent line said NOTHING about GL and "this document posts no GL" was
+        indistinguishable from "we could not read the projection". 0.34.2 hardened the degradation
+        INSIDE that block while the block itself could be skipped whole.
+        """
+        out = self._mint_with([])
+        self.assertIn("projected GL:", out)
+        self.assertIn("none provided", out)
+        # And it must not claim the document posts nothing — the one thing an empty body cannot
+        # establish. Asserted as the presence of the hedge, because the first version of this
+        # assertion was `assertNotIn("posts no GL", out)` against a line that renders "posts
+        # none" — it could not have fired on ANY rendering, and printing the forbidden claim
+        # outright left it green.
+        # PIN THE WHOLE LINE, because the negative could not be written honestly.
+        #
+        # Three attempts at "the line must not claim the document posts nothing" all failed the
+        # same way. v1 `assertNotIn("posts no GL")` could never fire against a line rendering
+        # "posts none". v2 added a regex that was case-sensitive and hard-coded one phrasing. v3
+        # widened it to two phrasings and its comment called that "the SEMANTIC negation" — and
+        # 9 of 13 forbidden renderings still walked past, `the body posts nothing` among them.
+        #
+        # A regex over prose is a phrase list wearing a semantic costume, and the comment
+        # claiming otherwise was itself the lie. So this asserts the exact line instead: any
+        # rewording at all, forbidden or innocent, fails here and must be made deliberately.
+        gl_lines = [ln for ln in out.splitlines() if "projected GL:" in ln]
+        self.assertEqual(len(gl_lines), 1, out)
+        self.assertEqual(
+            gl_lines[0].strip(),
+            "projected GL: none provided (not a claim that this document posts none)")
+
+    def test_a_cancel_with_no_gl_rows_does_not_hedge_over_the_top_of_a_real_finding(self):
+        """The hedge is a SUBMIT-path fact and must not travel to the cancel path.
+
+        `plan_cancel` builds `projected_gl` from `get_gl_entries`, which validates every row and
+        returns `[]` only when the ledger genuinely HAS none — and `tools.py` already flags that
+        ("no live GL rows found for this voucher — nothing visible to unwind"). Rendering "none
+        provided (not a claim that this document posts none)" there put two adjacent lines in one
+        consent disclosure making OPPOSITE claims about the same fact, and degraded a positive
+        finding the broker had actually established.
+        """
+        store = open_store(self.env, "prod")
+        from pacioli.plan import new_plan
+        store.record_plan(new_plan("pcan", "prod", "v1", "2026-07-01", docname="SO-1",
+                                   op="cancel", doctype="Sales Order", projected_gl=[],
+                                   risk_flags=["no live GL rows found for this voucher"]))
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            cmd_mint(self.env, plan_id="pcan", target=None, ttl=900)
+        got = out.getvalue() + err.getvalue()
+        # NOT asserting the flag text back: this fixture writes that string itself three lines
+        # up, so reading it back proves only that risk_flags render at all — deleting the
+        # PRODUCTION flag left it green. The production line is held where it is produced (25
+        # tests for the single-op flag, and a dedicated test for the cascade per-node one).
+        # What this test uniquely pins is the suppression.
+        self.assertNotIn("none provided", got)
+
+    def test_every_op_is_pinned_for_the_hedge_not_just_cancel(self):
+        """All four ops, both directions. Scoping this to `op == "submit"` was pinned ONLY against
+        `cancel`, so `!= "cancel"`, `in ("submit", "cascade_cancel")` and `in ("submit",
+        "reconcile")` all survived the suite — and the first of those re-created the adjacent
+        contradiction for `cascade_cancel`, the one path the justification never named.
+
+        HEDGE (the emptiness is ambiguous or was never read): submit, reconcile.
+        SILENT (the broker read the ledger and established it, and flags it itself):
+        cancel, cascade_cancel.
+        """
+        cases = {"submit": True, "reconcile": True, "cancel": False, "cascade_cancel": False}
+        # PRODUCTION-SHAPED, and that is the whole point of the second shape. The first version of
+        # this test built every plan bare — no `graph`, no `risk_flags` — and BOTH hedging ops
+        # carry both in production (a real reconcile plan has a graph and four standing flags; a
+        # real submit reaching this branch generally carries at least one). So `elif ... and not
+        # plan.risk_flags:` and `elif ... and not plan.graph:` each survived all 3297 tests while
+        # silencing the hedge on every real plan. The risk_flags one is the worse: it suppresses
+        # the GL disclosure PRECISELY on the plans that carry risk, which is the regression this
+        # whole branch of the render exists to undo.
+        shapes = {
+            "bare": {},
+            "production-shaped": {
+                "graph": [{"doctype": "Payment Entry", "docname": "PAY-1"}],
+                "risk_flags": ["reconcile may spawn system Journal Entries this broker does not "
+                               "separately govern"],
+            },
+        }
+        from pacioli.plan import new_plan
+        for op, expect_hedge in cases.items():
+            for shape, extra in shapes.items():
+                with self.subTest(op=op, shape=shape):
+                    store = open_store(self.env, "prod")
+                    pid = f"pop-{op}-{shape}"
+                    store.record_plan(new_plan(pid, "prod", "v1", "2026-07-01", docname="D-1",
+                                               op=op, doctype="Sales Order", projected_gl=[],
+                                               **extra))
+                    out, err = io.StringIO(), io.StringIO()
+                    with redirect_stdout(out), redirect_stderr(err):
+                        cmd_mint(self.env, plan_id=pid, target=None, ttl=900)
+                    got = out.getvalue() + err.getvalue()
+                    if expect_hedge:
+                        self.assertIn("none provided", got, f"{op}/{shape} must hedge")
+                    else:
+                        self.assertNotIn("none provided", got, f"{op}/{shape} must stay silent")
+
+    def test_an_op_this_render_has_never_seen_hedges_by_DEFAULT(self):
+        """The stated reason the rule is written as an EXCLUSION, which had zero coverage.
+
+        `elif plan.op not in ("cancel", "cascade_cancel")` and `elif plan.op in ("submit",
+        "reconcile")` are behaviourally identical across the four ops that exist today, so no
+        test COULD tell them apart — which is exactly why the inclusion form was reported dead
+        when it is not. What separates them is a FIFTH op, and `check_op` carries no allowlist,
+        so one is a single code change away.
+
+        On a never-silent rail the fail-safe direction is to say something, so an op this render
+        has never seen must hedge rather than go quiet.
+        """
+        store = open_store(self.env, "prod")
+        from pacioli.plan import new_plan
+        store.record_plan(new_plan("pop-fifth", "prod", "v1", "2026-07-01", docname="D-1",
+                                   op="amend", doctype="Sales Order", projected_gl=[]))
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            cmd_mint(self.env, plan_id="pop-fifth", target=None, ttl=900)
+        self.assertIn("none provided", out.getvalue() + err.getvalue())
+
+    def test_a_None_projection_is_empty_not_one_unreadable_row(self):
+        """`_gl_rows`'s falsy short-circuit. Without it, `projected_gl=None` becomes ONE row that
+        cannot be read, putting a false `RISK: 1 of 1 ... could not be read` on every mint whose
+        caller passes no projection at all — which `plan_reconcile` does."""
+        out = self._mint_with(None)
+        self.assertNotIn("could not be read", out)
+        self.assertNotIn("1 line(s)", out)
+
+    def test_a_dict_row_missing_the_side_is_unreadable_not_zero(self):
+        """A dict row that does not carry the side being read must be UNREADABLE, not 0.00.
+
+        The list branch pins its shape exactly; the dict branch pinned nothing, on the reasoning
+        that dict rows arrive only from `get_gl_entries`, which validates at its own seam. That
+        seam guards the CANCEL direction only — `plan_submit` reaches the same helper through
+        `preview.get("gl_data")` with no validation at all. `row.get(side)` returned None for an
+        absent key and that scored 0.0 AND counted the row readable, so a genuine one-sided
+        7,200.00 posting summed to `debits 0.00 / credits 0.00` with no alarm: the 0.33.2 bug
+        wearing a different shape.
+        """
+        rows = [{"account": "1310 - Debtors", "debit_in_account_currency": 7200.0},
+                {"account": "4110 - Sales", "credit_in_account_currency": 0.0}]
+        out = self._mint_with(rows)
+        self.assertNotIn("debits 0.00 / credits 0.00", out)
+        self.assertIn("could not be read", out)
+
+    def test_a_dict_row_missing_ONLY_the_credit_is_still_unreadable(self):
+        """The discriminating fixture, and the reason the first pair of these tests was weak.
+
+        In those, NEITHER row carried the exact key for EITHER side, so a half-guard that only
+        refused a missing `debit` (or only a missing `credit`) still rendered both rows unreadable
+        and the assertions passed through a different path than the one they name. A fixture where
+        everything is broken cannot tell a half-fix from a fix.
+
+        Here `debit` is present and correct under its exact name and only `credit` is absent, so a
+        debit-only guard scores this row readable at 7,200 / 0.00 and reports a genuine one-sided
+        posting as balanced-looking with no alarm.
+        """
+        rows = [{"account": "1310 - Debtors", "debit": 7200.0,
+                 "credit_in_account_currency": 0.0}]
+        out = self._mint_with(rows)
+        self.assertIn("could not be read", out)
+        self.assertNotIn("debits 7,200.00", out)
+
+    def test_a_dict_row_missing_ONLY_the_debit_is_still_unreadable(self):
+        """The mirror, which a credit-only guard would let through as a false alarm."""
+        rows = [{"account": "1310 - Debtors", "debit_in_account_currency": 7200.0,
+                 "credit": 0.0},
+                {"account": "4110 - Sales", "debit": 0.0, "credit": 7200.0}]
+        out = self._mint_with(rows)
+        self.assertIn("could not be read", out)
+        self.assertNotIn("DOES NOT BALANCE", out)
+
+    def test_a_dict_row_with_an_EXPLICIT_null_amount_is_unreadable(self):
+        """`side not in row` is strictly WEAKER than `.get(side) is None`: it catches the absent
+        key and scores an explicit null 0.0. A mutation run once reported the two equivalent —
+        that was an artifact of no fixture carrying an explicit null. This is that fixture."""
+        rows = [{"account": "1310 - Debtors", "debit": None, "credit": None},
+                {"account": "4110 - Sales", "debit": None, "credit": None}]
+        out = self._mint_with(rows)
+        self.assertNotIn("debits 0.00 / credits 0.00", out)
+        self.assertIn("could not be read", out)
+
+    def test_a_dict_row_with_an_empty_string_amount_is_unreadable(self):
+        """`""` is the LIST shape's unused-side convention; a dict has no such convention, and
+        `get_gl_entries` requires a finite number on both sides. Falling through to the shared
+        check scored it 0.0 and readable — the same bug, one step narrower, inside the fix."""
+        rows = [{"account": "1310 - Debtors", "debit": "", "credit": ""}]
+        out = self._mint_with(rows)
+        self.assertNotIn("debits 0.00 / credits 0.00", out)
+        self.assertIn("could not be read", out)
+
+    def test_a_dict_row_with_ONLY_an_empty_credit_is_unreadable(self):
+        """The one-sided `""` fixture, and the third time this exact lesson has been learned.
+
+        The commit that added the `""` guard argued, correctly, that a fixture where BOTH sides
+        are broken cannot tell a half-fix from a fix — and then gave the new `""` half a fixture
+        with both sides broken, one line inside the fix that argument motivated. A guard reading
+        `value == "" and side == "debit"` survived the whole suite.
+
+        Here `debit` is a real number and only `credit` carries ERPNext's unused-side `""`, which
+        is exactly what an unvalidated `preview.get("gl_data")` can deliver. A debit-only guard
+        renders this as a clean, silent, balanced-looking 7,200.00 with no RISK line at all.
+        """
+        rows = [{"account": "1310 - Debtors", "debit": 7200.0, "credit": ""},
+                {"account": "4110 - Sales", "debit": 0.0, "credit": 7200.0}]
+        out = self._mint_with(rows)
+        self.assertIn("could not be read", out)
+        self.assertNotIn("debits 7,200.00 / credits 7,200.00", out)
+
+    def test_a_dict_row_with_ONLY_an_empty_debit_is_unreadable(self):
+        """The mirror, which a credit-only `""` guard passes."""
+        rows = [{"account": "1310 - Debtors", "debit": "", "credit": 7200.0}]
+        out = self._mint_with(rows)
+        self.assertIn("could not be read", out)
+        self.assertNotIn("credits 7,200.00", out)
+
+    def test_a_dict_row_with_ONLY_an_explicit_null_credit_is_unreadable(self):
+        """Same shape for the null half: the explicit-null fixture also had both sides broken."""
+        rows = [{"account": "1310 - Debtors", "debit": 7200.0, "credit": None},
+                {"account": "4110 - Sales", "debit": 0.0, "credit": 7200.0}]
+        out = self._mint_with(rows)
+        self.assertIn("could not be read", out)
+        self.assertNotIn("debits 7,200.00 / credits 7,200.00", out)
+
+    def test_a_dict_row_missing_the_side_does_not_raise_a_false_alarm_either(self):
+        """The mirror case, and the same class of lie. A balanced entry whose credit sits under an
+        unrecognised key scored credits 0.00 and fired DOES NOT BALANCE on books that balance."""
+        rows = [{"account": "1310 - Debtors", "debit": 1450.0, "credit": 0.0},
+                {"account": "4110 - Sales", "credit_in_account_currency": 1450.0}]
+        out = self._mint_with(rows)
+        self.assertNotIn("DOES NOT BALANCE", out)
+        self.assertIn("could not be read", out)
+
+    def test_a_non_list_projection_does_not_fabricate_a_row_count(self):
+        """`list(value or [])` explodes a STRING into one row per CHARACTER, and the consent line
+        prints that length as fact. A permission error echoed back as the body rendered as
+        `projected GL: 36 line(s)` — 36 being the length of an error message."""
+        out = self._mint_with("Insufficient Permission for GL Entry")
+        self.assertNotIn("36 line(s)", out)
+        self.assertIn("1 line(s)", out)
+        self.assertIn("totals unavailable", out)
+        self.assertIn("could not be read", out)
 
     def test_an_unreadable_row_is_announced_as_RISK_not_as_quiet_metadata(self):
         """The case where we cannot read what we are disclosing is the strongest reason to slow a

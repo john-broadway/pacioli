@@ -102,6 +102,12 @@ class Plan:
         was verified to belong to — carried here (not just on the target pin) so
         ``_tool_reconcile`` can rebuild ``erpnext.reconcile()``'s call from the PINNED plan alone,
         never from execute-time args. Blank for every other op.
+    :param context: always-present factual statements about this document's party history (party
+        baselines, 2026-07-30) — e.g. how this amount compares to the counterparty's own prior
+        submitted documents. Deliberately NOT in ``risk_flags``: ``risk_flags`` keeps meaning
+        "things that fired"; ``context`` is stated whether or not anything did, and folding an
+        unconditional statement into a list named "risk flags" would make every plan look like it
+        carries a risk. Empty when the feature is off.
     """
 
     plan_id: str
@@ -119,20 +125,48 @@ class Plan:
     party: str = ""
     receivable_payable_account: str = ""
     company: str = ""
+    #: Always-present factual statements about this document's party history (party baselines,
+    #: 2026-07-30). Deliberately NOT in ``risk_flags``: these are stated whether or not anything
+    #: fired, and folding an unconditional statement into a list named "risk flags" would make
+    #: every plan look like it carries a risk. Empty when the feature is off.
+    context: list = field(default_factory=list)
+
+
+def _gl_rows(value):
+    """The projected-GL rows as given, without inventing a row count.
+
+    ``list(value or [])`` looks harmless and is not: a STRING body explodes into one row per
+    CHARACTER, and the consent line prints that length as an authoritative fact. A permission
+    error echoed back as ``"Insufficient Permission for GL Entry"`` rendered as
+    ``projected GL: 36 line(s)`` — 36 being the length of an error message.
+
+    ``plan_submit`` takes ``preview.get("gl_data")`` with no shape validation (unlike the cancel
+    path, whose seam in erpnext.py refuses a non-list body outright), so this is the only place
+    that shape is checked. A body we cannot read becomes ONE unreadable row, which the disclosure
+    reports as ``1 line(s), totals unavailable`` plus a RISK line. Unreadable and said so beats a
+    fabricated number.
+    """
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    if not value:
+        return []
+    return [value]
 
 
 def new_plan(plan_id, target, doc_version, posting_date, projected_gl=None, risk_flags=None,
              ts="", docname="", op="submit", doctype="Sales Invoice", graph=None,
-             party_type="", party="", receivable_payable_account="", company=""):
+             party_type="", party="", receivable_payable_account="", company="", context=None):
     """Pure constructor for a :class:`Plan`. ``graph`` is the ordered node list for a
     cascade_cancel or reconcile plan (empty for single-op plans). ``party_type``/``party``/
-    ``receivable_payable_account``/``company`` are reconcile-only (F-R2); blank for every other op."""
+    ``receivable_payable_account``/``company`` are reconcile-only (F-R2); blank for every other op.
+    ``context`` is the party-baselines disclosure (always-present, separate from ``risk_flags``);
+    empty for every plan built before the feature existed or with it turned off."""
     return Plan(
         plan_id=plan_id,
         target=target,
         doc_version=doc_version,
         posting_date=posting_date,
-        projected_gl=list(projected_gl or []),
+        projected_gl=_gl_rows(projected_gl),
         risk_flags=list(risk_flags or []),
         ts=ts,
         docname=docname,
@@ -143,6 +177,7 @@ def new_plan(plan_id, target, doc_version, posting_date, projected_gl=None, risk
         party=party,
         receivable_payable_account=receivable_payable_account,
         company=company,
+        context=list(context or []),
     )
 
 

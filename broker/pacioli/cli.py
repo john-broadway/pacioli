@@ -92,12 +92,30 @@ def cmd_mint(env, plan_id, target, ttl):
     if plan.graph:
         # A cascade authorises the whole graph under ONE marker. Name every document, because
         # "5 documents" is a number a human skims and a list is a thing they check.
-        print(f"        ...and CASCADES to {len(plan.graph)} more document(s):")
+        #
+        # A RECONCILE graph is NOT documents. Its nodes are ALLOCATION PAIRS carrying
+        # payment_type/payment_no and invoice_type/invoice_no, with no `doctype` and no
+        # `docname`, so the generic branch rendered every one of them as `- ? ?`. The list a
+        # human is told to check was uncheckable, it called allocations "documents", and the
+        # real names were sitting on the plan unprinted.
+        if plan.op == "reconcile":
+            print(f"        ...and ALLOCATES across {len(plan.graph)} pair(s):")
+        else:
+            print(f"        ...and CASCADES to {len(plan.graph)} more document(s):")
         for node in plan.graph:
-            if isinstance(node, dict):
-                print(f"          - {node.get('doctype', '?')} {node.get('name', node.get('docname', '?'))}")
-            else:
+            if not isinstance(node, dict):
                 print(f"          - {node}")
+            elif node.get("payment_no") or node.get("invoice_no"):
+                amount = node.get("allocated_amount")
+                try:
+                    shown = f"  ({float(amount):,.2f})" if amount is not None else ""
+                except (TypeError, ValueError):
+                    shown = "  (allocated amount unreadable)"
+                print(f"          - {node.get('payment_type', '?')} {node.get('payment_no', '?')}"
+                      f" -> {node.get('invoice_type', '?')} {node.get('invoice_no', '?')}{shown}")
+            else:
+                print(f"          - {node.get('doctype', '?')} "
+                      f"{node.get('name', node.get('docname', '?'))}")
     if plan.projected_gl:
         sides = [(_gl_side(row, "debit"), _gl_side(row, "credit")) for row in plan.projected_gl]
         readable = [(debit, credit) for debit, credit in sides
@@ -133,6 +151,40 @@ def cmd_mint(env, plan_id, target, ttl):
         elif round(debits - credits, 2) != 0:
             print(f"  RISK: projected entry DOES NOT BALANCE "
                   f"(off by {debits - credits:,.2f}) — no debit without a credit")
+    elif plan.op not in ("cancel", "cascade_cancel"):
+        # NEVER SILENT — at the CONTAINER level, not only per row. `plan_submit` maps a missing
+        # key, a null, an empty object and an empty body all to `[]`
+        # (`preview.get("gl_data") or []`), and `ledger_preview` checks only that a `message` key
+        # came back. With no branch here the consent line said NOTHING AT ALL about GL, so "this
+        # document posts no GL" and "we could not read the projection" were indistinguishable to
+        # the human approving it. 0.34.2 hardened the degradation INSIDE the block above while
+        # the block itself could be skipped entirely.
+        #
+        # THE RULE IS "UNLESS THE EMPTINESS IS A VERIFIED FINDING", not "only on submit".
+        #
+        # `plan_cancel` and `plan_cascade_cancel` build `projected_gl` from `get_gl_entries`,
+        # which VALIDATES every row and returns `[]` only when the ledger genuinely HAS none —
+        # and both already flag it ("no live GL rows found…", per-voucher and per-node). For
+        # those two, an empty projection is something the broker READ AND ESTABLISHED, so
+        # hedging over the top of it put two adjacent lines in one disclosure making opposite
+        # claims about the same fact: "we cannot tell you" directly above "we read it and there
+        # is nothing to unwind." That degrades a positive finding.
+        #
+        # Everything else hedges. `plan_submit` collapses missing key / null / empty object /
+        # empty body all to `[]`, so empty is ambiguous. `plan_reconcile` is the case an earlier
+        # version of this comment got WRONG by calling it "the same story" as cancel: it records
+        # NO projection at all (`new_plan` is called with no `projected_gl`), which is the
+        # never-read case this line exists for — and it matters most there, since reconcile's own
+        # risk flag admits it may spawn Journal Entries this broker does not separately govern.
+        #
+        # Stated as an exclusion, not an inclusion, so a future op hedges by default. On a
+        # never-silent rail the fail-safe direction is to say something.
+        #
+        # It deliberately does not say the document posts nothing: that is precisely the claim an
+        # empty body cannot support.
+        print("        projected GL: none provided (not a claim that this document posts none)")
+    for line in plan.context:
+        print(f"  context   {line}")
     for flag in plan.risk_flags:
         print(f"  RISK: {flag}")
     print(f"ttl:    {ttl}s")
@@ -149,7 +201,11 @@ def cmd_mint(env, plan_id, target, ttl):
 # cannot be matched by an exact name and are addressed by position instead.
 #
 # Read off a live bench 2026-07-30. Before that this helper only understood dict rows, so from
-# 0.33.2 every real disclosure summed to 0.00 and the imbalance alarm below could never fire.
+# 0.33.2 every SUBMIT-direction disclosure summed to 0.00 and the imbalance alarm below could
+# never fire on one. The CANCEL direction was never affected: `plan_cancel`/`plan_cascade_cancel`
+# build their rows from `get_gl_entries`, which really does return dicts, and those summed
+# correctly throughout. Stated exactly, because the broader version of this sentence ("every real
+# disclosure") is false and shipped in three places before it was measured.
 _GL_DEBIT_IDX = 2
 _GL_CREDIT_IDX = 3
 # Pinned EXACTLY, not as a minimum. `fields` above is ten long, and a row of any other length is a
@@ -173,7 +229,38 @@ def _gl_side(row, side):
     if isinstance(row, dict):
         # The CANCEL path (`plan_cancel`/`plan_cascade_cancel`) really does carry dict rows: they
         # come from `get_gl_entries`, which validates them at its own seam. Both shapes are live.
+        #
+        # But that seam is UPSTREAM and guards only the cancel direction. `plan_submit` reaches
+        # this function through `preview.get("gl_data")` with no shape validation whatsoever, so
+        # the shape is pinned here as well — the same way the list branch pins its length. A dict
+        # that does not CARRY the side being read is unreadable, not zero.
+        #
+        # `row.get(side)` returned None for an absent key and the shared check below scored that
+        # 0.0 and counted the row READABLE: a silent zero, the precise failure this function
+        # exists to prevent, and the one the list branch was hardened against in 0.34.1. A renamed
+        # or misspelled amount column (`debit_in_account_currency`, `Debit`) would have summed a
+        # genuine one-sided 7,200.00 posting to `debits 0.00 / credits 0.00` with no alarm, and
+        # could equally have raised DOES NOT BALANCE on an entry that balances.
         value = row.get(side)
+        # An ABSENT key and an explicit None are the same defect: the row does not carry the side
+        # being read. `.get` collapses both, so ONE check closes both, and returning None makes
+        # the row UNREADABLE rather than zero.
+        #
+        # Deliberately not `side not in row`. That check is strictly WEAKER than this one, not
+        # equivalent to it: `.get(side) is None` catches an absent key AND an explicit null,
+        # while `side not in row` catches only the absent key and scores `{"debit": None}` as
+        # 0.0. An earlier draft carried both and a mutation run reported that removing the
+        # `not in` check "changed nothing" — that was an ARTIFACT of having no fixture with an
+        # explicit null, and it was written up here as a measurement. It is neither redundant
+        # nor safe to swap; it is the weaker half, and it is gone.
+        #
+        # The `""` unused-side convention handled below belongs to the LIST shape, where ERPNext
+        # writes the unused column as `""`. A dict row has no such convention: `get_gl_entries`
+        # requires a finite non-bool number on both sides. So `""` is refused HERE rather than
+        # falling through to the shared check, which would have scored it 0.0 and readable — a
+        # narrower instance of the exact bug this branch exists to close, sitting inside the fix.
+        if value is None or value == "":
+            return None
     elif isinstance(row, (list, tuple)):
         if len(row) != _GL_ROW_LEN:
             return None

@@ -32,6 +32,7 @@ import json
 import urllib.parse
 from pathlib import Path
 
+from pacioli import history
 from pacioli.erpnext import SUPPORTED_DOCTYPES, default_transport
 from pacioli.registry import RegistryError, _resolve_ref, load_registry
 from pacioli.runtime import _SEAL_KEY_BYTES, _seal_key_path, state_db_path
@@ -113,6 +114,28 @@ def check_registry(env):
         findings.append(_finding(WARN, "no unambiguous default target — every call must pass "
                                        "pacioli_target= explicitly"))
     return findings, registry
+
+
+def check_party_history(env):
+    """Is PLAN-time party-history disclosure on? Returns ``[(level, message)]``.
+
+    Exists so a plan carrying NO context is attributable: the feature being off and there being
+    nothing to say are different states, and a reader who cannot tell them apart is being left with
+    the ambiguity the honesty rails exist to remove. Never FAIL: this is a disclosure feature and its
+    absence breaks nothing.
+
+    Reads ``history.enabled`` rather than re-testing ``PACIOLI_PARTY_HISTORY`` against ``"1"``
+    itself — one definition of "on", not two that could drift apart. Names the doctypes it applies
+    to straight off :data:`pacioli.erpnext.SUPPORTED_DOCTYPES`'s own ``amount_field`` config, so this
+    line stays true if that set ever grows without anyone remembering to update prose here.
+    """
+    configured = [dt for dt, cfg in SUPPORTED_DOCTYPES.items() if cfg.get("amount_field")]
+    doctypes = " and ".join(configured) if configured else "no configured doctype"
+    if history.enabled(env):
+        return [_finding(OK, f"party history: ON (PACIOLI_PARTY_HISTORY=1); {doctypes} plans "
+                             "carry party context. Advisory only; it gates nothing.")]
+    return [_finding(OK, "party history: off (set PACIOLI_PARTY_HISTORY=1 to enable); plans carry "
+                         "no party context")]
 
 
 def check_credentials(target, env, read_file):
@@ -951,6 +974,15 @@ def run_doctor(env, *, target_name=None, offline=False,
 
     reg_findings, registry = check_registry(env)
     for level, msg in reg_findings:
+        failed |= level == FAIL
+        lines.append(_PREFIX[level] + msg)
+        if findings_out is not None:
+            findings_out.append((level, msg))
+    # Global, not per-target: PACIOLI_PARTY_HISTORY governs every target the same way, so this
+    # runs once regardless of how many targets the registry names — and regardless of whether the
+    # registry itself is valid, since it answers a question about the PROCESS, not about any one
+    # bench.
+    for level, msg in check_party_history(env):
         failed |= level == FAIL
         lines.append(_PREFIX[level] + msg)
         if findings_out is not None:

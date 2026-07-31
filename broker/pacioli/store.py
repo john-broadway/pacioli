@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS plans (
     party_type   TEXT NOT NULL DEFAULT '',
     party        TEXT NOT NULL DEFAULT '',
     receivable_payable_account TEXT NOT NULL DEFAULT '',
-    company      TEXT NOT NULL DEFAULT ''
+    company      TEXT NOT NULL DEFAULT '',
+    context      TEXT NOT NULL DEFAULT '[]'
 );
 -- Append-only history of the broker's own decision to CONTAIN. ``CREATE TABLE IF NOT EXISTS``
 -- means a store that predates this feature (0.19.0 and earlier) gains this table with zero rows
@@ -183,6 +184,21 @@ def _migrate_plans_reconcile(conn):
     for col in ("party_type", "party", "receivable_payable_account", "company"):
         if col not in cols:
             conn.execute(f"ALTER TABLE plans ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+
+
+def _migrate_plans_context(conn):
+    """Schema evolution for a pre-party-baselines state db: add the ``context`` column when
+    missing. Same shape as :func:`_migrate_plans_reconcile` one column later. The default
+    backfills history honestly: every plan recorded before party baselines existed carried no
+    context, so an empty JSON list is the correct read for old history, never NULL. Must run
+    AFTER ``_migrate_plans_reconcile`` so a db older than all five column sets picks them up in
+    order; the ``cols and`` guard (matching every sibling migration) is load-bearing on a
+    brand-new store."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(plans)")}
+    if not cols:
+        return
+    if "context" not in cols:
+        conn.execute("ALTER TABLE plans ADD COLUMN context TEXT NOT NULL DEFAULT '[]'")
 
 
 def _utc_iso():
@@ -579,6 +595,7 @@ class BrokerStore:
         _migrate_plans_doctype(conn)  # then `doctype` — order matters, see its docstring
         _migrate_plans_graph(conn)  # then `graph` — same ordering rule, one column later
         _migrate_plans_reconcile(conn)  # then the reconcile fields — same ordering rule
+        _migrate_plans_context(conn)  # then `context` — same ordering rule, one column set later
         conn.executescript(_SCHEMA)
         self._seed_seal_genesis()  # AFTER the schema script — seal_events must exist first
 
@@ -633,11 +650,11 @@ class BrokerStore:
         self._conn.execute(
             "INSERT INTO plans(plan_id, target, docname, doc_version, posting_date,"
             " projected_gl, risk_flags, ts, op, doctype, graph, party_type, party,"
-            " receivable_payable_account, company) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " receivable_payable_account, company, context) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (plan.plan_id, plan.target, plan.docname, plan.doc_version, plan.posting_date,
              json.dumps(plan.projected_gl), json.dumps(plan.risk_flags), plan.ts, plan.op,
              plan.doctype, json.dumps(plan.graph), plan.party_type, plan.party,
-             plan.receivable_payable_account, plan.company),
+             plan.receivable_payable_account, plan.company, json.dumps(plan.context)),
         )
         return plan
 
@@ -646,7 +663,7 @@ class BrokerStore:
         row = self._conn.execute(
             "SELECT plan_id, target, docname, doc_version, posting_date, projected_gl,"
             " risk_flags, ts, op, doctype, graph, party_type, party,"
-            " receivable_payable_account, company FROM plans WHERE plan_id=?",
+            " receivable_payable_account, company, context FROM plans WHERE plan_id=?",
             (plan_id,),
         ).fetchone()
         if row is None:
@@ -655,7 +672,8 @@ class BrokerStore:
                     posting_date=row[4], projected_gl=json.loads(row[5]),
                     risk_flags=json.loads(row[6]), ts=row[7], op=row[8], doctype=row[9],
                     graph=json.loads(row[10]), party_type=row[11], party=row[12],
-                    receivable_payable_account=row[13], company=row[14])
+                    receivable_payable_account=row[13], company=row[14],
+                    context=json.loads(row[15]))
 
     # --- receipts ----------------------------------------------------------------
     def _require_key(self):

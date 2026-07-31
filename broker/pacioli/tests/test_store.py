@@ -474,6 +474,66 @@ class TestPlanReconcileFieldsPersistence(unittest.TestCase):
         self.assertEqual(old.company, "")
 
 
+class TestPlanContextPersistence(unittest.TestCase):
+    """The ``context`` column (party baselines, 2026-07-30): round-trip + the schema evolution a
+    pre-party-baselines store needs. Mirrors TestPlanReconcileFieldsPersistence exactly — same
+    shape, one column later. This is the store half the brief calls load-bearing: ``cmd_mint``
+    renders a REHYDRATED plan (``store.get_plan``), and that is the exact moment a human decides
+    whether to hand over the marker — context that doesn't survive this round trip is a
+    disclosure that is absent exactly when it is needed."""
+
+    def test_a_plan_round_trips_its_context_through_the_store(self):
+        """The mint ceremony renders a REHYDRATED plan (cli.cmd_mint -> store.get_plan) and that is
+        the moment a human approves. Context that does not survive the round trip is a disclosure
+        that is absent exactly when it is needed."""
+        store = _store()
+        plan = new_plan("p-ctx", "prod", "v1", "2026-01-01",
+                        docname="ACC-PINV-1",
+                        context=["14 prior submitted document(s) for ACME.",
+                                 "prior range 200.00 to 4,100.00."])
+        store.record_plan(plan)
+        got = store.get_plan("p-ctx")
+        self.assertEqual(got.context, ["14 prior submitted document(s) for ACME.",
+                                       "prior range 200.00 to 4,100.00."])
+
+    def test_a_plan_recorded_before_context_existed_reads_as_empty_not_null(self):
+        """The migration's default backfills old history honestly."""
+        conn = sqlite3.connect(":memory:")
+        # A state db exactly as pre-party-baselines created it (has op/doctype/graph/reconcile
+        # fields, no context column) — insert a row through that exact pre-context column list,
+        # then open the store (which migrates) and read it back.
+        conn.executescript("""
+            CREATE TABLE plans (
+                plan_id TEXT PRIMARY KEY, target TEXT NOT NULL, docname TEXT NOT NULL,
+                doc_version TEXT NOT NULL, posting_date TEXT NOT NULL,
+                projected_gl TEXT NOT NULL, risk_flags TEXT NOT NULL, ts TEXT NOT NULL,
+                op TEXT NOT NULL DEFAULT 'submit', doctype TEXT NOT NULL DEFAULT 'Sales Invoice',
+                graph TEXT NOT NULL DEFAULT '[]', party_type TEXT NOT NULL DEFAULT '',
+                party TEXT NOT NULL DEFAULT '', receivable_payable_account TEXT NOT NULL DEFAULT '',
+                company TEXT NOT NULL DEFAULT ''
+            );
+            INSERT INTO plans(plan_id, target, docname, doc_version, posting_date, projected_gl,
+                              risk_flags, ts)
+                VALUES ('old1','prod','SI-1','v1','2026-07-01','[]','[]','2026-07-01');
+        """)
+        store = BrokerStore(conn, key=b"k" * 32)  # opening migrates
+        old = store.get_plan("old1")
+        self.assertEqual(old.context, [])
+
+    def test_plans_context_migration_on_old_db(self):
+        from pacioli.store import _migrate_plans_context
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE plans (plan_id TEXT PRIMARY KEY, target TEXT, docname TEXT,"
+                     " doc_version TEXT, posting_date TEXT, projected_gl TEXT, risk_flags TEXT,"
+                     " ts TEXT, op TEXT DEFAULT 'submit', doctype TEXT DEFAULT 'Sales Invoice',"
+                     " graph TEXT DEFAULT '[]', party_type TEXT DEFAULT '', party TEXT DEFAULT '',"
+                     " receivable_payable_account TEXT DEFAULT '', company TEXT DEFAULT '')")
+        _migrate_plans_context(conn)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(plans)")}
+        self.assertIn("context", cols)
+        _migrate_plans_context(conn)  # idempotent — no error on second run
+
+
 class TestVerifySnapshot(unittest.TestCase):
     """verify_snapshot returns the exact receipts it verified, from one read — the anchor's
     verify-then-compare must never run against two different snapshots."""

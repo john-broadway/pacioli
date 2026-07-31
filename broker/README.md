@@ -90,6 +90,38 @@ identical for every governed doctype.)
 | **DIAGNOSE** | A read tier (get / list, every governed doctype), permission-scoped under the caller's own ERPNext role; `pacioli doctor` certifies the seat and the chain end-to-end. | Broader health/evidence tools. |
 | **UNDO** | **Governed cancel** (`plan_cancel` → human marker → `cancel_sales_invoice`, docstatus 1 → 2, **live-proven**): the plan shows the posting's live GL rows (what the cancel unwinds), the **linked-submitted-documents blast radius refuses** a non-leaf cancel (an unreadable graph refuses too — never reads as empty), the same closed-books check blocks unwinding into a locked period, and a cancel marker **never authorizes a submit** (nor vice versa — plans are op-bound). ERPNext's own cancel-blocks are honored, never bypassed. **The settling-PE disclosure (F-R1, every supported doctype):** the plan also names, PRE-consent, every settling voucher (a Payment Entry, most commonly) a cancel would touch — one flag per voucher, either "cancelling will SILENTLY UNLINK `<voucher_type>` `<voucher_no>`'s allocation of `<amount>`…" (the unlink setting is ON) or "ERPNext will REFUSE this cancel (LinkExistsError)…" (it's OFF) — closing the gap where ERPNext's own blast-radius check structurally cannot see a settling Payment Entry (it's `auto_cancel_exempted`); an unreadable settling-reference or unlink-setting read refuses the whole plan, deny-biased. **Amend** (`amend_sales_invoice`, **live-proven** — the full submit → cancel → amend → resubmit arc, 8 receipts on one ledger, proof record PHASE F): the corrected re-draft, a new DRAFT copied from the cancelled document with `amended_from` set. It takes **no marker** — it creates a reversible draft (nothing posts; deleting the draft undoes it), and demanding consent for a reversible act would dilute what the marker means; the irreversible step stays `submit`, behind its own plan + marker. It **does** write the intent+outcome receipt pair (op `amend`, transition `2->0(draft)`) so the book shows the full arc cancel → amend → submit. Under an active Workflow the draft is **seated at the workflow's initial state** (frappe's own `states[0]` convention, written to the workflow's configured state field, disclosed as `workflow_seat` in result and receipts, and `confirmed` against the bench's answer, never just the request) — found by the first dogfood drive: an unseated amendment has no legal transition and is stuck. The seat is **live-proven** (2026-07-17 lab pin, `docs/plans/2026-07-17-amend-seat-pin.md`): amend under a live workflow seated the draft on the real bench, and the non-approving transition ran from it end-to-end. Gated: refuses an uncancelled source, a source that already has an amendment (any docstatus — named in the refusal), a wrong-books company, ambiguous/malformed/unseatable workflow configuration, and a state field that would re-enter the amend strip-list's protected keys (deny-biased, before the intent receipt — a refusal never leaves an orphan). **Cascade cancel** (`plan_cascade_cancel` → human marker → `cascade_cancel`, **live-proven** — discovery/fail-stop/happy path PHASE J, a real JE-dependent graph cancelled 2/2 in Gate 10 M-12): governs the cancel of a document AND its full submitted-dependent graph in one consent. The plan enumerates the topologically ordered graph (dependents first, target last, any doctype, each node labeled modeled/generic) and discloses per-node risk the same way the single-op plan would (`risk_flags`, each flag docname-prefixed: the Journal-Entry EG auto-cancel note, the unlink setting, the physical-stock reversal, a Payment Entry's settled references), and one marker authorizes exactly that frozen set. Non-atomic by nature (each cancel commits individually): preflight checks freshness + period-locks on every node before any cancel, then executes in order, **confirms each node's transition against the document's real docstatus** (a response that doesn't show docstatus 2 — a queued write, a failed readback — records `unconfirmed`, never `committed`: the E1 rule, per node), and **fail-stops** on the first failure or unconfirmed node — the result names exactly what was cancelled and where it stopped; the marker is spent iff at least one document was cancelled **or the stopping node came back unconfirmed** (an act may already be in motion server-side — one grant must never initiate two acts). Bounded by `PACIOLI_CASCADE_MAX` (default 25). | The 0.9.3 per-node confirm + per-node cascade disclosures are code-proven, bench proof staged (envelope E3). **0.10.4 closed the transport-taxonomy residual** (single-op and cascade alike; code-closed and unit-proven — bench pins T1–T5 staged for the next window): an exception from the *mutating call itself* is now classified — an **answered refusal** (the bench definitely saw and refused the call: an int HTTP status whose JSON body carries frappe's OWN error envelope, `exc_type`/`_server_messages`, or a pre-processing rejection, 429/413) still releases the marker exactly as before; everything else — a raw connection failure, a proxy-shaped response (HTML **or generic JSON** — proxies speak JSON too, and `{"error": "Bad Gateway"}` is not frappe), any unconverted exception — is **no answer**, and the marker is now **spent, never released**, resolved by a governed readback of the document's real docstatus (`confirmed_via: "post_failure_readback"` on a match, `"unconfirmed"` + `readback_error` on a mismatch or a failed readback; the durable receipt always carries the original error too). Deny-biased by construction: this closure only ever moves release→spend, never the reverse. Honest residual: the "answered ⇒ rolled back" premise is source-verified for frappe core + erpnext mainline flows; a CUSTOM doctype hook calling `frappe.db.commit()` mid-flow before a later failure would break it — outside the broker's reach, recorded. |
 
+**Party-history disclosure (PLAN, opt-in, off by default).** Set `PACIOLI_PARTY_HISTORY=1` and
+`plan_submit` adds a `context` line (or several) to the recorded plan for every doctype with a
+configured amount field. As of this build that is Sales Invoice, Purchase Invoice and Payment
+Entry (`SUPPORTED_DOCTYPES`'s own `amount_field` config); run `pacioli doctor` for the current list
+rather than trusting this sentence, since `doctor` names the doctypes straight off that config and
+this prose has no way to stay in sync the next time the set changes. The context states how many
+prior submitted documents exist for this same party in these books, the prior amount range, and
+where this document's own amount falls against it. At most one risk flag fires, on a brand-new
+counterparty or an amount well outside the party's own prior range. `pacioli mint` renders the
+context to the human, before the risk flags, at the one moment consent is actually given (see the
+walkthrough below); `pacioli doctor` also reports whether the flag is on, so a plan carrying no
+context is attributable to the feature being off rather than to there being nothing to say. Advisory only:
+it is off unless the env var is set, adds nothing but `context`/at most one flag (never changes
+whether a plan is produced or any of its other fields), and a failed read degrades to a stated
+`"history unavailable: <reason>"` line rather than ever failing the plan.
+
+**Two different audiences, two different levels of detail (fix round 1).** `risk_flags` is echoed
+straight back to the calling agent in `plan_submit`'s own JSON response; `context` reaches only the
+human, via `pacioli mint`'s render. The full parameterised numbers (the multiple, the prior max,
+the K threshold, n) stay in `context` only — a constrained agent that could read its own exact
+distance from the flagging threshold in its own tool response would have a closed-form recipe for
+what magnitude stays quiet. So the agent-visible flag names only the kind and the party
+(`AMOUNT OUTSIDE RANGE for <party>; see the plan context.` /
+`NOVEL COUNTERPARTY: <party>; see the plan context.`) and points at the plan the human is about to
+be asked to consent to; the human still gets every number, unchanged.
+
+🔴 **This is disclosure to a human, not enforcement.** It reads data the governed credential can
+already read (this party's own prior submitted documents), the same read boundary every other
+disclosure in this broker sits behind. It is not a control: it cannot permit, refuse, or alter a
+write, and possession of the governed credential is exactly as powerful with the flag on as with it
+off. Never describe it as protection — it is a second pair of eyes on content, not a boundary.
+
 **The closed books.** Closing the ledger is Pacioli's own operation — rule off the book, carry the
 balances forward. Where ERPNext has closed the books — a closed Accounting Period, a
 Period-Closing-Voucher boundary, a company's `accounts_frozen_till_date` — the broker refuses and
@@ -970,13 +1002,14 @@ company and refuse a mismatch, never trusting only the plan-time pass.
 
 ## Configuration
 
-Three environment variables, all read by the CLI and the server:
+Four environment variables, all read by the CLI and the server:
 
 | Variable | Required | Meaning |
 |---|---|---|
 | `PACIOLI_REGISTRY` | yes | Path to a TOML file listing routed targets (below). |
 | `PACIOLI_STATE_DIR` | yes | Directory holding one SQLite file per target (the PROVE ledger + plans + markers) and, by default, the seal key. |
 | `PACIOLI_SEAL_KEY_FILE` | no | Overrides where the HMAC seal key lives (default: `PACIOLI_STATE_DIR/seal.key`). Must stay `0600`. |
+| `PACIOLI_PARTY_HISTORY` | no | Set to exactly `1` to turn on PLAN-time party-history disclosure (see the trust spine's PLAN row above). Off by default; advisory only. |
 
 `targets.toml` — secrets are held **by reference only** (`env:VAR` or `file:/path`); a literal
 secret in this file is refused at load and never echoed back in the error:

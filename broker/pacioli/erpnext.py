@@ -7276,11 +7276,14 @@ _CLIENT_CANCEL_METHOD = "frappe.client.cancel"
 # visible and rides as list-tier context).
 SUPPORTED_DOCTYPES = {
     SALES_INVOICE: {"party_field": "customer", "submit_via": SUBMIT_VIA_RUN_METHOD,
-                    "date_field": "posting_date"},
+                    "date_field": "posting_date",
+                    "amount_field": "base_grand_total"},
     PURCHASE_INVOICE: {"party_field": "supplier", "submit_via": SUBMIT_VIA_RUN_METHOD,
-                       "date_field": "posting_date"},
+                       "date_field": "posting_date",
+                       "amount_field": "base_grand_total"},
     PAYMENT_ENTRY: {"party_field": "party", "submit_via": SUBMIT_VIA_RUN_METHOD,
-                    "date_field": "posting_date"},
+                    "date_field": "posting_date",
+                    "amount_field": "base_paid_amount"},
     JOURNAL_ENTRY: {"party_field": None, "submit_via": SUBMIT_VIA_CLIENT_RPC,
                     "date_field": "posting_date"},
     # Breadth (Sales Order) — the fifth supported doctype, and the FIRST that is not itself a
@@ -10645,6 +10648,42 @@ class ErpnextClient:
         }
         if filters:
             params["filters"] = json.dumps(filters)
+        path = f"/api/resource/{urllib.parse.quote(doctype, safe='')}"
+        return self._data(self._call("GET", path, params=params))
+
+    def party_amount_history(self, doctype, company, party_field, party, amount_field,
+                             date_field, limit=100):
+        """Prior SUBMITTED amounts for one party, newest first. A bounded READ, nothing else.
+
+        🔴 ``docstatus = 1`` is load-bearing, not hygiene. ``SECURITY.md`` states that draft saves
+        are NOT gated by the consent floor, so counting drafts here would let an ungated write
+        manufacture a fake history and SUPPRESS the outside-band flag this read exists to feed.
+        Do not relax this filter. There is a test that goes red if you do.
+
+        Field names are supplied by the caller from :data:`SUPPORTED_DOCTYPES`, exactly as
+        :meth:`list_documents` already does: this client keeps no doctype config of its own. The
+        amount is the doctype's COMPANY-CURRENCY field (``base_grand_total`` for Purchase Invoice,
+        ``base_paid_amount`` for Payment Entry, which has no ``base_grand_total`` at all).
+
+        ``limit`` is clamped to a floor of 1 (``max(1, int(limit))``), deliberately NOT this
+        client's own F-V1 law (``limit_page_length: "0"`` meaning UNLIMITED — see
+        :meth:`get_settling_references`/:meth:`get_gl_entries`/:meth:`get_period_locks`): those are
+        exhaustive gate-feeding reads that must never silently paginate, but this one is a bounded
+        disclosure read, not a gate, and an unbounded party history is a performance footgun against
+        a real company's books that nothing in this feature wants. A caller passing ``limit=0``
+        gets 1 row, not this client's usual "everything" — the clamp cannot be disabled or
+        parameterised away.
+        """
+        params = {
+            "fields": json.dumps([amount_field, date_field]),
+            "filters": json.dumps([
+                ["company", "=", company],
+                [party_field, "=", party],
+                ["docstatus", "=", 1],
+            ]),
+            "order_by": f"{date_field} desc",
+            "limit_page_length": str(max(1, int(limit))),
+        }
         path = f"/api/resource/{urllib.parse.quote(doctype, safe='')}"
         return self._data(self._call("GET", path, params=params))
 

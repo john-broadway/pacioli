@@ -13,8 +13,11 @@ taking an explicit ``doctype``. ``self.docs`` stays a FLAT dict keyed by name on
 nothing here — the real client partitions by doctype via the URL path itself (test_erpnext.py
 pins that). This is the brief's "(or add a parallel PI doc set)" option.
 """
+import dataclasses
+import os
 import sqlite3
 import unittest
+from unittest import mock
 
 from pacioli.erpnext import (ASSET_CAPITALIZATION, ASSET_MAINTENANCE_LOG, ASSET_MOVEMENT,
                              ASSET_REPAIR,
@@ -1741,6 +1744,12 @@ class FakeClient:
         self.fail_gl_entries = None             # set to raise, mirroring fail_locks/fail_linked
         self.lock_calls = []                   # tracks get_period_locks(company, doctype, date)
         self.preview_consents = []             # tracks the consent token each ledger_preview carried
+        # Party baselines (2026-07-30): the PLAN-time disclosure read (pacioli/history.py) — a
+        # DIFFERENT rows/raises pair from gl_rows/fail_gl_entries above, since a history read and a
+        # GL-entry read are unrelated calls to the same fake.
+        self.history_rows = []
+        self.history_raises = None
+        self.party_amount_history_calls = []
 
     def get_document(self, doctype, name):
         from pacioli.erpnext import ErpnextError
@@ -1805,6 +1814,17 @@ class FakeClient:
         if self.fail_linked:
             raise ErpnextError(self.fail_linked, status=500, answered=True)
         return [dict(d) for d in self.linked]
+
+    def party_amount_history(self, doctype, company, party_field, party, amount_field,
+                             date_field, limit):
+        # Party baselines' bounded read (pacioli/history.py::party_context). ``history_raises``
+        # models a bench-down read exactly like ``fail_gl_entries``/``fail_locks`` above; unset
+        # returns ``history_rows`` (default ``[]``, a legitimate zero-prior-documents finding).
+        self.party_amount_history_calls.append(
+            (doctype, company, party_field, party, amount_field, date_field, limit))
+        if self.history_raises:
+            raise self.history_raises
+        return self.history_rows
 
     def get_gl_entries(self, voucher_type, voucher_no):
         from pacioli.erpnext import ErpnextError
@@ -2490,6 +2510,26 @@ class TestReturnDisclosure(unittest.TestCase):
                             for f in plan["risk_flags"]), plan["risk_flags"])
         self.assertTrue(any(f.startswith("T: FREE-STANDING credit note") for f in plan["risk_flags"]),
                         plan["risk_flags"])
+
+    def test_a_cascade_node_with_no_gl_rows_says_so_per_node(self):
+        """The cascade's ONLY disclosure that a node's ledger read came back empty.
+
+        Nothing in the repository held this line: deleting it survived the entire suite. That
+        matters more since 2026-07-31, because the mint's "none provided" hedge is deliberately
+        SUPPRESSED for cascade_cancel on the grounds that this flag already says it. A suppression
+        justified by an untested line is a rail resting on nothing — with the line gone, a cascade
+        mint renders nothing whatsoever about GL.
+
+        Its single-op sibling on `plan_cancel` is held by 25 tests; this one had none.
+        """
+        cc = CascadeClient({})
+        cc.gl_rows = []  # the validated read came back empty: the ledger genuinely has none
+        broker, client, _ = make_broker(client=cc)
+        plan = broker.dispatch("plan_cascade_cancel",
+                               {"name": "T", "pacioli_doctype": "Sales Invoice"})
+        self.assertTrue(plan["ok"], plan)
+        self.assertTrue(any(f.startswith("T: ") and "no live GL rows found" in f
+                            for f in plan["risk_flags"]), plan["risk_flags"])
 
 
 class TestPosDisclosure(unittest.TestCase):
@@ -3898,6 +3938,127 @@ class TestMalformedWorkflowConfigE2E(unittest.TestCase):
             self.assertTrue(out["ok"], repr(garbage))
             self.assertTrue(any("malformed" in f.lower() for f in out["risk_flags"]),
                             repr(garbage))
+
+    # --- Party baselines (2026-07-30) -------------------------------------------------------
+    # Joins THIS class deliberately, not a fresh one: three of the five tests below need exactly
+    # the shape test_plan_submit_flags_malformed_config_but_still_plans already proves — something
+    # in a PLAN-time disclosure goes wrong, and the plan STILL completes. _plan_for reuses that
+    # test's own make_broker()/dispatch("plan_submit", ...) mechanics, only adding the env
+    # (PACIOLI_PARTY_HISTORY is read from real os.environ by _party_baseline_disclosure, never
+    # threaded as a parameter) and the fake client's party_amount_history controls.
+
+    def _plan_for(self, doctype, env, history_rows=None, history_raises=None, doc_amount=None):
+        """Returns ``{"plan": <the STORED Plan, as a dict>, "client": <the FakeClient>}``. The
+        plan_submit dispatch response itself never echoes ``context``/``op`` — those are read back
+        at mint time (cli.py's cmd_mint reads ``plan.context`` off the STORED plan) — so the stored
+        Plan, not the raw dispatch return, is what a caller checking those fields must read. The
+        client is returned too (fix round 1, Important 3) so a caller can assert what was actually
+        recorded on ``party_amount_history_calls`` — not just what came back."""
+        docname = {"Purchase Invoice": "PI-1", "Journal Entry": "JE-1"}[doctype]
+        broker, client, stores = make_broker()
+        client.history_rows = history_rows if history_rows is not None else []
+        client.history_raises = history_raises
+        if history_rows is not None or history_raises is not None or doc_amount is not None:
+            # PI-1's own fixture carries no base_grand_total (only grand_total) — without a real
+            # numeric amount, party_context short-circuits on "no base_grand_total on this
+            # document" before ever reaching party_amount_history, and history_rows/history_raises
+            # would go unexercised. Give it one so the read this test controls is actually reached.
+            client.docs[docname] = dict(client.docs[docname],
+                                        base_grand_total=100.0 if doc_amount is None else doc_amount)
+        with mock.patch.dict(os.environ, env, clear=True):
+            out = broker.dispatch("plan_submit", {"name": docname, "pacioli_doctype": doctype})
+        self.assertTrue(out["ok"], out)
+        plan = stores("prod").get_plan(out["plan_id"])
+        return {"plan": dataclasses.asdict(plan), "client": client}
+
+    def test_plan_submit_carries_no_context_when_the_feature_is_off(self):
+        """Off by default. The plan is what it was before this feature existed."""
+        result = self._plan_for("Purchase Invoice", env={})
+        self.assertEqual(result["plan"].get("context", []), [])
+
+    def test_plan_submit_carries_context_when_the_feature_is_on(self):
+        """Fix round 1, Important 3: the original assertion (`assertTrue(context)`) was satisfied
+        by a STATED UNAVAILABILITY too (a single "history unavailable: ..." line is truthy) — so a
+        wrong doc, a wrong company, or a client missing the method all would have passed silently.
+        Asserts a REAL assessment landed (only a genuine read produces "prior range"), and asserts
+        what was actually sent to party_amount_history — doctype, company, party field/value,
+        amount field, date field, window — not just that a call happened."""
+        result = self._plan_for("Purchase Invoice", env={"PACIOLI_PARTY_HISTORY": "1"},
+                                history_rows=[{"base_grand_total": 100.0,
+                                              "posting_date": "2026-01-01"}])
+        joined = " ".join(result["plan"]["context"])
+        self.assertIn("prior range", joined,
+                      "a stated unavailability is also truthy — this must be a real assessment")
+        self.assertEqual(
+            result["client"].party_amount_history_calls,
+            [("Purchase Invoice", "Example Corp", "supplier", "ACME Supply",
+              "base_grand_total", "posting_date", 100)])
+
+    def test_an_outside_band_amount_reaches_risk_flags_through_a_real_plan(self):
+        """Fix round 1, Important 2: half the 'may add at most one risk_flags entry' contract had
+        NO test anywhere through a real plan — party_context's own flags were only ever asserted
+        at the unit level (test_history.py), never through plan_submit. Prior max 50 (one prior
+        document), this document's own amount 200 — a real 4x-outside-band read, not a stub.
+
+        Fix round 1, Design 4: the agent-visible flag is deliberately BARE (kind + party only,
+        pointing at the plan context) — risk_flags is echoed back to the calling agent in
+        plan_submit's own JSON response, and the full parameterised numbers (the multiple, the
+        prior max, K) would be a closed-form recipe for exactly what magnitude stays quiet.
+
+        The sentence that stood here — "the human loses nothing: context (mint-only) still carries
+        the full numbers, unchanged" — was FALSE when written and is retracted; `tools.py`'s own
+        docstring documents why. The numbers lived ONLY in the flag, so barring them deleted them,
+        and the human was told an amount was out of band without being told by how much, against
+        what, or which rule fired. `baseline.assess` now states those parameters on the context
+        side, and the two texts are deliberately NOT the same string, so this must not be restated
+        as "unchanged". (This copy was missed when the claim was retracted elsewhere.)"""
+        result = self._plan_for("Purchase Invoice", env={"PACIOLI_PARTY_HISTORY": "1"},
+                                history_rows=[{"base_grand_total": 50.0,
+                                              "posting_date": "2026-01-01"}],
+                                doc_amount=200.0)
+        flags = result["plan"]["risk_flags"]
+        self.assertEqual(flags, ["AMOUNT OUTSIDE RANGE for ACME Supply; see the plan context."])
+        joined_flags = " ".join(flags)
+        for leak in ("50.00", "200.00", "K=", "x the largest", "prior max"):
+            self.assertNotIn(leak, joined_flags, leak)
+        # The human still gets every number — via context, never via the bare agent-visible flag:
+        # the prior range (50.00, this party's one prior document) and this document's own amount
+        # (200.00), both stated plainly for the human at the mint-time render.
+        joined_context = " ".join(result["plan"]["context"])
+        self.assertIn("50.00", joined_context)
+        self.assertIn("200.00", joined_context)
+
+    def test_a_novel_counterparty_reaches_risk_flags_through_a_real_plan(self):
+        """Fix round 1, Important 2's second half: a genuinely empty prior history (a real read,
+        rows=[], never a failure) must reach risk_flags as NOVEL COUNTERPARTY, end to end."""
+        result = self._plan_for("Purchase Invoice", env={"PACIOLI_PARTY_HISTORY": "1"},
+                                history_rows=[])
+        self.assertEqual(result["plan"]["risk_flags"],
+                         ["NOVEL COUNTERPARTY: ACME Supply; see the plan context."])
+
+    def test_a_history_read_failure_does_not_break_the_plan(self):
+        """The plan must never fail because a DISCLOSURE read failed. Same shape as
+        test_plan_submit_flags_malformed_config_but_still_plans."""
+        result = self._plan_for("Purchase Invoice", env={"PACIOLI_PARTY_HISTORY": "1"},
+                                history_raises=RuntimeError("bench down"))
+        self.assertTrue(result["plan"]["plan_id"], "the plan still completed")
+        self.assertTrue(any("history unavailable" in line
+                            for line in result["plan"]["context"]))
+        self.assertIn("bench down", " ".join(result["plan"]["context"]))
+
+    def test_the_feature_is_inert_for_a_doctype_with_no_amount_field(self):
+        """Journal Entry has no configured amount_field, so no claim is made and no line emitted."""
+        result = self._plan_for("Journal Entry", env={"PACIOLI_PARTY_HISTORY": "1"})
+        self.assertEqual(result["plan"].get("context", []), [])
+
+    def test_history_never_changes_whether_or_what_plan_is_produced(self):
+        """ADVISORY ONLY. Everything a caller acts on is identical with the feature on and off."""
+        rows = [{"base_grand_total": 100.0, "posting_date": "2026-01-01"}]
+        off = self._plan_for("Purchase Invoice", env={}, history_rows=rows)
+        on = self._plan_for("Purchase Invoice", env={"PACIOLI_PARTY_HISTORY": "1"},
+                            history_rows=rows)
+        for key in ("target", "doc_version", "posting_date", "projected_gl", "op", "doctype"):
+            self.assertEqual(off["plan"][key], on["plan"][key], key)
 
 
 class TestNewToolsRequireTheirArgs(unittest.TestCase):
