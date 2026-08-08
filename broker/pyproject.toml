@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pacioli"
-version = "0.35.0"
+version = "0.36.0"
 description = "Governed agent broker for ERPNext (MCP + A2A doors, one spine) — no debit without a credit: PLAN, CONSENT, PROVE, UNDO over the books, on the Pacioli Guard credential floor"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,7 +27,8 @@ server = ["mcp>=1.0"]
 # (docs/plans/2026-07-16-a2a-door.md). Lazily imported; nothing outside `pacioli serve --a2a`
 # needs it. `a2a-sdk[signing]` (pulls PyJWT) + `cryptography` add opt-in ES256 agent-card
 # signing (docs/plans/2026-07-17-a2a-card-signing.md); inert unless a signing key is configured.
-a2a = ["a2a-sdk[signing]>=1.1", "uvicorn>=0.30", "cryptography>=42"]
+a2a = ["a2a-sdk[signing]>=1.1", "uvicorn>=0.30", "cryptography>=50"]  # >=50: PYSEC-2026-3552
+#       fixed in 50.0.0 — the floor is the fix's floor, raised deliberately per advisory, not tracked
 
 [project.urls]
 Homepage = "https://github.com/john-broadway/pacioli"

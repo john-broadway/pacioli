@@ -135,7 +135,7 @@ fi
 printf '\n----------------------------------------\n'
 if [ "$RC" -eq 0 ]; then
   if [ "$PKG" = broker ]; then
-    PUBLISH_EXTRA=$'  6. mcp-publisher publish            # validates + pushes server.json to the official MCP registry\n  7. (LobeHub) npx -y @lobehub/market-cli plugin publish --dir .'
+    PUBLISH_EXTRA=$'  6. mcp-publisher publish            # validates + pushes server.json to the official MCP registry\n  7. (LobeHub) npx -y @lobehub/market-cli plugin update --dir .   # update, NEVER 'publish' — in market-cli >=0.0.40 'publish' means a NEW listing and demands a gitUrl (proximo 0.31.1 ripple hit this)'
   else
     PUBLISH_EXTRA='  6. (guard ships no MCP/LobeHub manifest — PyPI + gh release only)'
   fi

@@ -1000,9 +1000,31 @@ TOCTOU freshness check alone can't be relied on to catch a company swapped under
 (a `db_set(update_modified=False)`/raw-SQL patch); both execute paths re-read the document's live
 company and refuse a mismatch, never trusting only the plan-time pass.
 
+## The doorway (opt-in): a searchable catalog instead of 265 resident schemas
+
+The full `tools/list` payload is ~229k bytes — roughly 57k–65k tokens handed to every client
+before its first question, which a small local model's window cannot even hold. Set
+`PACIOLI_TOOLSETS=dynamic` and the doors advertise **nine tools**: `pacioli_find_tools`
+(keyword search over the catalog, one-line summaries), `pacioli_tool_schema` (the full schema
+for one tool, near-miss suggestions on an unknown name), `pacioli_call` (dispatch through the
+full governed spine, result verbatim) — plus the spine itself, resident: the four `plan_*`
+tools and both `prove_*` tools. Measured on a real stdio handshake: 10,630 bytes, 4.6% of the
+default surface.
+
+Three honest boundaries. Advertisement is a **context** choice, never reachability — every
+catalog tool stays callable, through `pacioli_call` or directly by name — and never an
+authorization control: the guard enforces at the floor regardless of what any door advertises.
+`pacioli_call` adds no second path — the inner tool meets the same seal gate, consent machinery
+and receipts as a direct call, and a sealed store refuses a doorway write with the identical
+envelope while staying searchable for reads. And search is keyword-AND over names and
+descriptions: zero results usually means the words missed (retry with a catalog verb plus the
+doctype noun), which the tool's own description says out loud. An unrecognized
+`PACIOLI_TOOLSETS` value refuses to start — on all three doors — rather than serve a surprise;
+unset means the full catalog, exactly as before.
+
 ## Configuration
 
-Four environment variables, all read by the CLI and the server:
+Five environment variables, all read by the CLI and the server:
 
 | Variable | Required | Meaning |
 |---|---|---|
@@ -1010,6 +1032,7 @@ Four environment variables, all read by the CLI and the server:
 | `PACIOLI_STATE_DIR` | yes | Directory holding one SQLite file per target (the PROVE ledger + plans + markers) and, by default, the seal key. |
 | `PACIOLI_SEAL_KEY_FILE` | no | Overrides where the HMAC seal key lives (default: `PACIOLI_STATE_DIR/seal.key`). Must stay `0600`. |
 | `PACIOLI_PARTY_HISTORY` | no | Set to exactly `1` to turn on PLAN-time party-history disclosure (see the trust spine's PLAN row above). Off by default; advisory only. |
+| `PACIOLI_TOOLSETS` | no | `dynamic` serves the nine-tool doorway (above); unset or `all` serves the full catalog. Anything else refuses startup. |
 
 `targets.toml` — secrets are held **by reference only** (`env:VAR` or `file:/path`); a literal
 secret in this file is refused at load and never echoed back in the error:

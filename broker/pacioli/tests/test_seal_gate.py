@@ -26,7 +26,8 @@ from pacioli.registry import load_registry
 from pacioli.runtime import open_store
 from pacioli.store import BrokerStore
 from pacioli import tools as tools_mod
-from pacioli.tools import READ_ONLY_TOOLS, PacioliBroker, format_seal_refusal, tool_names
+from pacioli.tools import (DOORWAY_NAMES, READ_ONLY_TOOLS, PacioliBroker, format_seal_refusal,
+                           tool_names)
 
 CLOCK = "2026-07-14T00:00:00Z"
 
@@ -559,6 +560,15 @@ def _read_args(name):
         return {"name": doc_for[name]}
     if name == "workflow_status":
         return {"name": "SI-1"}
+    # The doorway three (design review finding 6): without real args here the sealed/corrupt
+    # read-survival sweeps would exercise only their own refusal paths — a sweep must genuinely
+    # run the tool, or "read-only survives sealed" is asserted about a deny.
+    if name == "pacioli_find_tools":
+        return {"query": "invoice"}
+    if name == "pacioli_tool_schema":
+        return {"name": "get_sales_invoice"}
+    if name == "pacioli_call":
+        return {"tool": "get_sales_invoice", "arguments": {"name": "SI-1"}}
     return {}
 
 
@@ -650,9 +660,11 @@ class TestClassificationCompleteness(unittest.TestCase):
             "GOVERNED_TOOLS_COVERED_BY_THIS_SUITE above and extend the seal-gate TDD matrix")
 
     def test_read_only_and_governed_partition_every_tool_exactly(self):
-        # No drift, no double-counting: the two sets exactly partition the real tool surface.
+        # No drift, no double-counting: the two sets exactly partition the dispatchable surface —
+        # the governed catalog PLUS the doorway three, which live beside the catalog (dispatch
+        # accepts them, TOOLS does not list them; doorway design, placement decision 1/2).
         self.assertEqual(READ_ONLY_TOOLS | self.GOVERNED_TOOLS_COVERED_BY_THIS_SUITE,
-                         set(tool_names()))
+                         set(tool_names()) | DOORWAY_NAMES)
         self.assertEqual(READ_ONLY_TOOLS & self.GOVERNED_TOOLS_COVERED_BY_THIS_SUITE, set())
 
 
@@ -695,6 +707,38 @@ class TestReadOnlyToolsSurviveSealed(unittest.TestCase):
             with self.subTest(tool=name):
                 out = broker.dispatch(name, _read_args(name))
                 self.assertTrue(out["ok"], f"{name} must still succeed while sealed: {out}")
+
+
+class TestDoorwayDelegatesTheSealGate(unittest.TestCase):
+    """THE DELEGATION PROOF (doorway design, test 5): ``pacioli_call`` is read-only at the OUTER
+    layer only because the inner ``self.dispatch`` runs the full gate against the inner tool's
+    own args. Both directions, same sealed store: a governed write through the doorway is refused
+    by the INNER seal gate with the identical envelope a direct call gets; a read through the
+    doorway still succeeds — the doorway must never weaken the gate, and the gate must never
+    seal the doorway's reads."""
+
+    def test_governed_write_through_doorway_refused_by_inner_seal_gate(self):
+        client = NoCallClient()
+        broker, _, stores = make_broker(client=client)
+        stores("prod").seal("incident under investigation", source="operator")
+        args = {"name": "SI-1", "plan_id": "p", "marker": "m"}
+        direct = broker.dispatch("submit_sales_invoice", args)
+        via_doorway = broker.dispatch("pacioli_call",
+                                      {"tool": "submit_sales_invoice", "arguments": args})
+        self.assertFalse(via_doorway["ok"])
+        self.assertEqual(via_doorway["stage"], "seal")
+        self.assertEqual(direct, via_doorway,
+                         "the doorway must return the inner refusal VERBATIM")
+        self.assertEqual(client.calls, [], "sealed write reached the client via the doorway")
+
+    def test_reads_through_doorway_survive_sealed(self):
+        broker, client, stores = make_broker()
+        stores("prod").seal("incident", source="operator")
+        out = broker.dispatch("pacioli_call",
+                              {"tool": "get_sales_invoice", "arguments": {"name": "SI-1"}})
+        self.assertTrue(out["ok"], f"a read through the doorway must survive sealed: {out}")
+        found = broker.dispatch("pacioli_find_tools", {"query": "submit invoice"})
+        self.assertTrue(found["ok"], "a sealed store must stay searchable")
 
 
 class TestReadOnlyToolsSurviveCorruptSealState(unittest.TestCase):

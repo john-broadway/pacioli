@@ -6,6 +6,50 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.36.0 — 2026-08-08 — the doorway: a searchable catalog instead of 265 resident schemas
+
+MINOR: additive capability, backward compatible in every direction. With `PACIOLI_TOOLSETS`
+unset the served surface is exactly the full catalog, as before (265 tools; the only default
+change is three `plan_*` descriptions now naming their execute tools — `cancel_<doctype>`,
+`cascade_cancel`, `reconcile` — so the planned act never dead-ends one hop from execution).
+
+### The feature (design: `docs/plans/2026-08-08-doorway-design.md`)
+
+The broker's `tools/list` payload is 229,348 bytes — roughly 57k–65k tokens delivered to every
+client before its first question. A harness that defers schemas hides that cost; a vanilla MCP
+client eats all of it, and a small local model cannot connect at all. Setting
+`PACIOLI_TOOLSETS=dynamic` serves **nine resident tools** instead:
+
+- `pacioli_find_tools(query, limit)` — keyword search over the governed catalog's names and
+  descriptions, ranked name-first, one-line summaries. All keywords must match; zero results
+  means the words missed, and the tool's own description says so.
+- `pacioli_tool_schema(name)` — the full description + input schema for one catalog tool,
+  refused with near-miss suggestions on an unknown name.
+- `pacioli_call(tool, arguments)` — dispatch through the full governed spine, result verbatim.
+- plus the spine itself, resident: `plan_submit`, `plan_cancel`, `plan_cascade_cancel`,
+  `plan_reconcile`, `prove_verify`, `prove_orphans`.
+
+Measured on a real stdio handshake: **10,630 bytes (4.6% of the default surface)**. Every
+catalog tool stays callable — through `pacioli_call` or directly by name; advertisement is a
+context choice, never reachability, and never authorization (the guard enforces at the floor
+regardless of what any door advertises). A typo'd `PACIOLI_TOOLSETS` value refuses startup
+(exit 2) on all three doors — stdio, HTTP and A2A — rather than serving a surprise; the A2A
+agent card itself still lists the full catalog.
+
+The safety shape, held under two independent adversarial rounds (12 findings against the
+design before code existed; 9 mutations + 4 findings against the build): `pacioli_call`
+delegates through the one governed dispatch and nothing else, so the inner tool meets the
+seal gate, consent machinery and receipt discipline with its own arguments — a sealed store
+refuses a doorway write with the identical envelope a direct call gets, and stays searchable
+for reads. Outer keys other than `tool`/`arguments` are refused by name (a silently dropped
+outer `pacioli_target` would have retargeted reads to the default books). Hostile non-string
+tool names get the structured deny, never a transport error.
+
+### Dependency floor
+
+`cryptography>=50` in the optional `a2a` extra (was `>=42`): PYSEC-2026-3552, fixed in 50.0.0.
+The extra is opt-in; installs without `[a2a]` are unaffected.
+
 ## 0.35.0 — 2026-07-31 — party-history disclosure at PLAN
 
 MINOR, not a patch: this adds a new `Plan.context` field, a new opt-in environment variable, an

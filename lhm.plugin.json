@@ -2,7 +2,7 @@
   "identifier": "john-broadway-pacioli",
   "name": "Pacioli — the ERPNext broker you can hand the books",
   "description": "Governed agent access to your ERPNext books — 51 doctypes across accounts, stock, assets, and manufacturing: every write PLANNED, CONSENTED, PROVEN, and UNDOable. No debit without a credit. MCP + A2A doors, one spine.",
-  "version": "0.35.0",
+  "version": "0.36.0",
   "tools": [
     {
       "name": "get_sales_invoice",
@@ -6892,7 +6892,7 @@
     },
     {
       "name": "plan_cancel",
-      "description": "PLAN a document cancel (UNDO): read the posting's live GL rows (what the cancel unwinds), check the linked-submitted-documents blast radius, and record the plan. Refuses when other submitted documents link to this one (use plan_cascade_cancel to govern the whole graph in one consent). Nothing is cancelled. A human then mints a consent marker for the plan_id, out of band — a cancel marker never authorizes a submit, or vice versa. pacioli_doctype selects the document's DocType (default Sales Invoice) — the plan is BOUND to it.",
+      "description": "PLAN a document cancel (UNDO): read the posting's live GL rows (what the cancel unwinds), check the linked-submitted-documents blast radius, and record the plan. Refuses when other submitted documents link to this one (use plan_cascade_cancel to govern the whole graph in one consent). Nothing is cancelled. A human then mints a consent marker for the plan_id, out of band — a cancel marker never authorizes a submit, or vice versa — and the matching cancel_<doctype> tool consumes the plan and marker. pacioli_doctype selects the document's DocType (default Sales Invoice) — the plan is BOUND to it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -6916,7 +6916,7 @@
     },
     {
       "name": "plan_cascade_cancel",
-      "description": "PLAN a CASCADE cancel: discover the full submitted-dependent graph of a document, order it (dependents first, the target last), and record the plan for the WHOLE ordered graph. Refuses a cycle or a graph over the cap. Nothing is cancelled. A human then mints ONE consent marker for the plan_id that authorizes exactly this enumerated graph. pacioli_doctype selects the target's DocType (default Sales Invoice). Any doctype may appear in the graph; each node is labeled 'modeled' (Sales/Purchase Invoice) or 'generic'.",
+      "description": "PLAN a CASCADE cancel: discover the full submitted-dependent graph of a document, order it (dependents first, the target last), and record the plan for the WHOLE ordered graph. Refuses a cycle or a graph over the cap. Nothing is cancelled. A human then mints ONE consent marker for the plan_id that authorizes exactly this enumerated graph; the cascade_cancel tool executes the whole planned graph under it. pacioli_doctype selects the target's DocType (default Sales Invoice). Any doctype may appear in the graph; each node is labeled 'modeled' (Sales/Purchase Invoice) or 'generic'.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -6970,7 +6970,7 @@
     },
     {
       "name": "plan_reconcile",
-      "description": "PLAN a governed reconciliation (settling payments against invoices): the agent proposes specific (payment, invoice, amount) tuples; the broker reads each named invoice and payment FRESH, discloses the settlement (per row: which payment settles which invoice, the amount, live pre-outstanding -> projected post-outstanding), a standing note that reconciliation bypasses ERPNext's own freeze belts (the broker enforces the closed-books refusal itself, ERPNext will not), and a note naming the possible system Journal Entry side-effects (exchange gain/loss; credit/debit note). Nothing is posted. A human then mints a consent marker for the plan_id, out of band — it binds to exactly this pinned allocation set; reconcile never re-reads the allocation from the caller.",
+      "description": "PLAN a governed reconciliation (settling payments against invoices): the agent proposes specific (payment, invoice, amount) tuples; the broker reads each named invoice and payment FRESH, discloses the settlement (per row: which payment settles which invoice, the amount, live pre-outstanding -> projected post-outstanding), a standing note that reconciliation bypasses ERPNext's own freeze belts (the broker enforces the closed-books refusal itself, ERPNext will not), and a note naming the possible system Journal Entry side-effects (exchange gain/loss; credit/debit note). Nothing is posted. A human then mints a consent marker for the plan_id, out of band — it binds to exactly this pinned allocation set; the reconcile tool executes exactly that pinned set and never re-reads the allocation from the caller.",
       "inputSchema": {
         "type": "object",
         "properties": {

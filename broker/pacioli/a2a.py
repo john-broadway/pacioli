@@ -469,6 +469,18 @@ def serve_a2a(env=None, *, bind="127.0.0.1", port=DEFAULT_PORT, auth=None, allow
     in-door Host allowlist) is threaded to :func:`build_app`; ``None`` → the bind host +
     loopback forms."""
     import os
+
+    # Validation ONLY (doorway design review, finding 3): the A2A card stays the full catalog —
+    # an agent card is not context-resident the way tools/list is — but a typo'd
+    # PACIOLI_TOOLSETS must refuse THIS door exactly as it refuses the MCP doors, or the same
+    # operator mistake refuses one transport and is silently swallowed by another.
+    from pacioli.doorway import served_tools
+    try:
+        served_tools(env)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
     if _bind_requires_auth(bind) and auth is None:
         print(f"error: bind {bind!r} is not loopback — refusing to start the A2A transport "
               "without a bearer token (--auth env:VAR or file:/path). Exposing an "

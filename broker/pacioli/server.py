@@ -32,8 +32,10 @@ import hmac
 import sys
 import threading
 
+from pacioli.doorway import served_tools
 from pacioli.runtime import RuntimeError_, assemble
-from pacioli.tools import TOOLS
+from pacioli.tools import TOOLS  # noqa: F401 — re-exported (scripts/gen_lobehub_manifest.py
+#                                  reads the full catalog from here, not the served surface)
 
 _DISPATCH_LOCK = threading.Lock()
 
@@ -105,14 +107,19 @@ def _bearer_ok(header, token):
     return hmac.compare_digest(presented.encode(), token.encode())
 
 
-def _register_tool_handlers(app, broker, types):
+def _register_tool_handlers(app, broker, types, served):
     """The ONE registration of the MCP tool surface — both doors call this (review finding 4:
     the stdio and HTTP copies had already diverged into a maintenance hazard). Handlers offload
-    to :func:`dispatch_tool_async` so no door ever runs dispatch on its event loop."""
+    to :func:`dispatch_tool_async` so no door ever runs dispatch on its event loop.
+
+    ``served`` is the ADVERTISED list (:func:`pacioli.doorway.served_tools`, resolved once at
+    door start) — what ``tools/list`` sends, never what ``dispatch`` accepts: an unadvertised
+    catalog tool called by name still dispatches (advertisement is a context choice, not
+    reachability, and never authorization — the guard enforces at the floor regardless)."""
     @app.list_tools()
     async def list_tools():
         return [types.Tool(name=t["name"], description=t["description"],
-                           inputSchema=t["inputSchema"]) for t in TOOLS]
+                           inputSchema=t["inputSchema"]) for t in served]
 
     @app.call_tool()
     async def call_tool(name, arguments):
@@ -167,7 +174,16 @@ def _asgi_app(manager, token):
 
 
 def serve(env=None):
-    """Run the agent-facing MCP stdio server. Blocks until the client disconnects."""
+    """Run the agent-facing MCP stdio server. Blocks until the client disconnects.
+
+    ``PACIOLI_TOOLSETS`` is resolved FIRST — a typo'd mode refuses to start before anything is
+    imported or assembled, the same fail-first order every other door-config refusal follows."""
+    try:
+        served = served_tools(env)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
     try:
         import asyncio
 
@@ -186,7 +202,7 @@ def serve(env=None):
         return 2
 
     app = Server("pacioli")
-    _register_tool_handlers(app, broker, types)
+    _register_tool_handlers(app, broker, types, served)
 
     async def _run():
         async with stdio_server() as (read, write):
@@ -213,6 +229,11 @@ def serve_http(env=None, *, bind="127.0.0.1", port=8791, auth=None, allowed_host
     unauthenticated discovery route, so every POST is a protected control path. ``allowed_hosts``
     is the Host allowlist (``None`` → the bind host + loopback forms)."""
     resolved_env = env if env is not None else None
+    try:
+        served = served_tools(env)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     if _bind_requires_auth(bind) and auth is None:
         print(f"error: bind {bind!r} is not loopback — refusing to start the HTTP transport "
               "without a bearer token (--auth env:VAR or file:/path). Exposing an "
@@ -245,7 +266,7 @@ def serve_http(env=None, *, bind="127.0.0.1", port=8791, auth=None, allowed_host
         return 2
 
     app = Server("pacioli")
-    _register_tool_handlers(app, broker, types)
+    _register_tool_handlers(app, broker, types, served)
 
     from pacioli.webguard import default_allowed_hosts, guard_asgi
 

@@ -1926,7 +1926,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from pacioli import consent  # noqa: F401 — re-exported for the CLI's mint path
-from pacioli import history
+from pacioli import doorway, history
+from pacioli.doorway import DOORWAY_NAMES
 from pacioli import workflow
 from pacioli.amend import seat_conflict
 from pacioli.cascade import build_cascade, run_cascade
@@ -2243,7 +2244,8 @@ _GENERIC_TOOLS = [
                        "one (use plan_cascade_cancel to govern the whole graph in one consent). "
                        "Nothing is cancelled. A human then mints a consent marker for the "
                        "plan_id, out of band — a cancel marker never authorizes a submit, or "
-                       "vice versa. pacioli_doctype selects the document's DocType (default "
+                       "vice versa — and the matching cancel_<doctype> tool consumes the plan "
+                       "and marker. pacioli_doctype selects the document's DocType (default "
                        "Sales Invoice) — the plan is BOUND to it.",
         "inputSchema": {
             "type": "object",
@@ -2258,7 +2260,8 @@ _GENERIC_TOOLS = [
                        "document, order it (dependents first, the target last), and record the plan "
                        "for the WHOLE ordered graph. Refuses a cycle or a graph over the cap. Nothing "
                        "is cancelled. A human then mints ONE consent marker for the plan_id that "
-                       "authorizes exactly this enumerated graph. pacioli_doctype selects the "
+                       "authorizes exactly this enumerated graph; the cascade_cancel tool "
+                       "executes the whole planned graph under it. pacioli_doctype selects the "
                        "target's DocType (default Sales Invoice). Any doctype may appear in the graph; "
                        "each node is labeled 'modeled' (Sales/Purchase Invoice) or 'generic'.",
         "inputSchema": {
@@ -2301,8 +2304,8 @@ _GENERIC_TOOLS = [
                        "and a note naming the possible system Journal Entry side-effects "
                        "(exchange gain/loss; credit/debit note). Nothing is posted. A human then "
                        "mints a consent marker for the plan_id, out of band — it binds to "
-                       "exactly this pinned allocation set; reconcile never re-reads the "
-                       "allocation from the caller.",
+                       "exactly this pinned allocation set; the reconcile tool executes exactly "
+                       "that pinned set and never re-reads the allocation from the caller.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2463,6 +2466,16 @@ READ_ONLY_TOOLS = frozenset(
     {_MECHANICAL_VERBS["get"][0](d) for d in DESCRIPTORS}
     | {_MECHANICAL_VERBS["list"][0](d) for d in DESCRIPTORS}
     | {"workflow_status", "prove_verify", "prove_orphans"}
+    # The three doorway tools, read-only for two DISTINCT reasons (doorway design, decision 3):
+    # find_tools/tool_schema are pure reads over the static in-process catalog — no store, no
+    # client — and a sealed store MUST stay searchable (the seal never hides the books that
+    # explain it, Global constraint #6). pacioli_call is a transparent wrapper whose inner
+    # self.dispatch runs the FULL gate against the inner tool's own args; if the OUTER call were
+    # governed, _seal_gate would resolve a target from {tool, arguments} — which carry no
+    # pacioli_target — and gate the WRONG books. Outer-read-only is the only correct
+    # classification, and it is safe exactly as long as _tool_pacioli_call delegates through
+    # self.dispatch and nothing else (its docstring states why).
+    | DOORWAY_NAMES
 )
 
 
@@ -7998,8 +8011,16 @@ class PacioliBroker:
 
     # --- dispatch ------------------------------------------------------------------
     def dispatch(self, name, arguments):
+        # isinstance FIRST — DOORWAY_NAMES is a frozenset, and this check sits OUTSIDE the try
+        # below. A2A delivers `tool` straight from caller JSON with no type check, so a dict-
+        # valued name hashed against a set would raise TypeError right past every structured-deny
+        # clause: a transport error, a different envelope per door, and no receipt (doorway
+        # design review, finding 1). Non-string names take the same deny every unknown name does.
+        if not isinstance(name, str) or (name not in tool_names()
+                                         and name not in DOORWAY_NAMES):
+            return _deny(f"unknown tool {name!r}")
         handler = getattr(self, f"_tool_{name}", None)
-        if name not in tool_names() or handler is None:
+        if handler is None:
             return _deny(f"unknown tool {name!r}")
         args = arguments or {}
         try:
@@ -10374,6 +10395,74 @@ class PacioliBroker:
         return {"ok": True, "orphans": [
             {"seq": r.seq, "ts": r.ts, "body": r.body} for r in store.orphans()
         ]}
+
+    # --- the doorway (pacioli.doorway — docs/plans/2026-08-08-doorway-design.md) ---------------
+    # Handlers catch their module's OWN ValueError/KeyError and return _deny directly: these are
+    # DESIGNED refusals with designed envelopes, never left to the last-resort backstop below —
+    # which exists for promises NOT kept, and whose reasons carry exception-type noise.
+
+    def _tool_pacioli_find_tools(self, args):
+        try:
+            results = doorway.search_tools(TOOLS, args.get("query"), args.get("limit"))
+        except ValueError as exc:
+            return _deny(str(exc))
+        return {"ok": True, "results": results,
+                "note": ("summaries only — read pacioli_tool_schema(name) before calling; "
+                         "zero results usually means the KEYWORDS missed (all must match): "
+                         "retry with a catalog verb (get/list/submit/cancel/amend/plan/prove) "
+                         "plus the doctype noun before concluding the capability is not offered")}
+
+    def _tool_pacioli_tool_schema(self, args):
+        name = args.get("name")
+        if isinstance(name, str) and name in DOORWAY_NAMES:
+            return _deny(f"{name} is the doorway itself and already resident — the doorway "
+                         "does not describe itself")
+        try:
+            return {"ok": True, **doorway.tool_schema(TOOLS, name)}
+        except KeyError as exc:
+            return _deny(exc.args[0])
+
+    def _tool_pacioli_call(self, args):
+        """Dispatch one catalog tool through the doorway — a TRANSPARENT wrapper.
+
+        THE SAFETY INVARIANT, both halves (doorway design, decision 3 + review finding 2):
+        this handler delegates through ``self.dispatch`` and NOTHING else.
+
+        * Never ``getattr(self, f"_tool_{name}")`` or any helper: the inner ``dispatch`` run is
+          what applies the seal gate, the consent/plan machinery and the receipt discipline to
+          the inner tool with the inner tool's OWN args. Reaching around it is a bypass, not an
+          optimization.
+        * Never ``server.dispatch_raw``: every door holds the process-wide, NON-reentrant
+          ``_DISPATCH_LOCK`` while this handler runs — re-entering ``dispatch_raw`` here would
+          deadlock the entire server, every door, on the first doorway call.
+
+        The result is returned verbatim — refusal envelopes, receipts and stages flow through
+        unchanged; the doorway adds no second result shape.
+        """
+        try:
+            unknown = set(args) - {"tool", "arguments"}
+        except TypeError:
+            return _deny("pacioli_call takes an object with keys 'tool' and 'arguments'")
+        if unknown:
+            # Names pacioli_target explicitly (review finding 7): silently dropping an outer
+            # pacioli_target would retarget a read to the DEFAULT books with ok:true — and a
+            # wrong-books read feeding a plan is how a wrong-books write gets consented.
+            return _deny(f"unexpected key(s) {sorted(map(str, unknown))} — pacioli_call takes "
+                         "only 'tool' and 'arguments'; everything the tool itself accepts "
+                         "(pacioli_target, consent_token, plan_id, marker, ...) goes INSIDE "
+                         "'arguments'")
+        tool = args.get("tool")
+        if not isinstance(tool, str) or not tool.strip():
+            return _deny("pacioli_call requires 'tool': the exact catalog tool name "
+                         "(from pacioli_find_tools)")
+        if tool in DOORWAY_NAMES:
+            return _deny("the doorway does not dispatch itself — call catalog tools through "
+                         "pacioli_call; the doorway's own three are already resident")
+        arguments = args.get("arguments")
+        if arguments is not None and not isinstance(arguments, dict):
+            return _deny("'arguments' must be an object: the named tool's own arguments, "
+                         "exactly as pacioli_tool_schema declares them")
+        return self.dispatch(tool, arguments or {})
 
 
 # --- generate the 20 mechanical wrapper methods onto PacioliBroker -----------------------------
