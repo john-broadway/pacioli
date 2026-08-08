@@ -10,6 +10,7 @@ import io
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -322,6 +323,19 @@ READY_RECON_ROUTES = {
 }
 
 
+# Unlike the pure-core tests above (which construct receipts with an explicit ``ts=`` and so pin
+# BOTH sides of the window), the CLI fixtures below write through a REAL store, where
+# ``record_intent`` stamps each receipt from the store's own UTC clock. A window frozen to a
+# literal month therefore stops containing its own fixtures the moment that month ends — on
+# 2026-08-01 it did, and CI went red on a calendar roll rather than a code change. Derive the
+# default window from the same clock the receipts are stamped by (UTC, matching ``_utc_iso`` —
+# NOT local time), with a day of margin either side so a run straddling midnight still brackets
+# its own writes. Tests that are ABOUT bound handling still pass their bounds explicitly.
+_TODAY_UTC = datetime.now(timezone.utc).date()
+WINDOW_SINCE = (_TODAY_UTC - timedelta(days=1)).isoformat()
+WINDOW_UNTIL = (_TODAY_UTC + timedelta(days=1)).isoformat()
+
+
 class TestCloseReconcileCli(unittest.TestCase):
     """``close --reconcile`` — the glue that joins Half 1 (the Statement, unchanged) to Half 2
     (the Reconciliation, ``pacioli.reconciliation``) against a FAKE bench transport (never real
@@ -341,7 +355,7 @@ class TestCloseReconcileCli(unittest.TestCase):
     def _write_registry(self, text):
         (Path(self.dir.name) / "targets.toml").write_text(text)
 
-    def _run(self, transport, since="2026-07-01", until="2026-07-31", as_json=False,
+    def _run(self, transport, since=WINDOW_SINCE, until=WINDOW_UNTIL, as_json=False,
              target=None, reconcile=True):
         o, e = io.StringIO(), io.StringIO()
         with redirect_stdout(o), redirect_stderr(e):

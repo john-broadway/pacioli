@@ -18,6 +18,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -311,13 +312,21 @@ class TestCmdCloseEnvelopeAutoSeal(unittest.TestCase):
 
     def test_explicit_since_until_named_in_seal_reason(self):
         self._make_orphan()
-        rc, out, err = self._run(envelope=["orphan=contain"],
-                                 since="2026-07-01", until="2026-07-31")
+        # The window must CONTAIN the orphan this fixture just wrote: ``record_intent`` stamps it
+        # from the store's UTC clock, so bounds frozen to a literal month stop bracketing their
+        # own fixture once that month ends (2026-08-01 did exactly that, and took CI red with it).
+        # Derive both bounds from that same clock. The subject here is unchanged — that whatever
+        # bounds the operator passed are echoed verbatim into the seal reason — and a derived bare
+        # date proves that exactly as well as a frozen one.
+        today = datetime.now(timezone.utc).date()
+        since = (today - timedelta(days=1)).isoformat()
+        until = (today + timedelta(days=1)).isoformat()
+        rc, out, err = self._run(envelope=["orphan=contain"], since=since, until=until)
         self.assertEqual(rc, 1, err)
         store2 = open_store(self.env, "prod")
         reason = store2.seal_state()["reason"]
-        self.assertIn("2026-07-01", reason)
-        self.assertIn("2026-07-31", reason)
+        self.assertIn(since, reason)
+        self.assertIn(until, reason)
 
     def test_multiple_contain_classes_all_named_in_reason(self):
         store = open_store(self.env, "prod")
