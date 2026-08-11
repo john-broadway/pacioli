@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pacioli"
-version = "0.37.0"
+version = "0.37.1"
 description = "Governed agent broker for ERPNext (MCP + A2A doors, one spine) — no debit without a credit: PLAN, CONSENT, PROVE, UNDO over the books, on the Pacioli Guard credential floor"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,12 +22,24 @@ dependencies = []
 
 [project.optional-dependencies]
 # The agent-facing MCP stdio server (glue). The pure cores + human CLI are stdlib-only.
-server = ["mcp>=1.0"]
+# `<2` is NOT caution — it is the observed break. mcp 2.0.0 (2026-07-28) removed the decorator
+# registration API (`Server.list_tools` / `Server.call_tool`) that `_register_tool_handlers`
+# is built on, so a fresh `pacioli[server]` install resolved a door that could not start.
+# An unbounded major protects the lockfile and nobody else. Lift this to `<3` only after the
+# door is ported to the 2.x `MCPServer` / `add_request_handler` shape.
+server = ["mcp>=1.0,<2"]
 # The A2A door (Agent2Agent JSON-RPC + agent card) — the first non-MCP door
 # (docs/plans/2026-07-16-a2a-door.md). Lazily imported; nothing outside `pacioli serve --a2a`
 # needs it. `a2a-sdk[signing]` (pulls PyJWT) + `cryptography` add opt-in ES256 agent-card
 # signing (docs/plans/2026-07-17-a2a-card-signing.md); inert unless a signing key is configured.
-a2a = ["a2a-sdk[signing]>=1.1", "uvicorn>=0.30", "cryptography>=50"]  # >=50: PYSEC-2026-3552
+# Majors bounded per dep by the surface actually reached, not by blanket rule:
+#   a2a-sdk  — deep surface (`a2a.server.routes.*`, `a2a.types.a2a_pb2`, `a2a.utils.signing`);
+#              same break shape as mcp, so it is capped.
+#   uvicorn  — one call (`uvicorn.run`), but 0.x breaks on MINOR, so cap at the 1.0 line.
+#   cryptography — DELIBERATELY UNCAPPED. Only `serialization` + `asymmetric.ec` are touched
+#              (its most stable surface) and this floor tracks a security advisory; a major cap
+#              here would block the next advisory bump, which is the opposite of the point.
+a2a = ["a2a-sdk[signing]>=1.1,<2", "uvicorn>=0.30,<1", "cryptography>=50"]  # >=50: PYSEC-2026-3552
 #       fixed in 50.0.0 — the floor is the fix's floor, raised deliberately per advisory, not tracked
 
 [project.urls]

@@ -2,7 +2,7 @@
   "identifier": "john-broadway-pacioli",
   "name": "Pacioli — the ERPNext broker you can hand the books",
   "description": "Governed agent access to your ERPNext books — 51 doctypes across accounts, stock, assets, and manufacturing: every write PLANNED, CONSENTED, PROVEN, and UNDOable. No debit without a credit. MCP + A2A doors, one spine.",
-  "version": "0.37.0",
+  "version": "0.37.1",
   "tools": [
     {
       "name": "get_sales_invoice",

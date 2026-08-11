@@ -2490,9 +2490,11 @@ def _close_schemas(tools):
     keys and the correction. Do not claim the guidance reaches every caller — it reaches the A2A
     door, inner ``pacioli_call`` args, and dynamic-mode by-name calls.
 
-    The pin is ``mcp>=1.0``, so an older non-validating SDK is still permitted, and there the
-    server-side refusal is the only one. That is exactly why enforcement lives in
-    :meth:`dispatch` rather than in the declaration alone.
+    The pin is ``mcp>=1.0,<2``, so an older non-validating 1.x SDK is still permitted, and there
+    the server-side refusal is the only one. That is exactly why enforcement lives in
+    :meth:`dispatch` rather than in the declaration alone. (The upper bound arrived in 0.37.1 and
+    narrows nothing here: it excludes 2.x, which cannot serve this door at all, not any of the
+    1.x SDKs this paragraph is about.)
 
     Indexes rather than ``.get``-guards deliberately: a tool entry with no ``inputSchema`` should
     fail loudly at import, not be skipped into shipping OPEN. There is no safe way to serve a tool

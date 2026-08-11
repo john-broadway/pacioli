@@ -6,6 +6,47 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.37.1 — 2026-08-11 — the MCP door was dead on arrival for anyone installing it fresh
+
+PATCH. No behaviour in this package changed. One dependency bound moved, and that is the entire
+fix: the `server` extra now resolves `mcp>=1.0,<2` instead of `mcp>=1.0`.
+
+### What was broken
+
+`mcp` 2.0.0 was published on 2026-07-28. It removed the decorator registration API
+(`Server.list_tools`, `Server.call_tool`) that the MCP door is built on. Because the `server` extra
+declared an unbounded major, every fresh `pip install 'pacioli[server]'` from that date forward
+resolved mcp 2.x, and the door raised `AttributeError: 'Server' object has no attribute
+'list_tools'` before it could serve a single tool.
+
+Affected: every published version carrying the MCP door, 0.30.0 through 0.37.0, on **new installs
+only**. An environment already holding mcp 1.x is unaffected and always was. Nothing about a
+working install degraded, and no governed act ever ran under a half-started door: the failure is at
+registration, before the door serves anything.
+
+It stayed invisible because nothing exercised the pin as a resolved environment. This workspace's
+venv held mcp 1.28.1, so local runs were green. CI did resolve mcp 2.0.0, but had no test that
+started the door. The door-startup tests added in 0.37.0 are what turned a shipped break into a red
+build, one push after they landed.
+
+### The rule this restates
+
+A lockfile protects the build, not the adopter. A published `>=` with no upper bound promises that
+every future major of that dependency will keep working, and no package can make that promise.
+Majors are now bounded per dependency by the surface actually reached, not by blanket rule:
+
+- `mcp>=1.0,<2` and `a2a-sdk[signing]>=1.1,<2`: both are reached through deep API surface
+  (`a2a.server.routes.*`, `a2a.types.a2a_pb2`, `a2a.utils.signing`), so both are capped.
+- `uvicorn>=0.30,<1`: one call (`uvicorn.run`), but a 0.x project breaks on minor, so the cap sits
+  at the 1.0 line.
+- `cryptography>=50`: deliberately left uncapped. Only `serialization` and `asymmetric.ec` are
+  touched, which is its most stable surface, and this floor tracks a security advisory
+  (PYSEC-2026-3552). Capping the major here would block the next advisory bump, which is the
+  opposite of the point.
+
+Porting the door to the mcp 2.x `MCPServer` / `add_request_handler` shape is separate work, tracked
+on its own. Until it lands, 2.x is refused outright rather than half-supported.
+
 ## 0.37.0 — 2026-08-11 — an argument you misspell is now refused instead of silently dropped
 
 MINOR. One change can break a caller and is listed first. Nothing is removed, no accepted value

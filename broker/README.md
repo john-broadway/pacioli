@@ -923,7 +923,7 @@ Two more advisory disclosures (never a gate):
 - 🔴 **ARGUMENTS — an undeclared key is REFUSED, not ignored (0.37.0).** Every served schema
   declares `additionalProperties: false` **and the broker enforces it in `dispatch`**, because
   a declaration is only as good as whoever checks it: the A2A door validates nothing at all, and
-  the `mcp` pin (`>=1.0`) permits SDKs that do not validate either. A declaration nothing
+  the `mcp` pin (`>=1.0,<2`) permits 1.x SDKs that do not validate either. A declaration nothing
   enforces is a promise nothing keeps.
   **If your client sends keys outside a tool's schema today, they will be refused after upgrading**
   — at `stage: "request"`, before anything is claimed or spent, so no marker is consumed by a
