@@ -8,11 +8,14 @@ Side effects are injected so ordering, crash-safety, and the concurrency guard a
 
 Run: `python3 -m unittest pacioli.tests.test_spine` from the broker app root. No frappe required.
 """
+import sqlite3
 import unittest
 
-from pacioli.consent import CONSUMED, LIVE, new_marker
+from pacioli.consent import CONSUMED, LIVE, RESERVED, new_marker
 from pacioli.plan import new_plan
-from pacioli.spine import governed_submit
+from pacioli.prove import orphans
+from pacioli.spine import _transition_end, governed_submit
+from pacioli.store import BrokerStore
 
 TOKEN = "marker-token"
 PLAN = new_plan(
@@ -394,6 +397,313 @@ class TestPostClaimExceptionRobustness(unittest.TestCase):
         self.assertEqual(res.stage, "unconfirmed")
         self.assertEqual(fx.outcome_calls[1][0], "unconfirmed")
         self.assertEqual(fx.final_marker.state, CONSUMED)
+
+
+UNSETTLED = "the marker remains CLAIMED"
+
+
+class TestDoubleFailureMessagesTellTheTruth(unittest.TestCase):
+    """Every ``not recorded`` return — the sentence an operator reads when BOTH the outcome write
+    and ``_settle``'s sanitized retry have failed. These are the worst-state messages, and the
+    party-baselines lesson is that a false sentence hides exactly here.
+
+    **The one fact none of them may misstate.** When ``_settle`` returns ``recorded=False``,
+    ``record_outcome`` never completed, so *no marker write persisted*. ``commit()``/``release()``
+    are pure — they return a new dataclass; only ``record_outcome`` writes one. So the marker is
+    left exactly as ``claim_marker`` left it: ``reserved``, by the CAS that committed before
+    ``execute``. Not ``live``, and **not** ``consumed``.
+
+    ⚠️ Two of these said **"the consent marker is spent"** until 2026-08-11 — a durable fact the
+    immediately-preceding failed write means did not happen. Proven false against a real
+    ``BrokerStore`` in :class:`TestUnsettledMarkerIsReallyReservedInTheStore` below, which is the
+    point of that class existing: asserting on ``FakeEffects.final_marker`` only proves the *fake*
+    never received a marker, never that the *row* says ``reserved``.
+
+    Why it mattered: "spent" tells an operator the ceremony completed and the grant is burned —
+    nothing to clean up. The truth is a marker stranded in ``reserved``, which no sweep collects
+    (``prove.orphans`` sweeps open *intents*, not markers) and which reads as neither a live grant
+    nor a spent one. Different remediation, and the honest phrasing was already three lines away
+    in this same function.
+    """
+
+    def test_answered_refusal_double_failure_says_the_grant_was_not_returned(self):
+        # An ANSWERED refusal is the one branch whose marker was meant to be RELEASED (a failed
+        # submit must not burn the grant). The release never persisted, so the human's grant is
+        # stranded rather than returned — the message must not imply it came back.
+        fx = FakeEffects(execute_raises=AnsweredError("HTTP 500: ValidationError"),
+                         outcome_raise_times=99, outcome_raises=RuntimeError("store unreachable"))
+        res = _submit(fx)
+        self.assertFalse(res.ok)
+        self.assertIn(UNSETTLED, res.reason)
+        self.assertIn("the grant was never returned", res.reason)
+        self.assertIn("HTTP 500: ValidationError", res.reason)  # the original failure
+        self.assertIn("store unreachable", res.reason)          # AND the recording failure
+        self.assertIsNone(fx.final_marker)  # nothing was ever settled
+
+    def test_unconfirmed_docstatus_double_failure_does_not_claim_the_marker_is_spent(self):
+        fx = FakeEffects(execute_result={"docstatus": 0, "name": "JV-BIG"},
+                         outcome_raise_times=99, outcome_raises=RuntimeError("store unreachable"))
+        res = _submit(fx)
+        self.assertFalse(res.ok)
+        self.assertIn(UNSETTLED, res.reason)
+        self.assertNotIn("marker is spent", res.reason)
+        self.assertIn("docstatus 0", res.reason)   # what was seen
+        self.assertIn("expected 1", res.reason)    # what was required
+        self.assertIsNone(fx.final_marker)
+
+    def test_confirmed_success_double_failure_does_not_claim_the_marker_is_spent(self):
+        # The bench DID the irreversible thing and confirmed it; only the book failed. Every word
+        # about the document must stay true, and the marker must not be reported as settled.
+        fx = FakeEffects(outcome_raise_times=99, outcome_raises=RuntimeError("store unreachable"))
+        res = _submit(fx)
+        self.assertFalse(res.ok)
+        self.assertIn("succeeded at the bench", res.reason)  # still true, still said
+        self.assertIn(UNSETTLED, res.reason)
+        self.assertNotIn("marker is spent", res.reason)
+        self.assertIn("prove_orphans", res.reason)  # the sweep that DOES collect the open intent
+        self.assertIsNone(fx.final_marker)
+
+    def test_no_answer_readback_raises_double_failure(self):
+        # readback itself raises AND the settle double-fails: covers _settle_or_deny's own deny.
+        fx = FakeEffects(execute_raises=RuntimeError("connection reset"),
+                         readback_raises=RuntimeError("readback timed out"),
+                         outcome_raise_times=99, outcome_raises=RuntimeError("store unreachable"))
+        res = _submit(fx)
+        self.assertFalse(res.ok)
+        self.assertIn(UNSETTLED, res.reason)
+        self.assertIn("no answer from the bench", res.reason)
+        self.assertIsNone(fx.final_marker)
+
+    def test_no_answer_readback_mismatch_double_failure(self):
+        # readback ANSWERS and says the transition did NOT happen, then the settle double-fails.
+        fx = FakeEffects(execute_raises=RuntimeError("connection reset"), readback_result=0,
+                         outcome_raise_times=99, outcome_raises=RuntimeError("store unreachable"))
+        res = _submit(fx)
+        self.assertFalse(res.ok)
+        self.assertIn(UNSETTLED, res.reason)
+        self.assertIsNone(fx.final_marker)
+
+    def test_no_answer_readback_confirms_completion_double_failure(self):
+        # The worst case in the module: the act DID land (readback proves it) and the book cannot
+        # say so at all. The message must carry both halves.
+        fx = FakeEffects(execute_raises=RuntimeError("connection reset"), readback_result=1,
+                         outcome_raise_times=99, outcome_raises=RuntimeError("store unreachable"))
+        res = _submit(fx)
+        self.assertFalse(res.ok)
+        self.assertIn("DID complete", res.reason)
+        self.assertIn(UNSETTLED, res.reason)
+        self.assertIsNone(fx.final_marker)
+
+    def test_no_answer_readback_confirms_completion_degraded_record_IS_spent(self):
+        # The CONTRAST case that keeps the fix honest: here the retry SUCCEEDS, so the committed
+        # marker really was persisted. This message SHOULD say spent — proving the correction
+        # above is about truth, not about deleting the word everywhere.
+        fx = FakeEffects(execute_raises=RuntimeError("connection reset"), readback_result=1,
+                         outcome_raise_times=1, outcome_raises=ValueError("nonfinite float"))
+        res = _submit(fx)
+        self.assertFalse(res.ok)                      # degraded — never a clean "done"
+        self.assertEqual(res.stage, "unconfirmed")
+        self.assertIn("marker is spent", res.reason)  # TRUE here: the retry persisted it
+        self.assertNotIn(UNSETTLED, res.reason)
+        self.assertEqual(fx.final_marker.state, CONSUMED)
+
+
+class TestEveryDoubleFailureCarriesBothClauses(unittest.TestCase):
+    """All five ``recorded=False`` returns, driven in one place.
+
+    ⚠️ Written because sampling one site was not enough. The 08-11 batch introduced the
+    ``prove_orphans`` pointer and claimed the shared constant meant the five "cannot drift apart
+    again" — but only the MARKER sentence was shared. The pointer was hand-written at four sites
+    and pinned at ONE, so an independent review deleted it from the other three with zero reds.
+    It was also missing outright from the fifth (the answered refusal), where it is not merely
+    true but the most explainable case of all: the bench refused, nothing posted, and the orphan
+    the operator will meet later has a clean explanation nobody gave them.
+
+    Both clauses are now constants and this test drives every path, so deleting either from any
+    site reds here. A shared constant is not the guarantee — a test that visits every site is."""
+
+    CASES = {
+        "answered refusal": dict(execute_raises=AnsweredError("HTTP 500: ValidationError")),
+        "docstatus mismatch": dict(execute_result={"docstatus": 0, "name": "JV-BIG"}),
+        "confirmed success": dict(),
+        "no answer, readback raises": dict(execute_raises=RuntimeError("connection reset"),
+                                           readback_raises=RuntimeError("readback timed out")),
+        "no answer, readback says no": dict(execute_raises=RuntimeError("connection reset"),
+                                            readback_result=0),
+        "no answer, readback says yes": dict(execute_raises=RuntimeError("connection reset"),
+                                             readback_result=1),
+    }
+
+    def _drive(self, kw):
+        fx = FakeEffects(outcome_raise_times=99,
+                         outcome_raises=RuntimeError("store unreachable"), **kw)
+        return _submit(fx), fx
+
+    def test_all_of_them_carry_the_same_two_shared_clauses(self):
+        # DRIFT BETWEEN SITES. Comparing against the constants is the right instrument for this
+        # one question — "do all five say the same thing" — and the wrong one for "is what they
+        # say correct", which is the test below.
+        from pacioli.spine import _OPEN_INTENT, _UNSETTLED
+        for label, kw in self.CASES.items():
+            with self.subTest(path=label):
+                res, fx = self._drive(kw)
+                self.assertFalse(res.ok)
+                self.assertIn(_UNSETTLED, res.reason)
+                self.assertIn(_OPEN_INTENT, res.reason)
+                self.assertIsNone(fx.final_marker)
+
+    def test_all_of_them_use_the_operator_facing_words_that_have_to_be_there(self):
+        # ⚠️ The test above CANNOT catch a reworded constant — it compares the constant against
+        # itself, so editing `_UNSETTLED` edits both sides and it stays green. Proven: a mutation
+        # dropping the store's own state literal from the sentence left it passing. Self-
+        # referential assertions are this house's recorded trap (an extractor that reads the very
+        # prose it is checking), and I walked into it while fixing a finding about drift.
+        #
+        # So the load-bearing WORDS are asserted literally. `reserved` matters most: it is what
+        # `SELECT state FROM markers` returns and what the sibling refusal an operator will meet
+        # next already says ("marker not available (state: reserved)"). A message describing the
+        # row in words that cannot be grepped against the row is a message that costs them a
+        # search.
+        for label, kw in self.CASES.items():
+            with self.subTest(path=label):
+                res, _fx = self._drive(kw)
+                self.assertIn("reserved", res.reason)
+                self.assertIn("NOT recorded as spent", res.reason)
+                self.assertIn("prove_orphans", res.reason)
+                self.assertNotIn("marker is spent", res.reason)
+
+    def test_the_two_no_answer_subbranches_no_longer_render_identically(self):
+        # They shared one return and produced BYTE-IDENTICAL text, both saying "no answer from the
+        # bench" — while in one of them the readback DID answer and said the transition had not
+        # happened. An operator sent looking for a posting that is not there. Both siblings that
+        # are not double failures carry their detail; this one dropped it, and since the ledger
+        # write also failed, the detail was not persisted anywhere either.
+        common = dict(execute_raises=RuntimeError("connection reset"), outcome_raise_times=99,
+                      outcome_raises=RuntimeError("store unreachable"))
+        raised = _submit(FakeEffects(readback_raises=RuntimeError("readback timed out"), **common))
+        answered = _submit(FakeEffects(readback_result=0, **common))
+        self.assertNotEqual(raised.reason, answered.reason)
+        self.assertIn("readback ALSO failed", raised.reason)
+        self.assertIn("readback timed out", raised.reason)
+        self.assertIn("readback DID answer", answered.reason)
+        self.assertIn("docstatus 0", answered.reason)
+        self.assertIn("not the expected 1", answered.reason)
+
+
+class TestUnsettledMarkerIsReallyReservedInTheStore(unittest.TestCase):
+    """The claim above — "no marker write persisted, the row still reads ``reserved``" — asserted
+    against a REAL :class:`BrokerStore` rather than against ``FakeEffects``.
+
+    This class exists because the fake cannot prove it. ``fx.final_marker is None`` proves only
+    that the *fake* was never handed a marker; the sentence in the message is about the *persisted
+    row*. Reading the row is the only assertion that is about the same subject as the claim."""
+
+    def _real_store_submit(self, record_outcome_raises):
+        store = BrokerStore(sqlite3.connect(":memory:"), b"k" * 32,
+                            now_iso=lambda: "2026-07-14T00:00:00Z")
+        plan = new_plan(plan_id="p1", target="acme/Acme Corp", doc_version="v1",
+                        posting_date="2026-06-30", projected_gl=[], risk_flags=[], ts="t0")
+        store.record_plan(plan)
+        store.mint_marker("tok", "p1", 1000.0)
+
+        class Effects:
+            def claim_marker(self, reserved):  return store.claim_marker(reserved)
+            def record_intent(self, body):     return store.record_intent(body)
+            def execute(self):                 return {"docstatus": 1, "name": "SINV-001"}
+            def readback(self):                raise AssertionError("not reached")
+            def record_outcome(self, *a):      raise record_outcome_raises
+
+        res = governed_submit(plan=plan, marker=store.get_marker("tok"), token="tok",
+                              current_doc_version="v1", now_epoch=500.0, now_date="2026-07-01",
+                              locks={}, effects=Effects())
+        return res, store
+
+    def test_the_row_reads_reserved_not_consumed_after_a_double_failure(self):
+        res, store = self._real_store_submit(RuntimeError("store unreachable"))
+        state = store._conn.execute(
+            "SELECT state FROM markers WHERE plan_id='p1'").fetchone()[0]
+        self.assertEqual(state, RESERVED)     # NOT consumed — the commit never persisted
+        self.assertNotEqual(state, CONSUMED)
+        self.assertNotEqual(state, LIVE)
+        self.assertIn(UNSETTLED, res.reason)  # and the message says exactly that
+
+    def test_the_intent_is_an_orphan_so_the_sweep_named_in_the_message_finds_it(self):
+        # The message points the operator at prove_orphans. That pointer must be real: the intent
+        # WAS recorded (record_intent succeeded), no committed outcome ever landed, so the sweep
+        # this sentence names is the one that actually surfaces it.
+        res, store = self._real_store_submit(RuntimeError("store unreachable"))
+        self.assertIn("prove_orphans", res.reason)
+        open_intents = orphans(store.receipts())
+        self.assertEqual(len(open_intents), 1)
+
+
+class TestTransitionEndFailsOpenSoTheShippedLabelsAreGuarded(unittest.TestCase):
+    """``_transition_end`` returns ``None`` for any label it cannot parse, and ``None`` SKIPS the
+    docstatus confirmation check entirely (``if expected is not None``) — so an unparseable label
+    silently disables envelope E1, the protection against ERPNext answering 200 with the write
+    still queued to a background worker.
+
+    No shipped caller can reach that today: ``tools.py`` passes only the literals ``"0->1"``
+    (submit) and ``"1->2"`` (cancel) — verified exhaustively, ``tools.py`` being the only module
+    that imports from ``pacioli.spine``, with one call site and two callers. So this is not a live
+    defect; it is a trapdoor under the next op anyone adds.
+
+    ⚠️ **THE GUARD IS NOT IN THIS CLASS, and the 08-11 commit wrongly said it was.** It claimed
+    "a third op whose label cannot be read now goes red instead of quietly switching E1 off". An
+    independent review disproved that by mutation: flipping the SHIPPED submit label to
+    ``"draft->submitted"``, which turns E1 off for every submit doctype, reddened **zero** tests.
+    Everything below examines string literals typed into this file, never what a call site passes,
+    so no change to a call site can red them.
+
+    The real guard is ``test_tools.TestEnvelopeE1HoldsAtTheLayerThatChoosesTheLabel``, which never
+    mentions a label at all: it drives ``dispatch`` and asserts the unconfirmed-docstatus refusal,
+    so E1 can only pass while the shipped label remains readable. Both mutations above red it.
+    These tests keep their own narrower job — the coercion contract itself."""
+
+    def test_both_shipped_transition_labels_parse_to_their_real_end_state(self):
+        self.assertEqual(_transition_end("0->1"), 1)  # submit
+        self.assertEqual(_transition_end("1->2"), 2)  # cancel
+
+    def test_an_unparseable_label_returns_none_rather_than_raising(self):
+        for label in ("draft->submitted", "0->", "nonsense", "", None):
+            with self.subTest(label=label):
+                self.assertIsNone(_transition_end(label))
+
+    def test_only_the_right_hand_side_is_read(self):
+        # ``"->1"`` DOES parse, to 1: the parser reads only what follows the arrow and never
+        # validates the start state. Recorded because it looks unparseable and is not — a fixture
+        # asserting None here was wrong about the code, not the other way round.
+        self.assertEqual(_transition_end("->1"), 1)
+
+    def test_a_multi_digit_end_state_is_TRUNCATED_not_refused(self):
+        # ``[:1]`` takes one character, so "0->10" reads as 1 — a WRONG expected docstatus rather
+        # than a skipped check, which is the more dangerous of the two failure modes: the gate
+        # runs and compares against a number nobody chose. Harmless today (docstatus is only ever
+        # 0/1/2, so no shipped label has a multi-digit end state) and pinned so it stays a known
+        # limitation rather than a surprise.
+        self.assertEqual(_transition_end("0->10"), 1)
+
+    def test_a_workflow_style_label_parses_to_none_which_is_why_workflow_does_not_use_this(self):
+        # The near miss worth naming: `request_workflow_transition` builds labels shaped
+        # `state:Draft->Pending Approval` onto the SAME intent-receipt `transition` field, and
+        # those parse to None here. They never reach this function — that tool writes its
+        # intent/outcome receipts directly and never calls the spine (verified: tools.py is the
+        # only module importing pacioli.spine, with one call site). If it were ever routed through
+        # the spine, E1 would be silently off for every workflow transition.
+        self.assertIsNone(_transition_end("state:Draft->Pending Approval"))
+
+    def test_none_means_the_confirmation_check_is_skipped_which_is_why_it_is_guarded(self):
+        # The consequence, pinned rather than argued: with an unparseable transition the docstatus
+        # is never checked, so a response that does NOT show the transition still records as a
+        # clean committed success. This is the trapdoor the test above exists to keep shut.
+        fx = FakeEffects(execute_result={"docstatus": 0, "name": "NOT-SUBMITTED"})
+        res = governed_submit(
+            plan=PLAN, marker=MARKER, token=TOKEN, current_doc_version=DOC_VERSION,
+            now_epoch=NOW_EPOCH, now_date=NOW_DATE, locks={}, effects=fx,
+            op="submit", transition="draft->submitted",
+        )
+        self.assertTrue(res.ok)  # docstatus 0 accepted as success — because E1 was switched off
+        self.assertEqual(fx.outcome_calls[0][0], "committed")
 
 
 if __name__ == "__main__":

@@ -454,7 +454,12 @@ def _check_close_pin(rows, expected_close_head, expected_close_count):
     Same honest ceiling as the seal's pin, stated the same way: ``close_records`` is per-row
     HMAC'd, NOT prefix-chained, so this comparison fixes only the ONE row the pin names (plus
     the count) — a key holder rewriting any OTHER row is not caught here (pinned by
-    ``test_honest_ceiling_key_holder_rewrite_BEFORE_the_pinned_position_not_caught``)."""
+    ``test_store_close_record.test_honest_ceiling_key_holder_rewrite_BEFORE_pinned_position_not_caught``).
+
+    ⚠️ That citation named a test that did not exist until 2026-08-11 — a third spelling, close
+    enough to read as real and ungreppable. A *"pinned by X"* claim where X cannot be found is
+    worse than no citation: it tells a reader the property is guarded and hands them nothing to
+    check. ``test_citation_integrity.py`` now fails when a cited test name does not resolve."""
     if expected_close_head is None and expected_close_count is None:
         return None  # nothing pinned — the caller already short-circuits this case, kept defensive
 
@@ -1234,9 +1239,16 @@ class BrokerStore:
         writing a close row with no key would append an entry no later keyed reader could
         distinguish from a forgery.
 
-        ``gapped`` records whether ``gate_required`` (the response envelope's own computed verdict
-        -- see ``response.py``) was true for the window this close covers; it is the ONLY thing
-        that can later latch the gate (via a subsequent :meth:`close_gate_state` derivation).
+        ``gapped`` records whether this close's window needs the NEXT advance latched. It is the
+        ONLY thing that can later latch the gate (via a subsequent :meth:`close_gate_state`
+        derivation).
+
+        ⚠️ It is **not** just ``gate_required``, though this line said so until 2026-08-11. The
+        caller passes ``bool(response["gate_required"]) or not statement["balanced"]`` — the
+        envelope's computed verdict (see ``response.py``) OR'd with an unbalanced statement, so an
+        orphan, an unconfirmed act, a chain that does not verify or an anchor mismatch latches the
+        gate even when the envelope itself did not escalate. This method does not compute the flag
+        and must not describe it as though it did: it stores what the caller decided.
 
         Returns the freshly recomputed :meth:`close_gate_state` (not just the appended row), same
         contract as :meth:`seal`/:meth:`unseal`.

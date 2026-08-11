@@ -15988,15 +15988,27 @@ class TestReconcileExecute(unittest.TestCase):
         self.assertEqual(len(client.reconcile_calls), 1)
         self.assertEqual(store_provider("prod").get_marker("recon-token").state, "consumed")
 
-    def test_reconcile_uses_pinned_graph_never_args(self):
-        # THE safety control: even if the caller stuffs an "allocations" key into the execute-time
-        # args, it must be completely ignored — the reconcile call is built from the PINNED plan
-        # graph alone.
+    def test_reconcile_REFUSES_execute_time_allocations_rather_than_ignoring_them(self):
+        # THE safety control, STRENGTHENED 2026-08-11. It used to be "an `allocations` key stuffed
+        # into the execute args is completely ignored", and the pinned graph won — safe, but the
+        # caller was answered as though their allocations had been considered. A reconciliation
+        # that settles rows the caller did not ask for, reported as a plain success, is the silent
+        # wrong answer this surface exists to prevent. Now refused by name.
         broker, client, store_provider, plan = self._plan_and_mint()
         evil_args = {"plan_id": plan["plan_id"], "marker": "recon-token",
                     "allocations": [_allocation_row(payment_no="EVIL", invoice_no="EVIL",
                                                     amount=999999.0)]}
         out = broker.dispatch("reconcile", evil_args)
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["stage"], "request")
+        self.assertIn("allocations", out["reason"])
+        self.assertEqual(client.reconcile_calls, [], "nothing may be sent on a refused request")
+
+    def test_reconcile_uses_pinned_graph_never_args(self):
+        # The property the test above used to carry, kept and proven on its own: with only the
+        # declared arguments, the reconcile call is built from the PINNED plan graph alone.
+        broker, client, store_provider, plan = self._plan_and_mint()
+        out = broker.dispatch("reconcile", {"plan_id": plan["plan_id"], "marker": "recon-token"})
         self.assertTrue(out["ok"], out)
         sent = client.reconcile_calls[0]["allocations"]
         # P7 semantic keys: payment_unallocated/invoice_outstanding ride along too — still from
@@ -21165,3 +21177,369 @@ class TestPlanCarriesConsentToTheFloor(unittest.TestCase):
         self.assertEqual(client.preview_consents, ["opaque-abc"])
         for presented in client.preview_consents:
             self.assertNotIn("SI-1", presented or "")
+
+
+class TestAnUndeclaredArgumentIsRefusedNotSwallowed(unittest.TestCase):
+    """C2 from the 08-11 audit board — the silently-dropped argument.
+
+    **The incident, recorded live 2026-07-30.** A caller passed ``doctype`` instead of
+    ``pacioli_doctype``. Nothing rejected it: the key was ignored, ``_resolve_doctype`` fell back
+    to the default, and the reply was ``404: Sales Invoice ACC-PAY-2026-00001 not found`` — naming
+    a doctype the caller never asked for, about a document that exists under the doctype they
+    meant. A wrong answer wearing the shape of a right one, which for an agent is the worst kind:
+    it reads as "that document is missing" and prompts the wrong repair.
+
+    **Why the schema keyword alone is not the fix.** ``additionalProperties: false`` is now
+    declared on every served schema, but NEITHER DOOR VALIDATES ``inputSchema`` — the MCP SDK does
+    not, and the A2A door passes ``params`` through as given. Same gap ``_bounded_limit`` was
+    written for in 2026-07-26: a published constraint that nothing enforced. So the refusal is
+    enforced in ``dispatch`` and the declaration is what a validating client reads earlier.
+
+    **How much this matters is a doorway question.** The doorway exists so a small local model can
+    work from a searchable catalog instead of 265 resident schemas — and a model working from
+    memory reconstructs argument names rather than reading them. ``doctype`` for
+    ``pacioli_doctype`` is not an exotic typo; it is the single most likely thing such a caller
+    does. Silence is the one answer that cannot teach it otherwise.
+    """
+
+    def test_the_recorded_incident_now_refuses_and_names_the_right_key(self):
+        broker, _client, _stores = make_broker()
+        out = broker.dispatch("plan_submit", {"name": "SI-1", "doctype": "Payment Entry"})
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["stage"], "request")
+        self.assertIn("doctype", out["reason"])
+        self.assertIn("pacioli_doctype", out["reason"])  # the near miss, named for the caller
+        self.assertNotIn("not found", out["reason"])     # never the 404 about the wrong doctype
+
+    def test_the_refusal_lists_what_the_tool_does_accept(self):
+        # A tool description is a prompt, and so is a refusal: the caller must be able to correct
+        # itself from the message alone, without a second round trip for the schema.
+        broker, _client, _stores = make_broker()
+        out = broker.dispatch("plan_submit", {"name": "SI-1", "wildly_wrong": 1})
+        for accepted in ("name", "pacioli_doctype", "pacioli_target"):
+            self.assertIn(accepted, out["reason"])
+
+    def test_a_governed_write_refuses_before_anything_is_claimed_or_spent(self):
+        # The refusal must land BEFORE the handler, or an undeclared argument could cost a marker.
+        broker, client, stores = make_broker()
+        plan = broker.dispatch("plan_submit", {"name": "SI-1"})
+        stores("prod").mint_marker("tok-c2", plan["plan_id"], expires_at=2_000.0)
+        out = broker.dispatch("submit_sales_invoice",
+                              {"name": "SI-1", "plan_id": plan["plan_id"], "marker": "tok-c2",
+                               "plan_token": "stray"})
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["stage"], "request")
+        self.assertEqual(stores("prod").get_marker("tok-c2").state, "live",
+                         "a refused request must not touch the marker")
+
+    def test_declared_arguments_are_unaffected(self):
+        # The no-regression half. Every declared key, including the optional ones, still works.
+        broker, _client, _stores = make_broker()
+        self.assertTrue(broker.dispatch("plan_submit", {"name": "SI-1"})["ok"])
+        self.assertTrue(broker.dispatch(
+            "plan_submit", {"name": "SI-1", "pacioli_doctype": "Sales Invoice"})["ok"])
+
+    def test_an_unknown_TOOL_still_reads_as_an_unknown_tool(self):
+        # Ordering: the tool-name check runs first, so a bad name is not reported as a bad
+        # argument. Two different mistakes, two different messages.
+        broker, _client, _stores = make_broker()
+        out = broker.dispatch("drop_all_tables", {"whatever": 1})
+        self.assertIn("unknown tool", out["reason"])
+
+    def test_every_dispatched_tool_is_covered_by_the_check(self):
+        # The registry is derived from the served surface, so no tool can be missed. Asserted
+        # against the real dispatch list rather than a hand-kept one.
+        from pacioli.doorway import DOORWAY_NAMES
+        from pacioli.tools import _DECLARED_ARGS, tool_names
+        for name in list(tool_names()) + sorted(DOORWAY_NAMES):
+            with self.subTest(tool=name):
+                self.assertIn(name, _DECLARED_ARGS)
+
+
+class TestThePinnedDoctypeIsCheckedNotDropped(unittest.TestCase):
+    """``cascade_cancel`` accepts ``pacioli_doctype`` and CROSS-CHECKS it against the plan.
+
+    The alternative was to refuse it as undeclared, and that would have been worse. An agent that
+    called ``plan_cascade_cancel(name, pacioli_doctype=...)`` carries the same argument into the
+    execute call — this repo's own cascade tests do exactly that, which is good evidence it is the
+    natural shape rather than a mistake. Refusing it would break a real call pattern to close a
+    hole that a cross-check closes better.
+
+    What was actually wrong: the argument was silently dropped, so a caller naming a DIFFERENT
+    doctype than the plan cancelled the plan's graph while believing they had named their own.
+    Now the two statements of one fact must agree, which is this product's whole law."""
+
+    def _planned(self):
+        cc = CascadeClient({})
+        broker, _client, stores = make_broker(client=cc)
+        plan = broker.dispatch("plan_cascade_cancel",
+                               {"name": "T", "pacioli_doctype": "Sales Invoice"})
+        stores("prod").mint_marker("tok-x", plan["plan_id"], expires_at=2_000.0)
+        return broker, plan, cc
+
+    def test_an_agreeing_doctype_carried_forward_from_the_plan_still_runs(self):
+        broker, plan, _cc = self._planned()
+        out = broker.dispatch("cascade_cancel",
+                              {"name": "T", "pacioli_doctype": "Sales Invoice",
+                               "plan_id": plan["plan_id"], "marker": "tok-x"})
+        self.assertTrue(out["ok"], out)
+
+    def test_omitting_it_entirely_still_runs(self):
+        broker, plan, _cc = self._planned()
+        out = broker.dispatch("cascade_cancel",
+                              {"name": "T", "plan_id": plan["plan_id"], "marker": "tok-x"})
+        self.assertTrue(out["ok"], out)
+
+    def test_a_DISAGREEING_doctype_is_refused_and_cancels_nothing(self):
+        broker, plan, cc = self._planned()
+        out = broker.dispatch("cascade_cancel",
+                              {"name": "T", "pacioli_doctype": "Purchase Invoice",
+                               "plan_id": plan["plan_id"], "marker": "tok-x"})
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["stage"], "plan")
+        self.assertIn("Purchase Invoice", out["reason"])  # what the caller claimed
+        self.assertIn("Sales Invoice", out["reason"])     # what the plan actually pins
+        self.assertEqual(cc.cancelled, [], "a disagreement must reverse nothing")
+
+    def test_the_check_is_inert_for_anything_it_cannot_judge(self):
+        # `_unknown_args_deny`'s own guard clauses. Neither is reachable through `dispatch` today
+        # (the name is validated first, and `args` is always a dict there), so they are held here
+        # directly: an unrecognised tool name has no declared set to judge against, and a non-dict
+        # `args` has no keys to iterate. Both return None — this check refuses UNKNOWN ARGUMENTS,
+        # and must never become a second, weaker opinion about anything else.
+        from pacioli.tools import _unknown_args_deny
+        self.assertIsNone(_unknown_args_deny("no_such_tool", {"whatever": 1}))
+        self.assertIsNone(_unknown_args_deny("plan_submit", ["not", "a", "dict"]))
+        self.assertIsNone(_unknown_args_deny("plan_submit", None))
+        # and it still refuses the real case, so the guards above are not just always-None
+        self.assertIsNotNone(_unknown_args_deny("plan_submit", {"doctype": "x"}))
+
+
+class UnconfirmedSubmitClient(FakeClient):
+    """A bench that ANSWERS 200 while leaving the document at its pre-transition docstatus.
+
+    Not hypothetical: ERPNext queues some writes to a background worker (``JournalEntry.submit``
+    and ``.cancel`` override the base method and queue past 100 accounts rows), so frappe replies
+    200 with the doc still at docstatus 0. Envelope E1, found live 2026-07-07."""
+
+    def submit_document(self, doctype, name, doc=None, consent=None):
+        out = super().submit_document(doctype, name, doc, consent)
+        out["docstatus"] = 0          # accepted, NOT confirmed
+        return out
+
+    def cancel_document(self, doctype, name, consent=None):
+        out = super().cancel_document(doctype, name, consent)
+        out["docstatus"] = 1          # still submitted, cancel not confirmed
+        return out
+
+
+class TestEnvelopeE1HoldsAtTheLayerThatChoosesTheLabel(unittest.TestCase):
+    """E1 — "execute returning is NOT proof the transition happened" — driven through ``dispatch``.
+
+    ⚠️ **This is the guard the 08-11 batch claimed to add and did not.** That batch pinned
+    ``spine._transition_end`` against the string literals ``"0->1"`` and ``"1->2"`` and asserted
+    that "a third op whose label cannot be read now goes red". An independent review disproved it
+    by mutation: changing the SHIPPED submit label at ``tools.py`` to ``"draft->submitted"`` —
+    which switches E1 off for every submit doctype on the surface — reddened **zero** tests. The
+    unit tests examined two literals typed into the test file, never what any call site passes.
+    That is this house's own law broken by the commit that quotes it: an assertion about what a
+    line says must be made against THAT line.
+
+    It also found E1 had no test at this layer at all (``grep "accepted but NOT confirmed"
+    pacioli/tests/test_tools.py`` -> 0 hits), which is why the gap was invisible.
+
+    These tests fix that by construction: they never mention a transition label. They drive the
+    real dispatch path and assert the refusal, so E1 can only pass if the label the shipped call
+    site passes is one ``_transition_end`` can actually read."""
+
+    def _mint(self, broker, stores, tool, name):
+        plan_tool = "plan_submit" if tool.startswith("submit") else "plan_cancel"
+        plan = broker.dispatch(plan_tool, {"name": name})
+        self.assertTrue(plan["ok"], plan)
+        stores("prod").mint_marker("tok-e1", plan["plan_id"], expires_at=2_000.0)
+        return plan
+
+    def test_a_submit_the_response_does_not_confirm_is_refused_as_unconfirmed(self):
+        broker, _client, stores = make_broker(client=UnconfirmedSubmitClient())
+        plan = self._mint(broker, stores, "submit_sales_invoice", "SI-1")
+        out = broker.dispatch("submit_sales_invoice",
+                              {"name": "SI-1", "plan_id": plan["plan_id"], "marker": "tok-e1"})
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["stage"], "unconfirmed")
+        self.assertIn("accepted but NOT confirmed", out["reason"])
+        self.assertIn("docstatus 0", out["reason"])   # what the bench actually showed
+        self.assertIn("expected 1", out["reason"])    # what the shipped label requires
+
+    def test_a_cancel_the_response_does_not_confirm_is_refused_as_unconfirmed(self):
+        # The OTHER shipped label ("1->2"). Both call sites are covered, so neither can be broken
+        # without a red — which is the property the previous attempt claimed and did not have.
+        broker, _client, stores = make_broker(client=UnconfirmedSubmitClient())
+        plan = self._mint(broker, stores, "cancel_sales_invoice", "SI-9")
+        out = broker.dispatch("cancel_sales_invoice",
+                              {"name": "SI-9", "plan_id": plan["plan_id"], "marker": "tok-e1"})
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["stage"], "unconfirmed")
+        self.assertIn("accepted but NOT confirmed", out["reason"])
+        self.assertIn("expected 2", out["reason"])
+
+    def test_the_marker_is_still_SPENT_on_an_unconfirmed_write(self):
+        # E1 refuses the ANSWER, not the act: consent initiated an irreversible write that may yet
+        # land server-side, so releasing the grant would let one marker initiate a second act.
+        broker, _client, stores = make_broker(client=UnconfirmedSubmitClient())
+        plan = self._mint(broker, stores, "submit_sales_invoice", "SI-1")
+        broker.dispatch("submit_sales_invoice",
+                        {"name": "SI-1", "plan_id": plan["plan_id"], "marker": "tok-e1"})
+        self.assertEqual(stores("prod").get_marker("tok-e1").state, "consumed")
+
+    def test_a_confirmed_write_still_succeeds(self):
+        # The control. Without it, a mutation that made EVERY write unconfirmed would look green.
+        broker, _client, stores = make_broker()
+        plan = self._mint(broker, stores, "submit_sales_invoice", "SI-1")
+        out = broker.dispatch("submit_sales_invoice",
+                              {"name": "SI-1", "plan_id": plan["plan_id"], "marker": "tok-e1"})
+        self.assertTrue(out["ok"], out)
+
+
+class TestTheCorrectionIsRightNotMerelyPresent(unittest.TestCase):
+    """The near-miss hint, after an independent review found it giving the WRONG correction on the
+    likeliest typo of all.
+
+    ⚠️ ``pacioli_doctype`` sent to ``submit_sales_invoice`` suggested *"did you mean
+    'pacioli_target'?"*. The shared ``pacioli_`` prefix drags any two of these names past difflib's
+    cutoff, while the parts that carry meaning (``doctype`` vs ``target``) are not close at all —
+    and they mean entirely different things: target selects WHICH BOOKS, doctype selects a document
+    type. **Following that hint would point a write at another company's ledger.** The C2 commit
+    claimed the refusal lets an agent "correct itself without a second round trip"; a hint that
+    misdirects is worse than no hint, and this was the exact carry-forward case that claim was
+    about."""
+
+    def setUp(self):
+        self.broker, _c, _s = make_broker()
+
+    def _reason(self, tool, args):
+        return self.broker.dispatch(tool, args)["reason"]
+
+    def test_the_doctype_carry_forward_says_DROP_IT_and_never_suggests_target(self):
+        r = self._reason("submit_sales_invoice",
+                         {"name": "SI-1", "plan_id": "p", "marker": "m",
+                          "pacioli_doctype": "Sales Invoice"})
+        self.assertIn("drop it", r)
+        self.assertIn("in the tool name", r)
+        self.assertNotIn("did you mean 'pacioli_target'", r)
+
+    def test_the_same_key_on_a_tool_that_DOES_take_it_is_not_refused_at_all(self):
+        # The other side of the asymmetry, so the message above is a real distinction rather than
+        # a blanket rule: plan_submit declares it, cascade_cancel declares AND cross-checks it.
+        self.assertTrue(self.broker.dispatch(
+            "plan_submit", {"name": "SI-1", "pacioli_doctype": "Sales Invoice"})["ok"])
+
+    def test_every_hint_class_gives_a_reason_true_of_ITS_tool(self):
+        """The whole table, in one place, because this function has now regressed THREE times and
+        every regression was a sentence that was true of some other tool.
+
+        Each row is a distinct class, and the expected text is what is TRUE of that class — not
+        merely non-empty, which is what earlier versions were really asserting."""
+        for label, tool, args, expected in [
+            ("wrapper, inner-tool key", "pacioli_call",
+             {"tool": "plan_submit", "pacioli_target": "prod", "arguments": {}}, "INSIDE"),
+            ("wrapper, envelope typo", "pacioli_call",
+             {"tool_name": "plan_submit", "arguments": {}}, "did you mean 'tool'"),
+            ("wrapper, 'args'", "pacioli_call",
+             {"tool": "x", "args": {}}, "did you mean 'arguments'"),
+            ("THE 07-30 INCIDENT", "plan_submit",
+             {"name": "S", "doctype": "Payment Entry"}, "did you mean 'pacioli_doctype'"),
+            ("mechanical, bare doctype", "submit_sales_invoice",
+             {"name": "S", "plan_id": "p", "marker": "m", "doctype": "X"}, "in the tool name"),
+            ("mechanical, namespaced", "submit_sales_invoice",
+             {"name": "S", "plan_id": "p", "marker": "m", "pacioli_doctype": "X"},
+             "in the tool name"),
+            ("generic, plan pins it", "reconcile",
+             {"plan_id": "p", "marker": "m", "pacioli_doctype": "X"},
+             "from the plan named in plan_id"),
+            ("no doctype at all", "prove_verify",
+             {"pacioli_doctype": "X"}, "does not operate on a single doctype"),
+        ]:
+            with self.subTest(case=label):
+                self.assertIn(expected, self._reason(tool, args))
+
+    def test_the_wrapper_never_sends_an_inner_key_to_the_envelope_near_miss(self):
+        # `target` scores 0.67 against `arguments` — HIGHER than the real typos it must catch
+        # (`tool_name`->`tool`, `args`->`arguments`, both 0.62). So similarity cannot decide this
+        # and membership does. Pinned because a cutoff tweak would silently reintroduce it.
+        for inner in ("pacioli_target", "plan_id", "marker", "consent_token", "name"):
+            with self.subTest(key=inner):
+                r = self._reason("pacioli_call", {"tool": "plan_submit", "arguments": {}, inner: "v"})
+                self.assertIn("INSIDE", r)
+                self.assertNotIn("did you mean", r)
+
+    def test_pacioli_call_still_says_the_key_goes_INSIDE_arguments(self):
+        # A better-targeted local refusal existed for this and the global gate now runs first,
+        # so the guidance had to move rather than be lost. Without it the caller is told the key
+        # is wrong but never that it belongs one level down — and it is the doorway's own tool,
+        # whose audience is the small model least able to work that out.
+        r = self._reason("pacioli_call",
+                         {"tool": "plan_submit", "pacioli_target": "prod", "arguments": {}})
+        self.assertIn("INSIDE", r)
+        self.assertIn("arguments", r)
+
+    def test_a_genuine_near_miss_is_still_suggested(self):
+        # The no-regression half: narrowing the comparison must not silence real typos.
+        self.assertIn("did you mean 'pacioli_target'?",
+                      self._reason("plan_submit", {"name": "SI-1", "pacioli_targe": "prod"}))
+        self.assertIn("did you mean 'plan_id'?",
+                      self._reason("submit_sales_invoice",
+                                   {"name": "SI-1", "plan_di": "p", "marker": "m"}))
+
+    def test_the_recorded_incident_still_gets_its_correction(self):
+        # `doctype` -> `pacioli_doctype` must survive the prefix-stripping change: this is the
+        # 2026-07-30 incident C2 exists for.
+        self.assertIn("did you mean 'pacioli_doctype'?",
+                      self._reason("plan_submit", {"name": "SI-1", "doctype": "Payment Entry"}))
+
+    def test_pacioli_calls_own_refusal_still_covers_the_shape_the_gate_skips(self):
+        # `_unknown_args_deny` returns None for a non-dict `args`, so pacioli_call's bespoke
+        # branch is NOT dead — it is the only thing guarding a non-dict payload. Pinned so it is
+        # not deleted as unreachable on the strength of the dict case alone.
+        out = self.broker.dispatch("pacioli_call", ["tool", "surprise"])
+        self.assertFalse(out["ok"])
+        self.assertIn("surprise", out["reason"])
+
+    def test_the_JUSTIFICATION_is_true_of_the_tool_it_is_given_to(self):
+        # ⚠️ The first version of this hint told EVERY tool "it is in the tool name" — including
+        # `reconcile`, `prove_verify` and `pacioli_call`, none of which carry a doctype in their
+        # name. Correct advice ("drop it") welded to a false reason, on the advertised surface:
+        # the same defect class this whole function exists to fix, reintroduced inside the fix.
+        # Three tool classes, three different true reasons.
+        from pacioli.tools import _DOCTYPE_IN_NAME
+        name_carries = self._reason("submit_sales_invoice",
+                                    {"name": "S", "plan_id": "p", "marker": "m",
+                                     "pacioli_doctype": "Sales Invoice"})
+        self.assertIn("in the tool name", name_carries)
+
+        plan_pins = self._reason("reconcile", {"plan_id": "p", "marker": "m",
+                                               "pacioli_doctype": "Sales Invoice"})
+        self.assertIn("from the plan named in plan_id", plan_pins)
+        self.assertNotIn("in the tool name", plan_pins)
+
+        no_doctype = self._reason("prove_verify", {"pacioli_doctype": "Sales Invoice"})
+        self.assertIn("does not operate on a single doctype", no_doctype)
+        self.assertNotIn("plan_id", no_doctype.split("This tool accepts")[0])
+
+        wrapper = self._reason("pacioli_call", {"tool": "plan_submit", "arguments": {},
+                                                "pacioli_doctype": "X"})
+        self.assertIn("INSIDE", wrapper)  # WHERE it goes outranks advice about the key itself
+        self.assertNotIn("in the tool name", wrapper)
+
+    def test_no_tool_is_ever_told_the_doctype_is_in_its_name_unless_it_is(self):
+        # Swept across the WHOLE surface rather than sampled, since the defect was a blanket
+        # sentence that happened to be true for most tools and false for the rest.
+        from pacioli.doorway import DOORWAY_NAMES
+        from pacioli.tools import _DOCTYPE_IN_NAME, _arg_correction, _DECLARED_ARGS, tool_names
+        for name in list(tool_names()) + sorted(DOORWAY_NAMES):
+            declared = _DECLARED_ARGS[name]
+            if "pacioli_doctype" in declared:
+                continue  # accepted there, never corrected
+            hint = _arg_correction(name, "pacioli_doctype", declared)
+            with self.subTest(tool=name):
+                if "in the tool name" in hint:
+                    self.assertIn(name, _DOCTYPE_IN_NAME)

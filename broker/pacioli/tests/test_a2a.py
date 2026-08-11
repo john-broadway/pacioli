@@ -398,15 +398,37 @@ class TestA2aEndToEnd(_A2aAppFixture):
         # spine has never seen. The task COMPLETES (a governed refusal is an answer, not a
         # transport failure) and the artifact carries ok:False at the plan stage.
         app = self._app()
+        # ⚠️ The key here was `plan_token` until 2026-08-11 — a MISSPELLING of `plan_id`. The
+        # broker dropped unknown arguments silently, so `plan_id` was None, and "no recorded plan
+        # None" lands on the same stage="plan" refusal a genuinely forged id does. This test was
+        # therefore green while exercising a typo rather than a forgery: both roads end at the
+        # same refusal, so nothing could tell them apart. The fixture is corrected rather than the
+        # assertion, because a FORGED PLAN ID is what this test is named for; the typo case is now
+        # its own test below.
         state, datas, TaskState = self._send(
             app, {"tool": "submit_sales_invoice",
-                  "params": {"name": "SINV-FORGED", "plan_token": "forged",
+                  "params": {"name": "SINV-FORGED", "plan_id": "forged",
                              "marker": "m-forged"}})
         self.assertEqual(state, TaskState.TASK_STATE_COMPLETED)
         self.assertTrue(datas)
         body = datas[0]
         self.assertFalse(body["ok"])
         self.assertEqual(body.get("stage"), "plan")
+
+    def test_a_misspelled_argument_is_refused_by_name_over_a2a(self):
+        # The other door for the same rule: A2A passes `params` through as given and validates no
+        # schema, so the refusal has to come from dispatch or not at all. An agent that writes
+        # `plan_token` must be told, not answered as though it had sent nothing.
+        app = self._app()
+        state, datas, TaskState = self._send(
+            app, {"tool": "submit_sales_invoice",
+                  "params": {"name": "SINV-1", "plan_token": "p1", "marker": "m1"}})
+        self.assertEqual(state, TaskState.TASK_STATE_COMPLETED)  # still an answer, not a crash
+        body = datas[0]
+        self.assertFalse(body["ok"])
+        self.assertEqual(body.get("stage"), "request")
+        self.assertIn("plan_token", body["reason"])
+        self.assertIn("plan_id", body["reason"])  # the near miss, named
 
     def test_unknown_tool_is_a_structured_deny_not_a_transport_error(self):
         app = self._app()

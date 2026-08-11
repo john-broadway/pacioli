@@ -4,7 +4,9 @@
 
 Run: `python3 -m unittest guard.tests.test_scope` from the app root. No frappe required.
 """
+import ast
 import base64
+import pathlib
 import unittest
 
 from pacioli_guard.scope import (
@@ -1314,6 +1316,105 @@ class TestBodyScopedTargetCompletenessAudit(unittest.TestCase):
             ("other", None),
         )
 
+    # -- an UNREADABLE multi-doc body must deny like its single-doc sibling ----------------------
+    #
+    # The single-doc path (`frappe.client.save`, `doc`) already deny-closes on a body it cannot
+    # parse: `_parse_doc` returns None, `_docstatus_body_verb(None)` is not a dict, so `_DENY`.
+    # The multi-doc path three lines below it did the OPPOSITE until 2026-08-11 — `_iter_body_docs`
+    # returned early on a JSON error, the caller's loop never ran, and "nothing yielded" fell
+    # through to the all-draft create residual. Same input class, opposite verdicts, and the
+    # divergence leaned permissive in the floor's own deny path.
+    #
+    # ⚠️ NOT a live escape, and the tests must not imply one: frappe parses all three of these
+    # RPCs with plain `json.loads` (`frappe/client.py` insert_many:219-220, bulk_update:293;
+    # `frappe/desk/form/linked_with.py` cancel_all_linked_docs:379, read at 16.27.1), so a body
+    # this rejects frappe rejects too and the RPC never runs. What is closed here is the standing
+    # hazard this house already names elsewhere: one more call site, or frappe switching to a
+    # lenient parser, turns a latent asymmetry into a live one.
+
+    def test_unreadable_multi_doc_body_deny_closes_like_the_single_doc_path(self):
+        truncated = '{"doctype": "Sales Invoice", "docstatus": 1,'
+        # the sibling, for contrast — this one always denied
+        self.assertEqual(
+            body_scoped_target("method", "frappe.client.save", "POST", {"doc": truncated}),
+            ("other", None),
+        )
+        for target in ("frappe.client.insert_many", "frappe.client.bulk_update"):
+            with self.subTest(target=target):
+                self.assertEqual(
+                    body_scoped_target("method", target, "POST", {"docs": truncated}),
+                    ("other", None),
+                )
+
+    def test_a_multi_doc_body_that_is_not_a_string_list_or_dict_deny_closes(self):
+        for junk in (12345, 3.5, True, object()):
+            with self.subTest(junk=junk):
+                self.assertEqual(
+                    body_scoped_target("method", "frappe.client.insert_many", "POST",
+                                       {"docs": junk}),
+                    ("other", None),
+                )
+
+    def test_one_unreadable_item_in_a_batch_deny_closes_rather_than_being_dropped(self):
+        # The item-level half of the same defect: `_iter_body_docs` silently discarded any list
+        # entry it could not parse, so a batch was judged on the items that happened to be
+        # readable. A batch we cannot fully read is a batch we cannot clear.
+        self.assertEqual(
+            body_scoped_target("method", "frappe.client.insert_many", "POST",
+                               {"docs": [{"doctype": "ToDo"}, "{not json", {"doctype": "Note"}]}),
+            ("other", None),
+        )
+
+    def test_an_absent_body_key_is_still_not_a_denial(self):
+        # The boundary that keeps the fix from over-denying: ABSENT is not UNREADABLE. A missing
+        # `docs` key must stay the create residual, or every keyless call starts failing.
+        self.assertIsNone(
+            body_scoped_target("method", "frappe.client.insert_many", "POST", {}))
+        self.assertIsNone(
+            body_scoped_target("method", "frappe.client.insert_many", "POST", {"docs": None}))
+
+    def test_readable_all_draft_batches_are_unaffected(self):
+        # The no-regression half: everything readable behaves exactly as before the change.
+        self.assertIsNone(
+            body_scoped_target("method", "frappe.client.insert_many", "POST",
+                               {"docs": '[{"doctype": "ToDo"}, {"doctype": "Note", '
+                                        '"docstatus": 0}]'}))
+
+
+class TestUnreadableBodyDocsDenyClose(unittest.TestCase):
+    """The load-bearing coupling behind the multi-doc deny, pinned directly.
+
+    ``body_scoped_target``'s multi-doc branch has no explicit ``is _DENY`` test — it relies on
+    ``_docstatus_body_verb`` mapping any non-dict (including the ``_DENY`` sentinel
+    ``_iter_body_docs`` now yields) to ``_DENY``, which is ``not None`` and so deny-closes. That is
+    two functions agreeing, which is exactly the kind of agreement that rots silently. If someone
+    later makes ``_docstatus_body_verb`` return ``None`` for a non-dict, the caller stops denying
+    and no test of the caller alone would necessarily notice."""
+
+    def test_the_sentinel_is_yielded_for_every_unreadable_shape(self):
+        from pacioli_guard.scope import _DENY, _iter_body_docs
+        self.assertEqual(list(_iter_body_docs("{not json")), [_DENY])
+        self.assertEqual(list(_iter_body_docs(12345)), [_DENY])
+        self.assertEqual(list(_iter_body_docs(["{not json"])), [_DENY])
+        self.assertEqual(list(_iter_body_docs([{"doctype": "ToDo"}, 7])),
+                         [{"doctype": "ToDo"}, _DENY])
+
+    def test_absent_yields_nothing_rather_than_the_sentinel(self):
+        from pacioli_guard.scope import _iter_body_docs
+        self.assertEqual(list(_iter_body_docs(None)), [])
+
+    def test_readable_shapes_still_yield_their_dicts(self):
+        from pacioli_guard.scope import _iter_body_docs
+        self.assertEqual(list(_iter_body_docs('[{"doctype": "ToDo"}]')), [{"doctype": "ToDo"}])
+        self.assertEqual(list(_iter_body_docs({"doctype": "Note"})), [{"doctype": "Note"}])
+        self.assertEqual(list(_iter_body_docs('{"doctype": "Note"}')), [{"doctype": "Note"}])
+
+    def test_the_verb_classifier_maps_the_sentinel_to_deny(self):
+        # THE coupling. If this flips, the multi-doc caller silently stops denying.
+        from pacioli_guard.scope import _DENY, _docstatus_body_verb
+        self.assertIs(_docstatus_body_verb(_DENY), _DENY)
+        self.assertIsNotNone(_docstatus_body_verb(_DENY))  # the caller's actual predicate
+
     # -- frappe.desk.form.save.discard (draft 0 -> cancelled 2; scoped as <DocType>.discard) ------
 
     def test_desk_discard_scopes_per_doctype(self):
@@ -1867,3 +1968,63 @@ class TestAllowAllDoctypes(unittest.TestCase):
         self.assertEqual(classify("/api/resource/", "GET"), ("resource", ("", "read")))
         for empty in ("", None, "   "):
             self.assertFalse(is_permitted(s, "resource", (empty, "read")), repr(empty))
+
+
+class TestOmittedDocTypeControllersStayStubs(unittest.TestCase):
+    """Guard-the-omission for `[tool.coverage.run] omit` in guard/pyproject.toml.
+
+    Three frappe DocType controllers are omitted from coverage because they carry no logic at
+    all: they cannot be imported without frappe, so the bench-free suite can never cover them,
+    and a permanent 0% floor would only train readers to skip past this file. That is a fair
+    trade ONLY while they really are empty. The moment someone adds a method to one, the
+    omission silently stops being honest and starts hiding real decision code.
+
+    So the omission is held to its premise here, by parsing the files rather than importing them
+    (importing needs frappe). `pacioli_consent_marker.py` is deliberately NOT omitted — it
+    carries the immutable-marker guard — and is asserted to be the opposite: it must have logic.
+    """
+
+    OMITTED = ("api_key_scope", "api_key_scope_doctype", "api_key_scope_method")
+    ROOT = pathlib.Path(__file__).resolve().parent.parent / "scoping" / "doctype"
+
+    def _class_body(self, name):
+        source = (self.ROOT / name / f"{name}.py").read_text()
+        tree = ast.parse(source)
+        classes = [n for n in tree.body if isinstance(n, ast.ClassDef)]
+        self.assertEqual(len(classes), 1, f"{name}: expected exactly one class")
+        return classes[0].body
+
+    def test_the_omitted_doctype_controllers_are_still_logic_free(self):
+        for name in self.OMITTED:
+            with self.subTest(controller=name):
+                body = self._class_body(name)
+                self.assertTrue(
+                    all(isinstance(node, ast.Pass) for node in body),
+                    f"{name} has grown a body. It is OMITTED from coverage on the premise that "
+                    f"it is a bare `class X(Document): pass`. Either remove it from the omit "
+                    f"list in guard/pyproject.toml and give it a floor, or move the logic out.",
+                )
+
+    def test_the_marker_controller_is_NOT_omitted_and_does_carry_logic(self):
+        """The counterpart assertion: the one controller that decides something must never be
+        mistaken for a stub, and must never join the omit list."""
+        body = self._class_body("pacioli_consent_marker")
+        methods = [n.name for n in body if isinstance(n, ast.FunctionDef)]
+        self.assertIn("validate", methods, "the immutable-marker guard lives in validate()")
+        self.assertIn("before_insert", methods, "minted_by binding lives in before_insert()")
+
+        # Read the omit list itself, not the raw file. The first version of this assertion did
+        # `assertNotIn("pacioli_consent_marker", pyproject)` and failed on the COMMENT that says
+        # the marker is deliberately not omitted — the same too-wide-assertion class this
+        # campaign is about. `tomllib` is 3.11+ and guard supports 3.10, so comments are
+        # stripped by hand rather than parsed.
+        pyproject = (pathlib.Path(__file__).resolve().parent.parent.parent
+                     / "pyproject.toml").read_text()
+        code_only = "\n".join(line.split("#", 1)[0] for line in pyproject.splitlines())
+        omit_block = code_only.partition("omit = [")[2].partition("]")[0]
+
+        self.assertIn("scoping/doctype/api_key_scope/", omit_block,
+                      "the stub omissions must actually be in the omit list, or this whole "
+                      "guard is checking a premise that does not exist")
+        self.assertNotIn("pacioli_consent_marker", omit_block,
+                         "the marker controller must never be omitted from coverage")

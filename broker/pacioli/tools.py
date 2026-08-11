@@ -147,7 +147,8 @@ BREAKING for an existing scoped credential (see CHANGELOG/README; ``pacioli doct
 
 **The seal gate (CONTAIN's teeth, Task 2 — docs/plans/2026-07-14-close-half3-seal-slice.md).**
 :data:`READ_ONLY_TOOLS` classifies every get_*/list_* tool plus ``workflow_status``,
-``prove_verify``, and ``prove_orphans`` as reads; every OTHER dispatched tool is a **governed
+``prove_verify``, ``prove_orphans`` and the three doorway tools (``pacioli_find_tools``,
+``pacioli_tool_schema``, ``pacioli_call``) as reads; every OTHER dispatched tool is a **governed
 surface** and is seal-gated in :meth:`PacioliBroker.dispatch`, via :meth:`PacioliBroker._seal_gate`,
 BEFORE its handler is even looked up — a sealed store (an operator's own ``pacioli seal``, or a
 future ``close --respond --envelope``-escalated CONTAIN) refuses the write outright, the handler
@@ -1918,6 +1919,7 @@ Journal Entry dict, never inserted or submitted). Nothing granted, no tool built
 """
 from __future__ import annotations
 
+import difflib
 import math
 import sqlite3
 import time
@@ -1927,7 +1929,7 @@ from datetime import datetime, timezone
 
 from pacioli import consent  # noqa: F401 — re-exported for the CLI's mint path
 from pacioli import doorway, history
-from pacioli.doorway import DOORWAY_NAMES
+from pacioli.doorway import DOORWAY_NAMES, DOORWAY_TOOLS
 from pacioli import workflow
 from pacioli.amend import seat_conflict
 from pacioli.cascade import build_cascade, run_cascade
@@ -1970,12 +1972,53 @@ _TARGET_PROP = {
     }
 }
 
+# ⚠️ DERIVED FROM THE DICT, never hand-listed. Until 2026-08-11 this description read
+# "'Sales Invoice', 'Purchase Invoice', 'Payment Entry', or 'Journal Entry'" — four names, while
+# `SUPPORTED_DOCTYPES` held 51 and `_resolve_doctype` accepted every one of them. It shipped that
+# way in five tools' `inputSchema` and five times over in the published `lhm.plugin.json`.
+#
+# A TOOL DESCRIPTION IS A PROMPT. This is not a stale comment a maintainer might trip over: it is
+# the text a model reads to decide what it may ask for. An agent told the surface is four invoice
+# types will never attempt the other 47, so the enumeration silently capped the usable product at
+# 8% of what it governs — and it capped it hardest for exactly the small local driver the doorway
+# exists to serve, which has no schema list to check the claim against.
+#
+# The limit is stated NEGATIVELY and the class is fixed at the source: the count comes from the
+# dict, the refusal (not this string) carries the names, and `test_tool_description_claims.py`
+# reds if the description enumerates doctypes again or if the count drifts.
 _DOCTYPE_PROP = {
     "pacioli_doctype": {
         "type": "string",
-        "description": "ERPNext DocType to operate on: 'Sales Invoice', 'Purchase Invoice', "
-                       "'Payment Entry', or 'Journal Entry' (omit for 'Sales Invoice', today's "
-                       "default). A doctype this broker is not built and tested for is refused.",
+        "description": (
+            f"ERPNext DocType to operate on. Omit for 'Sales Invoice' (the default). This broker "
+            f"governs {len(SUPPORTED_DOCTYPES)} doctypes across accounts, stock, assets, "
+            f"manufacturing and subcontracting — do not assume only the common invoice types are "
+            f"available. A doctype outside that set is refused, and the refusal names every "
+            f"accepted value."
+        ),
+    }
+}
+
+# The same argument on an EXECUTE tool whose doctype is already pinned by its plan. Optional, and
+# it changes nothing — but if present it must AGREE with the plan, and a disagreement is refused.
+#
+# Why it is accepted at all rather than rejected as unknown: an agent that called
+# `plan_cascade_cancel(name, pacioli_doctype=...)` naturally carries the same argument into the
+# execute call — this repo's own cascade tests do exactly that. Before 2026-08-11 it was silently
+# dropped, so a caller naming a DIFFERENT doctype than the plan cancelled the plan's graph while
+# believing they had named their own. Declaring it turns a silently-ignored claim into a checked
+# one, which is this product's whole law: two statements of the same fact must agree, or the book
+# confesses. Refusing it outright would have been the other option and is worse — it breaks a
+# natural call shape to close a hole that a cross-check closes better.
+_PINNED_DOCTYPE_PROP = {
+    "pacioli_doctype": {
+        "type": "string",
+        "description": (
+            "Optional. The DocType you believe this plan is for. It does NOT select anything here "
+            "— the doctype is pinned by the plan named in plan_id — but if you supply it and it "
+            "disagrees with the plan, the call is refused rather than silently executing the "
+            "plan's doctype instead. Omit it and the plan decides."
+        ),
     }
 }
 
@@ -2287,7 +2330,7 @@ _GENERIC_TOOLS = [
                 "plan_id": {"type": "string", "description": "From plan_cascade_cancel."},
                 "marker": {"type": "string",
                            "description": "The single-use consent token a human handed you."},
-                **_TARGET_PROP,
+                **_TARGET_PROP, **_PINNED_DOCTYPE_PROP,
             },
             "required": ["name", "plan_id", "marker"],
         },
@@ -2417,7 +2460,178 @@ _GENERIC_TOOLS = [
     },
 ]
 
-TOOLS = _generate_mechanical_tools() + _GENERIC_TOOLS
+
+def _close_schemas(tools):
+    """Stamp ``additionalProperties: false`` on every published ``inputSchema``.
+
+    Done to the whole list rather than written into each schema builder so a new tool cannot be
+    born open — the same "derived, never hand-listed" shape ``READ_ONLY_TOOLS`` uses, and for the
+    same reason: an opt-in that someone must remember is an opt-in that eventually gets missed.
+
+    ⚠️ **Which layer actually refuses depends on the door, and this note said the wrong thing until
+    it was measured against the installed SDK.** It claimed "neither door validates ``inputSchema``"
+    — inherited from :func:`_bounded_limit`'s 2026-07-26 doctrine, which was true then. It is not
+    true now:
+
+    * **MCP door** — ``mcp.server.lowlevel.Server.call_tool`` takes ``validate_input: bool = True``
+      and runs ``jsonschema.validate(instance=arguments, schema=tool.inputSchema)`` BEFORE the
+      registered handler (cited by NAME, upstream ``mcp`` 1.28.x — a line number into a dependency
+      we do not control rots just as fast as one into our own tree). So for an ADVERTISED tool the
+      SDK refuses first and the caller sees *"Input validation error: Additional properties are
+      not allowed"* — never :func:`_unknown_args_deny`'s message. Measured through a real
+      ``Server``, not read off the source.
+    * **A2A door** — passes ``params`` straight to ``dispatch_raw``; nothing validates. Ours is the
+      only refusal.
+    * **`pacioli_call`'s INNER arguments** and any unadvertised catalog tool called by name in
+      dynamic mode — the SDK has no schema cached for them, so ours is again the only refusal.
+
+    Both layers agree on the OUTCOME (refused, never silently dropped), which is the property that
+    matters and is now defended twice. They differ in the MESSAGE: only ours names the accepted
+    keys and the correction. Do not claim the guidance reaches every caller — it reaches the A2A
+    door, inner ``pacioli_call`` args, and dynamic-mode by-name calls.
+
+    The pin is ``mcp>=1.0``, so an older non-validating SDK is still permitted, and there the
+    server-side refusal is the only one. That is exactly why enforcement lives in
+    :meth:`dispatch` rather than in the declaration alone.
+
+    Indexes rather than ``.get``-guards deliberately: a tool entry with no ``inputSchema`` should
+    fail loudly at import, not be skipped into shipping OPEN. There is no safe way to serve a tool
+    whose argument contract cannot be closed."""
+    for tool in tools:
+        tool["inputSchema"]["additionalProperties"] = False
+    return tools
+
+
+TOOLS = _close_schemas(_generate_mechanical_tools() + _GENERIC_TOOLS)
+
+# tool name -> the argument keys its own schema declares. Derived from the served surface, never
+# hand-listed, so it cannot drift from what is published.
+_DECLARED_ARGS = {
+    tool["name"]: frozenset(tool.get("inputSchema", {}).get("properties", {}) or {})
+    for tool in list(TOOLS) + list(DOORWAY_TOOLS)
+}
+
+
+def _unknown_args_deny(name, args):
+    """Refuse an argument this tool does not declare, naming what it should have been.
+
+    **The incident, recorded live 2026-07-30.** A caller passed ``doctype`` instead of
+    ``pacioli_doctype``. Nothing rejected it: the key was simply ignored, ``_resolve_doctype`` fell
+    back to the default, and the reply was ``404: Sales Invoice ACC-PAY-2026-00001 not found`` —
+    naming a doctype the caller never asked for, about a document that does exist under the
+    doctype they meant. A wrong answer wearing the shape of a real one, which is the worst kind for
+    an agent: it reads as "that document is missing" and prompts the wrong repair.
+
+    Aimed straight at the doorway's reason for existing. A small local model reconstructs argument
+    names from memory rather than from a 265-schema catalog, so ``doctype`` for ``pacioli_doctype``
+    is not an exotic typo — it is the single most likely thing such a caller does, and silence is
+    the one response that cannot teach it otherwise. The refusal names the accepted keys and the
+    near miss, so the correction is in the caller's hands on the first try.
+
+    Deny-biased and total: an argument we do not understand means a request we cannot claim to
+    have performed as asked, whether or not the extra key would have changed the outcome."""
+    declared = _DECLARED_ARGS.get(name)
+    if declared is None or not isinstance(args, dict):
+        return None
+    unknown = [key for key in args if key not in declared]
+    if not unknown:
+        return None
+    hints = [f"{key!r}" + _arg_correction(name, str(key), declared) for key in sorted(unknown)]
+    return _deny(
+        f"{name}: unknown argument(s) {', '.join(hints)}. This tool accepts only: "
+        f"{', '.join(sorted(declared)) or '(no arguments)'}. Refused rather than ignored — a "
+        f"silently dropped argument produces an answer about a request you did not make.",
+        stage="request",
+    )
+
+
+# Namespace prefix shared by this broker's own cross-cutting arguments. Stripped before measuring
+# name similarity — see :func:`_arg_correction`.
+_ARG_NAMESPACE = "pacioli_"
+
+# The tools whose NAME already fixes the doctype (`submit_sales_invoice`, `list_boms`, ...).
+# Derived from the same descriptor/verb tables the mechanical surface is generated from, never
+# hand-listed, so a new DESCRIPTOR row grows this set with no second edit — the shape
+# `READ_ONLY_TOOLS` uses, for the same reason.
+_DOCTYPE_IN_NAME = frozenset(
+    _MECHANICAL_VERBS[verb][0](d) for verb in _MECHANICAL_VERBS for d in DESCRIPTORS
+)
+
+
+# Every argument name any served tool declares, minus `pacioli_call`'s own envelope — used to
+# tell "this key belongs INSIDE arguments" from "this key is a typo of tool/arguments".
+_INNER_TOOL_ARGS = frozenset(
+    k for name, keys in _DECLARED_ARGS.items() if name != "pacioli_call" for k in keys
+) - {"tool", "arguments"}
+
+
+def _arg_correction(tool, key, declared):
+    """The parenthetical that tells the caller what to do instead. May be empty.
+
+    ⚠️ **A near miss computed on the whole name gave the WRONG correction on the likeliest typo
+    of all.** ``pacioli_doctype`` sent to ``submit_sales_invoice`` suggested *"did you mean
+    'pacioli_target'?"* — because the shared ``pacioli_`` prefix drags any two of these names past
+    difflib's cutoff, while the parts that carry the meaning (``doctype`` vs ``target``) are not
+    close at all. And the two mean entirely different things: target selects WHICH BOOKS, doctype
+    selects a document type. Following that hint would have pointed a write at another company's
+    ledger. Found by an independent review, which is also where the "corrects itself without a
+    second round trip" claim came from — a hint that misdirects is worse than none.
+
+    So similarity is measured on the name AFTER the shared namespace, and the two cases that
+    actually arise are answered explicitly rather than guessed at."""
+    bare = key[len(_ARG_NAMESPACE):] if key.startswith(_ARG_NAMESPACE) else key
+    if tool == "pacioli_call":
+        # WHERE the key goes outranks advice about the key itself — on the wrapper even
+        # `pacioli_doctype` may be perfectly valid one level down. Its own bespoke refusal used to
+        # say this and is no longer reached for dict args, so the guidance moves here.
+        #
+        # ⚠️ But NOT when the key is a misspelling of the envelope's OWN two keys. `tool_name`,
+        # `toolname`, `argument`, `args` were all told "move this one level down", which sends the
+        # caller to `pacioli_call(arguments={"tool_name": ...})` and a second refusal. That is this
+        # function's own defect class — a hint that misdirects is worse than none — surviving in
+        # the branch added to fix it, because the branch was unconditional. Found by an independent
+        # review. The near miss wins when there is one.
+        # Decided by MEMBERSHIP, not similarity: a key that is a real inner-tool argument belongs
+        # one level down; anything else is a typo of the envelope. Fuzzy matching cannot separate
+        # these — `target` scores 0.67 against `arguments`, HIGHER than the true positives
+        # `tool_name`->`tool` (0.62) and `args`->`arguments` (0.62) — so any cutoff that catches
+        # the typos also mangles `pacioli_target`. The set is derived from every served schema.
+        if key in _INNER_TOOL_ARGS:
+            return (" — pacioli_call takes only the envelope; everything the inner tool accepts "
+                    "(pacioli_target, plan_id, marker, ...) goes INSIDE 'arguments'")
+        near = difflib.get_close_matches(bare, ["tool", "arguments"], n=1, cutoff=0.6)
+        return f" (did you mean {near[0]!r}?)" if near else ""
+    if bare == "doctype" and f"{_ARG_NAMESPACE}doctype" not in declared:
+        # Guarded on "and the tool does not declare it": on `plan_submit`, which DOES,
+        # a bare `doctype` is a MISSPELLING and the near miss below is the right answer —
+        # that is the 2026-07-30 incident itself. Without this guard the incident case
+        # answered "this tool does not operate on a single doctype", false of plan_submit,
+        # and it was caught only by re-reading a table of real outputs.
+        # Matched on the BARE name, so `doctype` — the literal from the 2026-07-30 incident this
+        # whole rule is built on — gets the same help as `pacioli_doctype`. Keying on the exact
+        # namespaced literal meant the incident's own key got no correction at all.
+        #
+        # The carry-forward: `plan_submit` DOES take pacioli_doctype, so an agent naturally sends
+        # it on to the execute call. Where it lands then differs, and the reason has to be TRUE
+        # of the tool being answered:
+        #
+        # ⚠️ This said "it is in the tool name" for EVERY tool until the sentence was checked
+        # against `reconcile`, `prove_verify` and `pacioli_call` — none of which carry a doctype
+        # in their name. A false justification attached to correct advice, on the advertised
+        # surface, which is the same defect class this whole function exists to fix, reintroduced
+        # inside the fix for it. Caught before it shipped; the membership test is derived, so it
+        # cannot drift as doctypes are added.
+        if tool in _DOCTYPE_IN_NAME:
+            return (f" — this tool is already specific to one doctype (it is in the tool name), "
+                    f"so there is nothing for {key!r} to select here; drop it")
+        if "plan_id" in declared:
+            return (f" — this tool takes its doctype from the plan named in plan_id, where it is "
+                    f"already pinned; drop {key!r}")
+        return f" — this tool does not operate on a single doctype; drop {key!r}"
+    candidates = {d[len(_ARG_NAMESPACE):] if d.startswith(_ARG_NAMESPACE) else d: d
+                  for d in declared}
+    near = difflib.get_close_matches(bare, sorted(candidates), n=1, cutoff=0.6)
+    return f" (did you mean {candidates[near[0]]!r}?)" if near else ""
 
 
 def tool_names():
@@ -2441,8 +2655,12 @@ def _bounded_limit(raw):
     """The declared `limit` bounds, ENFORCED (redteam 2026-07-26).
 
     Every `list_*` tool publishes ``{"type": "integer", "minimum": 1, "maximum": 200}`` and neither
-    door validates it: the MCP SDK does not check `inputSchema`, and the A2A door passes params
-    through as given. So the declaration was a promise nothing kept.
+    door validated it when this was written (2026-07-26): the A2A door passes params through as
+    given, and the MCP SDK did not check `inputSchema` then. ⚠️ It DOES now — mcp 1.28.x
+    jsonschema-validates against the advertised schema before the handler — but `minimum`/`maximum`
+    are only enforced where a schema is cached, i.e. never on A2A and never for a by-name call in
+    dynamic mode. So the declaration was a promise nothing kept, and this clamp is still the only
+    one that covers every door.
 
     Two concrete escapes. ``limit=0`` reached frappe as ``limit_page_length="0"``, which this same
     client uses DELIBERATELY elsewhere to mean "all rows" — so a tool whose schema says the minimum
@@ -5903,7 +6121,8 @@ def _contract_scheduler_flag(doc):
     ``scheduler_events["daily_maintenance"]`` (``hooks.py:473``). Filters ``is_signed=True`` AND
     ``docstatus=1`` EXPLICITLY (``contract.py:137``) — the campaign's FIRST CONFIRMED SUBMITTED-
     STATE scheduler mutator (the mirror of Asset Maintenance Log's own draft-only-in-practice
-    scheduler, ``erpnext.py:3576-3583``). Writes via ``frappe.db.set_value`` (``frappe/database/
+    scheduler, see the **Asset Maintenance Log** breadth note in ``erpnext.py``'s module
+    docstring). Writes via ``frappe.db.set_value`` (``frappe/database/
     database.py:934-945``) once per matching contract — no ``validate()``/hooks/permission/
     version entry. Can only flip ``status`` between ``"Active"``/``"Inactive"`` — never
     ``"Unsigned"`` (filter requires ``is_signed=True``) and never ``"Cancelled"``."""
@@ -8043,6 +8262,13 @@ class PacioliBroker:
                 deny = self._seal_gate(args)
                 if deny is not None:
                     return deny
+            # AFTER the seal gate on purpose: a sealed store must answer "sealed" for every
+            # governed write, whatever else is wrong with the request. CONTAIN outranks request
+            # validation, and the comment above ("the ONE place a seal refuses all of them at
+            # once, BEFORE the handler is even invoked") stays true with this sitting between.
+            deny = _unknown_args_deny(name, args)
+            if deny is not None:
+                return deny
             return handler(args)
         except (ErpnextError, RegistryError) as exc:
             return _deny(exc)
@@ -8061,7 +8287,8 @@ class PacioliBroker:
             return _deny(str(exc), stage="store")
         except Exception as exc:  # noqa: BLE001 — the backstop; see below
             # LAST RESORT, and it exists because the promise above was not kept (redteam
-            # 2026-07-26). Neither door validates `inputSchema`: the MCP SDK does not, and the A2A
+            # 2026-07-26). ⚠️ Corrected 2026-08-11: the MCP SDK DOES validate `inputSchema` now
+            # (mcp 1.28.x, before the handler), but the A2A
             # door passes `params` through as given. So schema-illegal-but-JSON-legal values reach
             # the handlers and raised straight out of here — a `plan_id` that is not a string hit
             # `sqlite3.ProgrammingError` (NOT OperationalError, so the clause above missed it), and
@@ -8079,8 +8306,16 @@ class PacioliBroker:
         """The seal check for every GOVERNED tool, run from :meth:`dispatch` before its handler is
         even looked up. Resolves the target the same way :meth:`_route` does (registry lookup,
         then ``store_provider``) but never constructs a client — a governed tool's own handler is
-        the only thing that ever talks to ERPNext, and this gate's entire job is to make sure that
-        never happens while sealed.
+        the only thing in the DISPATCH PATH that talks to ERPNext, and this gate's entire job is to
+        make sure that never happens while sealed.
+
+        ⚠️ This said "the only thing that ever talks to ERPNext", flat, until 2026-08-11. That is
+        false of the package: ``cli.py``'s close/reconcile path and ``doctor.py``'s probes both
+        construct clients of their own, outside any handler. Both are READS, so there is no seal
+        bypass and the gate's behaviour was never wrong — the ABSOLUTE was. It also survived a
+        docstring pass that cited ``test_seal_gate.py`` as already pinning it; that suite pins the
+        narrower and true property (a governed tool reaches no client while sealed), and nothing
+        pinned the absolute, because nothing could.
 
         Returns ``None`` when the write may proceed; otherwise a structured deny. Three distinct
         outcomes (review F1, Task 2 review — the pre-existing failure taxonomy, restored):
@@ -9750,6 +9985,18 @@ class PacioliBroker:
         ok, reason = check_op(plan, "cascade_cancel")
         if not ok:
             return _deny(reason, stage="plan")
+        # An OPTIONAL doctype the caller believes this plan is for. It selects nothing — the plan
+        # pins it — but a disagreement means the caller and the book are describing different acts,
+        # and this house does not let two statements of one fact quietly differ. Silently dropped
+        # until 2026-08-11, so naming the wrong doctype cancelled the plan's graph anyway.
+        claimed = args.get("pacioli_doctype")
+        if claimed is not None and str(claimed) != plan.doctype:
+            return _deny(
+                f"pacioli_doctype {str(claimed)!r} disagrees with plan {plan_id!r}, which is for "
+                f"{plan.doctype!r}. The plan pins the doctype; omit pacioli_doctype, or re-plan "
+                f"for the doctype you meant.",
+                stage="plan",
+            )
 
         # re-discover: the frozen graph the human consented to must still be the whole set.
         rebuilt = build_cascade({"doctype": plan.doctype, "docname": plan.docname},

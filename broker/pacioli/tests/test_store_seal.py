@@ -166,6 +166,74 @@ class TestGenesisRace(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_the_lock_held_RECHECK_refuses_to_double_seed(self):
+        """The same race, forced rather than hoped for.
+
+        ⚠️ The threaded test above asserts "exactly one genesis row", which is true whether or not
+        the threads actually interleave — if one finishes before the other starts, the loser's
+        OUTER lock-free read returns early and the lock-held re-check never runs at all. The test
+        passes identically either way, so it only SOMETIMES exercises the branch it exists for.
+        Found 2026-08-11 by the coverage floor: `store.py`'s branch coverage oscillated between
+        94.07% and 93.2% across runs, and the branch that came and went was this re-check's false
+        arm. ⭐ **A race test that only sometimes races is only sometimes a test.**
+
+        This drives the exact interleaving deterministically: a rival connection commits genesis
+        in the window between our outer read and our `BEGIN IMMEDIATE`. It cannot commit any later
+        than that — once we hold the write lock, nobody else can write — so this is the real
+        ordering, not an approximation of it.
+        """
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            setup = sqlite3.connect(path)
+            setup.executescript(_SCHEMA)
+            setup.close()
+
+            class RivalSeedsAfterOurOuterRead:
+                """Forwards everything, and lets a rival commit genesis the moment our lock-free
+                count read has returned zero."""
+
+                def __init__(self, real, db_path):
+                    self._real = real
+                    self._path = db_path
+                    self.outer_reads = 0
+                    self.rival_seeded = False
+
+                def execute(self, sql, *args, **kwargs):
+                    # The window is BEFORE `BEGIN IMMEDIATE`, not during the read: our outer
+                    # SELECT has completed (so we hold no lock and saw zero), and we have not yet
+                    # taken the write lock (so a rival still CAN write). Seeding during the read
+                    # instead deadlocks — our own read lock blocks the rival, which is itself a
+                    # small proof that this is the only window where the race is real.
+                    if sql.strip().upper().startswith("BEGIN IMMEDIATE") and not self.rival_seeded:
+                        rival = sqlite3.connect(self._path, timeout=5)
+                        BrokerStore(rival, KEY, now_iso=lambda: CLOCK)
+                        rival.close()
+                        self.rival_seeded = True
+                    if "seal_events" in sql and "count(*)" in sql.lower():
+                        self.outer_reads += 1
+                    return self._real.execute(sql, *args, **kwargs)
+
+                def __getattr__(self, name):
+                    return getattr(self._real, name)
+
+            conn = sqlite3.connect(path, timeout=5)
+            racer = RivalSeedsAfterOurOuterRead(conn, path)
+            BrokerStore(racer, KEY, now_iso=lambda: CLOCK)
+
+            self.assertTrue(racer.rival_seeded, "the rival must have committed in the window")
+            self.assertGreaterEqual(racer.outer_reads, 2,
+                                    "the lock-held RE-CHECK must have run; one read means the "
+                                    "outer check returned early and this proves nothing")
+
+            final = BrokerStore(sqlite3.connect(path), KEY, now_iso=lambda: CLOCK)
+            events = final.seal_events()
+            self.assertEqual(len(events), 1,
+                             "the loser must NOT append a second genesis row")
+            self.assertEqual(events[0]["action"], "genesis")
+        finally:
+            os.unlink(path)
+
 
 class TestSealUnseal(unittest.TestCase):
     def test_seal_makes_state_sealed(self):

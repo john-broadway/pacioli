@@ -379,8 +379,10 @@ def cmd_close(env, target, since, until, expected_head, as_json, reconcile=False
     record / alert / attestation-gate / CONTAIN. Over a Statement alone (no ``--reconcile``) it
     responds to the statement-side findings (orphans, unconfirmed acts) at the default ``mixed_door``
     posture; adding ``--reconcile`` also weighs the reconciliation-side findings (ungoverned,
-    second-generation, blind read). This slice uses the DEFAULT posture/envelope — a per-target
-    registry posture field is a staged refinement (Fork C). Exit is non-zero when the aggregate
+    second-generation, blind read). The posture is resolved per target
+    (:func:`_resolve_posture`, backed by the registry's own ``posture`` field), falling back to the
+    default when a target declares none — this paragraph called that a "staged refinement (Fork C)"
+    until 2026-08-11, after Fork C had shipped. Exit is non-zero when the aggregate
     response rises above ``record`` (a finding the operator asked to be told about — which includes
     a second-generation voucher the balanced/complete checks alone would miss).
 
@@ -419,9 +421,15 @@ def cmd_close(env, target, since, until, expected_head, as_json, reconcile=False
     close closed over a gap (``gate_required``) with no later attestation — the render names the
     stuck period/seq and the ``pacioli attest`` command that clears it — or the close-record history
     itself fails integrity verification (a ``seq`` gap, an unverifiable HMAC) — the render names the
-    failure and refuses to guess a repair. When the gate is open, the write always records THIS
-    close's own ``gate_required`` as ``gapped`` — a close that itself closes over a gap still gets
-    recorded (that is what latches the NEXT advance: "the close that finds the gap records itself").
+    failure and refuses to guess a repair. When the gate is open, the write records THIS close's own
+    ``gapped`` — a close that itself closes over a gap still gets recorded (that is what latches the
+    NEXT advance: "the close that finds the gap records itself").
+
+    ⚠️ ``gapped`` is **not** simply this close's ``gate_required``, though this paragraph said so
+    until 2026-08-11. It is ``bool(response["gate_required"]) or not statement["balanced"]`` —
+    deliberately WIDER, so an unbalanced statement latches even when the envelope did not escalate
+    (see the comment at the write site). Understating a latch condition understates how often the
+    gate closes, which is the safe direction to be wrong in and still wrong.
     A same-run auto-seal (above) and this write are independent mechanisms — one stops the pen, the
     other stops the page-turn; a CONTAIN reached this run does not stop the close record from
     landing. Plain ``close``/``close --respond`` (no ``--advance``) make ZERO writes to

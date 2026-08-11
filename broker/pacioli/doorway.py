@@ -221,6 +221,14 @@ DOORWAY_TOOLS: list[dict] = [
     },
 ]
 
+for _tool in DOORWAY_TOOLS:
+    # Closed to undeclared arguments, exactly like every catalog tool (`tools._close_schemas`).
+    # Stamped here rather than from tools.py so the doorway owns its own surface, and done in a
+    # loop so a fourth doorway tool cannot be born open. `tools._unknown_args_deny` already
+    # ENFORCES this for these three — the declaration is what a validating client reads, and
+    # leaving it off made the doorway the one part of the surface that said less than it did.
+    _tool["inputSchema"]["additionalProperties"] = False
+
 DOORWAY_NAMES = frozenset(t["name"] for t in DOORWAY_TOOLS)
 
 # The spine stays at the door: PLAN and PROVE resident means the governed flow is visible before

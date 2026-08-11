@@ -255,8 +255,10 @@ def check_scope():
       denied-until-reviewed rather than open-until-enumerated. ``body_scoped_target`` (``scope.py``)
       additionally rewrites the body-carrying RPCs — ``frappe.client.submit``/``.cancel``, the Desk
       ``savedocs``/``.submit``/``.cancel``/``.discard``, the bulk submit/cancel RPC,
-      ``frappe.model.workflow.apply_workflow``, and ``run_doc_method`` (EVERY inner method, not just
-      submit/cancel/discard) — to the same per-doctype ``("method", "<DocType>.<verb>")`` shape the
+      ``frappe.model.workflow.apply_workflow``, ``run_doc_method`` (EVERY inner method, not just
+      submit/cancel/discard), ``frappe.client.insert``/``.save``, the multi-doc saves
+      (``bulk_update``, ``frappe.client.insert_many``, ``frappe.client.bulk_update``) and
+      ``frappe.desk.form.linked_with.cancel_all_linked_docs`` — to the same per-doctype ``("method", "<DocType>.<verb>")`` shape the
       URL-path ``run_method`` vector already produces, so a credential granted only
       ``"Sales Invoice.submit"`` can no longer submit a Journal Entry through
       ``frappe.client.submit``, and a credential granted only ``"Sales Invoice.get_pdf"`` can no
@@ -279,9 +281,11 @@ def check_scope():
     - RESOURCE branch semantics: an EMPTY ``resource_doctypes`` allowlist DENIES, matching
       ``methods``. It previously granted every DocType on the site, so ticking the master
       ``allow_resource`` Check and saving before filling the table was the widest grant this app
-      could express. Site-wide access is still expressible but must be stated with one literal
-      ``"*"`` row (``RESOURCE_DOCTYPE_WILDCARD``), and that row does not reach the hard-denied
-      control plane above (floor audit F1, 2026-07-26).
+      could express. Site-wide access is still expressible but is stated with the parent-level
+      ``allow_all_doctypes`` Check, and it does not reach the hard-denied control plane above
+      (floor audit F1, 2026-07-26). ⚠️ This named a literal ``"*"`` row until 2026-08-11; that
+      gesture is unstorable (``ref_doctype`` is a validated Link) and was retired on 2026-07-29 —
+      see ``scope.py``'s own correction.
       The ``enforce_workflow`` gate below judges the SAME body-doctype-rewritten target (since
       0.5.1 — see the ``wf_kind``/``wf_target`` note at that gate), so a workflow-governed submit/
       cancel on a doctype named only in the request body (Journal Entry rides EXCLUSIVELY on this
@@ -356,13 +360,20 @@ def check_scope():
     run_method = form.get("run_method")
     cmd = form.get("cmd")  # legacy RPC: frappe routes on cmd BEFORE the path — it is the real target
     kind, target = classify(req.path, req.method, run_method, cmd)
-    # Body-doctype rewrite (submit/cancel only): frappe.client.submit/.cancel, run_doc_method, and
+    # Body-doctype rewrite (NOT submit/cancel only — `body_scoped_target` also rewrites
+    # apply_workflow, discard, and EVERY inner method of run_doc_method; the "submit/cancel only"
+    # this said until 2026-08-11 was contradicted by that function's own docstring in the same
+    # package): frappe.client.submit/.cancel, run_doc_method, and
     # savedocs Submit/Update/Cancel carry their real target doctype in the request BODY, invisible
     # to `classify`'s pure (path, http_method, run_method, cmd) signature — the generic-RPC footgun.
     # This resolves them to the SAME ("method", "<DocType>.submit"/"cancel") shape the URL-path
-    # run_method vector already produces, into NEW perm_kind/perm_target variables — `kind`/`target`
-    # below (the enforce_workflow gate) are DELIBERATELY left untouched, so that gate's own
-    # (separately documented, still-open) generic-RPC residual and its existing tests are unaffected.
+    # run_method vector already produces, into NEW perm_kind/perm_target variables.
+    #
+    # ⚠️ This used to end "`kind`/`target` below (the enforce_workflow gate) are DELIBERATELY left
+    # untouched". Not since 0.5.1: the workflow gate ~30 lines below reads
+    # `wf_kind, wf_target = (kind, target) if body_target is None else body_target`, i.e. it judges
+    # the REWRITTEN target, and this module's own header records that change. The comment survived
+    # the code it described.
     body_target = body_scoped_target(kind, target, req.method, form)
     perm_kind, perm_target = (kind, target) if body_target is None else body_target
     # Deny-unknown provenance: a body-doctype rewrite (body_target is not None) IS a resolution --
@@ -416,7 +427,7 @@ def check_scope():
     # here it (a) could not cover OAuth Bearer, desk/cookie sessions, background jobs, the scheduler,
     # server scripts or the bench console — every one of which reaches the ledger without passing
     # this function at all — and (b) had to infer "is this a submit, and of what document" from a
-    # request shape, which is the whole reason the classifier carries `?cmd=` dominance, five
+    # request shape, which is the whole reason the classifier carries `?cmd=` dominance, nine
     # body-carrying RPC rewrites, a `savedocs` action map and a disclosed residual on raw `docstatus`
     # writes. It now lives in `pacioli_guard.act`, on `doc_events` `before_submit`/`before_cancel`,
     # where the same question is `doc.doctype`, `doc.name` and the event name.

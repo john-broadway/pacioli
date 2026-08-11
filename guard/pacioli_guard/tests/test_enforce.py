@@ -101,6 +101,11 @@ class FakeDB:
         self._cursor = FakeCursor()
         self.sql_raises = False          # model a DB error during the claim
         self.sql_hides_rowcount = False  # model a driver that gives us no affected-row count
+        # Model a DB error during the marker READ (as opposed to the claim). Scoped to the
+        # consent doctype on purpose: raising for every get_value would also break scope-doc
+        # discovery, and the test would then prove "a totally dead DB denies" rather than "a
+        # broken MARKER LOOKUP denies", which is the seam README residual #2 is about.
+        self.consent_read_raises = False
 
     def sql(self, query, values=None, **kwargs):
         """Only the consent claim reaches here. Applies the real WHERE burned = 0 semantics so the
@@ -126,6 +131,8 @@ class FakeDB:
 
     def get_value(self, doctype, filters, fieldname=None, as_dict=False):
         if doctype == enforce.CONSENT_DOCTYPE:
+            if self.consent_read_raises:
+                raise RuntimeError("marker table unreadable")
             row = self.markers.get((filters.get("ref_doctype"), filters.get("ref_docname")))
             return dict(row) if (row and as_dict) else row
         # scope-doc discovery: get_value("API Key Scope", {"user": u}, "name")
@@ -1250,3 +1257,83 @@ class TestMarkerExpiryIsReadInTheSITEsClock(unittest.TestCase):
         fake.utils = types.SimpleNamespace(get_system_timezone=lambda: "America/Chicago")
         enforce.frappe = fake
         self.assertEqual(enforce._epoch(aware), aware.timestamp())
+
+
+class TestEveryExpiryShapeIsDenyBiased(unittest.TestCase):
+    """``_epoch``'s STRING / other-type fallback, which no test had ever entered.
+
+    ``_epoch`` is the deny-biased coercer: ``None`` means "unreadable", and ``consent_verdict``
+    treats an unreadable expiry as expired, so a marker whose lifetime cannot be established is
+    never spendable. The datetime and numeric branches were well covered; the loop underneath
+    them — ISO-string parse, then ``float()``, then ``None`` — was not.
+
+    This module has been bitten three times by expiry representation (markers born expired from a
+    process-zone read; the fail-OPEN UTC fallback east of UTC; non-finite numbers that made a
+    marker immortal), so the whole shape table is pinned rather than the branches sampled.
+
+    ⭐ The one worth stating: the non-finite guard reaches the STRING path too. ``_epoch``'s own
+    docstring discusses ``inf``/``nan`` only for the numeric branch, but ``"inf"``, ``"-inf"``,
+    ``"nan"`` and ``"Infinity"`` all arrive as strings, fail ``fromisoformat``, and are then
+    handed to ``float()`` — which parses them happily. They are refused only because the loop
+    routes through ``_finite`` rather than bare ``float``. Nothing said so, and a refactor to
+    ``lambda v: float(v)`` would reopen exactly the immortal-marker defect the numeric branch was
+    hardened against in 0.11.0. That is what these cases hold shut.
+    """
+
+    SITE_TZ = "America/Chicago"
+
+    def setUp(self):
+        fake = FakeFrappe(headers={}, session_user="x")
+        fake.utils = types.SimpleNamespace(get_system_timezone=lambda: self.SITE_TZ)
+        enforce.frappe = fake
+
+    def _noon_in_site_zone(self):
+        import zoneinfo
+        return datetime.datetime(2026, 7, 14, 12, 0, 0,
+                                 tzinfo=zoneinfo.ZoneInfo(self.SITE_TZ)).timestamp()
+
+    def test_a_naive_iso_string_resolves_through_the_site_zone_like_a_naive_datetime(self):
+        for text in ("2026-07-14 12:00:00", "2026-07-14T12:00:00"):
+            with self.subTest(text=text):
+                self.assertEqual(enforce._epoch(text), self._noon_in_site_zone())
+
+    def test_an_iso_string_carrying_an_offset_keeps_its_own_offset(self):
+        aware = datetime.datetime.fromisoformat("2026-07-14T12:00:00+05:30")
+        self.assertEqual(enforce._epoch("2026-07-14T12:00:00+05:30"), aware.timestamp())
+
+    def test_a_numeric_string_is_read_as_epoch_seconds(self):
+        self.assertEqual(enforce._epoch("1784030400"), 1784030400.0)
+        self.assertEqual(enforce._epoch("1784030400.5"), 1784030400.5)
+
+    def test_non_finite_STRINGS_are_refused_not_just_non_finite_numbers(self):
+        # The immortal-marker defect wearing a string. `float("inf")` succeeds, and
+        # `consent_verdict` compares `now >= expires_at`, which is False for inf and nan under
+        # IEEE-754 — so any of these leaking through as a number is a marker that NEVER expires.
+        for text in ("inf", "-inf", "nan", "Infinity", "-Infinity", "NaN", "  inf  "):
+            with self.subTest(text=text):
+                self.assertIsNone(enforce._epoch(text))
+
+    def test_unreadable_values_of_every_shape_refuse(self):
+        for value in ("not a date", "", "   ", b"2026-07-14", {"a": 1}, [1], (), object()):
+            with self.subTest(value=value):
+                self.assertIsNone(enforce._epoch(value))
+
+    def test_none_is_unreadable(self):
+        self.assertIsNone(enforce._epoch(None))
+
+    def test_a_date_only_string_lands_at_site_midnight_which_is_the_early_side(self):
+        # A Date (no time) resolves to 00:00 site time — EARLIER than any wall time that day, so
+        # it shortens the marker's life rather than extending it. Deny-biased, and recorded so the
+        # choice is deliberate rather than incidental.
+        import zoneinfo
+        midnight = datetime.datetime(2026, 7, 14, 0, 0, 0,
+                                     tzinfo=zoneinfo.ZoneInfo(self.SITE_TZ)).timestamp()
+        self.assertEqual(enforce._epoch("2026-07-14"), midnight)
+        self.assertLess(enforce._epoch("2026-07-14"), self._noon_in_site_zone())
+
+    def test_a_bool_reads_as_the_epoch_not_as_forever(self):
+        # `isinstance(True, int)` is True in Python, so a stray boolean takes the numeric branch
+        # and lands at 1970 — long expired. Deny-biased by accident rather than by design, which
+        # is exactly why it is pinned: the accident must not be quietly reversed.
+        self.assertEqual(enforce._epoch(True), 1.0)
+        self.assertEqual(enforce._epoch(False), 0.0)

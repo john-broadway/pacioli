@@ -6,6 +6,94 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.37.0 — 2026-08-11 — an argument you misspell is now refused instead of silently dropped
+
+MINOR. One change can break a caller and is listed first. Nothing is removed, no accepted value
+changes, and every correctly-formed call behaves exactly as before.
+
+### 🔴 READ THIS BEFORE UPGRADING — undeclared arguments are now REFUSED
+
+Every served schema (265 catalog tools + 3 doorway tools) now declares
+`additionalProperties: false`, **and the broker enforces it in `dispatch`.** The declaration alone
+would change nothing on every door: the A2A door validates nothing at all, and the `mcp` pin
+(`>=1.0`) permits SDKs that do not validate either — 1.28.x does, before the handler, which is
+why an MCP client sees the SDK's error and an A2A client sees ours. That is the same gap `_bounded_limit`
+was written for in 0.29.x, a published constraint nothing kept.
+
+**The incident this closes, recorded live 2026-07-30.** A caller passed `doctype` instead of
+`pacioli_doctype`. Nothing rejected it: the key was ignored, the resolver fell back to its default,
+and the reply was `404: Sales Invoice ACC-PAY-2026-00001 not found` — naming a doctype the caller
+never asked for, about a document that exists under the doctype they meant. A wrong answer wearing
+the shape of a right one, which for an agent is the worst kind: it reads as "that document is
+missing" and prompts the wrong repair.
+
+**Who this affects:** any client sending a key the schema does not list. Three of this project's
+own tests were doing exactly that, which is the honest measure of how easy it is. If you send stray
+keys today, you will get a structured refusal tomorrow — at `stage: "request"`, before anything is
+claimed or spent, so no marker is ever consumed by a rejected call.
+
+**Which layer refuses depends on your door, and both refuse.** With every schema now closed, the
+MCP SDK (`mcp` 1.28.x) jsonschema-validates against the advertised schema *before* the handler
+runs, so an MCP client sees `Input validation error: Additional properties are not allowed
+('doctype' was unexpected)`. The broker's own refusal — which additionally names every accepted key
+and the correction — answers on the **A2A door** (it validates nothing), on **`pacioli_call`'s
+inner arguments** (the SDK only holds a schema for the envelope), on a **dynamic-mode by-name
+call**, and on any older SDK that does not validate:
+
+```
+plan_submit: unknown argument(s) 'doctype' (did you mean 'pacioli_doctype'?). This tool
+accepts only: consent_token, name, pacioli_doctype, pacioli_target. Refused rather than
+ignored — a silently dropped argument produces an answer about a request you did not make.
+```
+
+The outcome is identical either way, and that is the property to depend on: **refused, never
+silently dropped**, now defended at two independent layers. It matters most for the caller the
+doorway exists to serve: a small local model reconstructs argument names from memory rather than
+from 265 schemas, so this misspelling is not exotic — it is the likeliest thing such a caller does,
+and a silent drop is the one response that cannot teach it otherwise.
+
+### `cascade_cancel` accepts `pacioli_doctype` and CROSS-CHECKS it
+
+An agent that calls `plan_cascade_cancel(name, pacioli_doctype=…)` naturally carries the same
+argument into the execute call. It used to be silently dropped, so naming a DIFFERENT doctype than
+the plan cancelled the plan's graph anyway. It is now declared, still selects nothing (the plan
+pins the doctype), and **refuses on disagreement** — a silently-dropped claim becomes a checked
+one, which is this product's whole law. The mechanical tools (`submit_sales_invoice`, …) keep
+refusing it, because there the doctype is in the tool name and there is nothing to check; the
+refusal says so rather than guessing.
+
+### The worst-state messages were telling the operator something untrue
+
+The five "the operation failed AND the outcome could not be durably recorded either" returns.
+Two of them said **"the consent marker is spent"** — a durable fact the immediately-preceding
+failed write means did not happen. When both the outcome write and its sanitized retry fail,
+`record_outcome` never completed, so no marker write persisted and the row still reads `reserved`.
+Verified against a real store, not a double.
+
+"Spent" tells an operator the ceremony completed and there is nothing to clean up. The truth is a
+marker stranded in `reserved` — not spendable, but not spent either, collected by no sweep, and
+reading as neither a live grant nor a spent one. Different remediation, at the moment there is
+least room to guess. All five now carry the same true sentence plus a pointer to `prove_orphans`,
+which is the sweep that really does surface the open intent. The two no-answer sub-branches also
+stopped rendering identically: one of them says "no answer from the bench" when a readback *did*
+answer and reported the transition had not happened.
+
+### Envelope E1 is now guarded where the transition label is chosen
+
+E1 — "a 200 is not proof the transition happened", since ERPNext queues some writes to a background
+worker — had no test at the dispatch layer. A transition label that cannot be parsed silently
+disables the check, and nothing would have gone red. Both shipped paths (submit and cancel) now
+drive a bench that answers 200 at the wrong docstatus and assert the refusal.
+
+### Tests and the net under them
+
+3330 → 3417. Coverage measured for the first time in this repo's life and floored per module on
+statements AND branches — separately, because `percent_covered` under branch mode is a blended
+figure that lets branch loss hide behind statement mass. The floor's first unplanned catch was a
+race test that only sometimes raced. The MCP door's own startup path and the closures the live
+server registers are covered for the first time, including the refusals an adopter meets when the
+`[server]` extra is missing or `PACIOLI_TOOLSETS` is typo'd.
+
 ## 0.36.0 — 2026-08-08 — the doorway: a searchable catalog instead of 265 resident schemas
 
 MINOR: additive capability, backward compatible in every direction. With `PACIOLI_TOOLSETS`

@@ -19,6 +19,11 @@ env/
 .mypy_cache/
 .coverage
 htmlcov/
+# Coverage REPORTS are build output — CI regenerates them every run and the floors that judge
+# them live in scripts/coverage-floors.json (committed). A stale committed report is exactly the
+# "audited the wrong subject" trap the gate exists to refuse.
+*-cov.json
+coverage.json
 
 # Git worktrees (superpowers:using-git-worktrees)
 .worktrees/

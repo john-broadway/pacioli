@@ -23,6 +23,22 @@ def _chain(*bodies, key=KEY):
     return receipts
 
 
+FORGED_PARENT = Receipt(seq=0, prev_hash=GENESIS, kind=INTENT, body={"n": 0}, ts="t",
+                        hmac="f" * 64)
+
+
+def _resealed_splice():
+    """A 3-receipt chain whose middle link was re-sealed over a parent that is not receipt 0.
+
+    Built with the REAL key, so every seal is genuinely valid and every ``seq`` is intact. The
+    only lie is the linkage: receipt 1 points at :data:`FORGED_PARENT` instead of receipt 0.
+    This is the sole tamper shape the ``prev_hash`` comparison alone can catch.
+    """
+    chain = _chain({"n": 0}, {"n": 1}, {"n": 2})
+    spliced = append(KEY, FORGED_PARENT, "intent", {"n": 1}, ts="2026-07-01T00:00:01Z")
+    return [chain[0], spliced, chain[2]]
+
+
 class TestAppend(unittest.TestCase):
     def test_first_receipt_chains_from_genesis(self):
         r = append(KEY, None, "intent", {"doc": "SINV-001"}, ts="2026-07-01T00:00:00Z")
@@ -63,16 +79,85 @@ class TestVerifyChain(unittest.TestCase):
         ok, _ = verify_chain(OTHER_KEY, _chain({"doc": "A"}))
         self.assertFalse(ok)
 
-    def test_broken_linkage_detected(self):
-        # drop the middle receipt: seq/prev_hash linkage must break
-        chain = _chain({"n": 0}, {"n": 1}, {"n": 2})
-        ok, _ = verify_chain(KEY, [chain[0], chain[2]])
-        self.assertFalse(ok)
+    # ------------------------------------------------------------------
+    # Which branch refused MATTERS. `verify_chain` checks `seq` before `prev_hash`, so the two
+    # obvious tampers below both trip the SEQ branch and never reach the linkage check at all.
+    # Until 2026-08-11 these two tests asserted only `assertFalse(ok)` and discarded the reason,
+    # so they passed on a refusal they were not named for, and the prev_hash branch had never
+    # executed in the life of the repo (found by the first branch-coverage run). Each now pins
+    # the branch it actually exercises; the linkage branch gets its own test below.
+    # ------------------------------------------------------------------
 
-    def test_reordered_chain_detected(self):
-        chain = _chain({"n": 0}, {"n": 1})
-        ok, _ = verify_chain(KEY, [chain[1], chain[0]])
+    def test_dropped_receipt_detected_by_the_SEQ_check(self):
+        # drop the middle receipt. The survivor carries seq 2 where 1 is expected, so this is a
+        # seq refusal — NOT a linkage refusal, despite looking like one.
+        chain = _chain({"n": 0}, {"n": 1}, {"n": 2})
+        ok, reason = verify_chain(KEY, [chain[0], chain[2]])
         self.assertFalse(ok)
+        self.assertIn("seq", reason)
+        self.assertIn("receipt 1", reason)
+
+    def test_reordered_chain_detected_by_the_SEQ_check(self):
+        chain = _chain({"n": 0}, {"n": 1})
+        ok, reason = verify_chain(KEY, [chain[1], chain[0]])
+        self.assertFalse(ok)
+        self.assertIn("seq", reason)
+
+    def test_resealed_splice_detected_by_the_LINKAGE_check(self):
+        """The one tamper only the ``prev_hash`` check catches: a KEY HOLDER re-sealing a spliced
+        receipt.
+
+        Every cheaper forgery is caught by a different branch, which is why this branch had no
+        test. Rewrite ``prev_hash`` and keep the old seal and the SEAL check catches it; drop or
+        reorder a receipt and the SEQ check catches it. But an attacker holding the sealing key
+        can forge ``prev_hash`` *and re-seal over it*, leaving seq intact and every seal valid.
+        Then the chain is internally seal-consistent and only the linkage comparison notices that
+        receipt 1 no longer points at receipt 0.
+
+        That is the case the receipt book exists for: the ledger records the agent's own actions,
+        and the honesty note at the top of ``prove.py`` says the on-box chain is not tamper-evident
+        against someone with host access. This check is what stands between "host access" and
+        "host access AND an undetectable rewrite".
+        """
+        tampered = _resealed_splice()
+
+        # the splice really is a lie about linkage, and really is sealed over a different parent
+        self.assertNotEqual(FORGED_PARENT.hmac, tampered[0].hmac)
+        self.assertEqual(tampered[1].seq, 1)
+        self.assertEqual(tampered[1].prev_hash, FORGED_PARENT.hmac)
+
+        ok, reason = verify_chain(KEY, tampered)
+        self.assertFalse(ok, "a re-sealed splice must not verify")
+        self.assertIn("receipt 1", reason)
+        self.assertIn("prev_hash", reason)
+
+    def test_the_resealed_splice_passes_every_OTHER_check(self):
+        """Guard-the-guard: proves the test above refuses via LINKAGE and not via seq or seal.
+
+        Without this, ``test_resealed_splice_detected_by_the_LINKAGE_check`` would keep passing
+        even if the splice started being caught by a cheaper branch — which is precisely how the
+        two tests above spent the repo's whole life asserting a refusal they never caused.
+        """
+        tampered = _resealed_splice()
+
+        # 1. Every seq is exactly its index, so the SEQ branch cannot be what refuses.
+        self.assertEqual([r.seq for r in tampered], [0, 1, 2])
+
+        # 2. Every seal verifies against that receipt's own sealed fields, so the SEAL branch
+        #    cannot be what refuses either. Rebuilding each receipt over a parent carrying its
+        #    own recorded prev_hash must reproduce its hmac exactly.
+        for r in tampered:
+            parent = None if r.seq == 0 else Receipt(
+                seq=r.seq - 1, prev_hash=GENESIS, kind=INTENT, body={}, ts="t",
+                hmac=r.prev_hash,
+            )
+            self.assertEqual(append(KEY, parent, r.kind, r.body, r.ts).hmac, r.hmac,
+                             f"receipt {r.seq}'s seal must verify on its own contents")
+
+        # 3. So the only thing left to object to is the linkage.
+        ok, reason = verify_chain(KEY, tampered)
+        self.assertFalse(ok)
+        self.assertIn("prev_hash", reason)
 
 
 class TestOrphans(unittest.TestCase):

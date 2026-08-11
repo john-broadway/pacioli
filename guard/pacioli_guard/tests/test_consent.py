@@ -338,6 +338,33 @@ class TestDocstatusTargetDocname(unittest.TestCase):
         """POST /api/resource/Sales Invoice creates; there is no document to consent to yet."""
         self.assertIsNone(docstatus_target_docname("/api/resource/Sales Invoice", {}))
 
+    def test_an_unreadable_body_source_refuses_rather_than_naming_nothing(self):
+        """A source we cannot read is not a source that names nothing.
+
+        Until 2026-08-11 an unparseable ``doc``/``docs``/``document`` body was silently discarded
+        by ``_iter_body_docs``, so it contributed no candidate and the remaining source resolved
+        cleanly to exactly one name. That is this class's own spoof shape wearing a disguise: the
+        test above refuses when two sources name DIFFERENT documents, and an unreadable second
+        source is precisely the case where we cannot tell whether it does. Deny-biased means the
+        unreadable source must block the resolution, not vanish from it.
+
+        (Latent rather than live — frappe parses these bodies with the same ``json.loads``, so the
+        RPC fails anyway. Closed because the resolver must not depend on that.)"""
+        for key in ("doc", "docs", "document"):
+            with self.subTest(key=key):
+                self.assertIsNone(docstatus_target_docname(
+                    "/api/method/frappe.client.insert_many",
+                    {"dn": "ACC-SINV-2026-00004", key: '{"doctype": "Sales Invoice",'}))
+
+    def test_an_absent_body_key_still_resolves_normally(self):
+        """The boundary: ABSENT is not UNREADABLE. Most calls carry none of these three keys, and
+        they must keep resolving from whatever source they do have."""
+        self.assertEqual(
+            docstatus_target_docname("/api/method/run_doc_method",
+                                     {"dt": "Sales Invoice", "dn": "ACC-SINV-2026-00004",
+                                      "doc": None}),
+            "ACC-SINV-2026-00004")
+
 
 class TestConsentTokenHash(unittest.TestCase):
     def test_hash_is_stable_for_the_same_token(self):
@@ -554,6 +581,20 @@ class TestConsentStatusSelfReport(unittest.TestCase):
 # and moved the ledger. 471 tests were green throughout, because they test the code and the bug
 # was in the registry -- so the probe that closes it gets tests that fail on the real broken shape.
 class TestGateRegisteredProbe(unittest.TestCase):
+    @staticmethod
+    def _all_loaded(as_list=True):
+        """A doc_events["*"] map carrying EVERY enforcing handler, derived from the real set.
+
+        ⚠️ These fixtures used to hardcode `before_submit`/`before_cancel` and call that "both
+        handlers loaded". When the two 0.13.0 preview gates were added to `CONSENT_HANDLERS` on
+        2026-08-11, four tests here went red — correctly: they had been asserting that a site
+        missing two enforcing handlers was fully registered. Derived from `api.CONSENT_HANDLERS`
+        now, so the fixture cannot drift from the definition again.
+        """
+        from pacioli_guard import api
+        return {event: ([handler] if as_list else handler)
+                for event, handler in api.CONSENT_HANDLERS.items()}
+
     def _probe(self, hooks):
         # Patch the module object `api` actually holds, not sys.modules["frappe"] by name:
         # sibling tests in this file rebind the stub, so patching by name passed alone and
@@ -562,8 +603,13 @@ class TestGateRegisteredProbe(unittest.TestCase):
         api.frappe.get_hooks = (hooks if callable(hooks) else (lambda name: hooks))
         return api._gate_registered()
 
-    def test_both_handlers_loaded_is_registered(self):
-        self.assertTrue(self._probe({"*": {
+    def test_every_enforcing_handler_loaded_is_registered(self):
+        self.assertTrue(self._probe({"*": self._all_loaded()}))
+
+    def test_the_pre_0_13_0_pair_alone_is_NOT_registered(self):
+        """A cache carrying only submit/cancel is the stale-hooks-cache shape one release later:
+        the two preview gates refuse too, and a receipt that ignores them overstates the gate."""
+        self.assertFalse(self._probe({"*": {
             "before_submit": ["pacioli_guard.act.before_submit"],
             "before_cancel": ["pacioli_guard.act.before_cancel"]}}))
 
@@ -588,9 +634,7 @@ class TestGateRegisteredProbe(unittest.TestCase):
 
     def test_a_bare_string_entry_still_counts(self):
         """frappe hands back a str rather than a list for a single handler."""
-        self.assertTrue(self._probe({"*": {
-            "before_submit": "pacioli_guard.act.before_submit",
-            "before_cancel": "pacioli_guard.act.before_cancel"}}))
+        self.assertTrue(self._probe({"*": self._all_loaded(as_list=False)}))
 
     def test_it_is_deny_biased_when_it_cannot_look(self):
         """Cannot establish -> NOT established. Never 'probably fine'."""
@@ -602,17 +646,35 @@ class TestGateRegisteredProbe(unittest.TestCase):
 class TestConsentStatusReportsEnforcementNotIntention(unittest.TestCase):
     """`require_consent` alone actively misled on 2026-07-29. The conjunction is the answer."""
 
+    def _set(self, obj, name, value):
+        """Set an attribute and register its EXACT restoration, including deleting one that did
+        not exist before.
+
+        ⚠️ Added 2026-08-11. `api.frappe` is the process-wide stub installed by
+        `sys.modules.setdefault("frappe", ...)`, i.e. shared by every test module in this suite.
+        `session`, `db` and `get_hooks` were set on it and never restored — only
+        `_resource_posture` had an `addCleanup`. Harmless in practice because every other guard
+        test rebinds `enforce.frappe`/`act.frappe` to its own fake, but it is the same class as
+        the `del act._claim_consent` landmine fixed the same day: a fixture that leaves the module
+        under test altered makes the suite's verdict depend on collection order. Found by an
+        independent review.
+        """
+        missing = object()
+        previous = getattr(obj, name, missing)
+        setattr(obj, name, value)
+        if previous is missing:
+            self.addCleanup(lambda: delattr(obj, name) if hasattr(obj, name) else None)
+        else:
+            self.addCleanup(setattr, obj, name, previous)
+
     def _status(self, require_consent, registered):
         from pacioli_guard import api
-        api.frappe.session = types.SimpleNamespace(user="broker@example.com")
-        api.frappe.db = types.SimpleNamespace(
-            get_value=lambda dt, a, b=None, **k: ("SCOPE-1" if b == "name" else require_consent))
-        api.frappe.get_hooks = lambda name: ({"*": {
-            "before_submit": ["pacioli_guard.act.before_submit"],
-            "before_cancel": ["pacioli_guard.act.before_cancel"]}} if registered else {})
-        real_posture = api._resource_posture
-        api._resource_posture = lambda user: "narrow"
-        self.addCleanup(setattr, api, "_resource_posture", real_posture)
+        self._set(api.frappe, "session", types.SimpleNamespace(user="broker@example.com"))
+        self._set(api.frappe, "db", types.SimpleNamespace(
+            get_value=lambda dt, a, b=None, **k: ("SCOPE-1" if b == "name" else require_consent)))
+        self._set(api.frappe, "get_hooks", lambda name: (
+            {"*": {e: [h] for e, h in api.CONSENT_HANDLERS.items()}} if registered else {}))
+        self._set(api, "_resource_posture", lambda user: "narrow")
         return api.consent_status()
 
     def test_requested_but_not_loaded_reports_NOT_enforced(self):

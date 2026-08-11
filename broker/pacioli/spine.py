@@ -16,16 +16,53 @@ Ties the pillars into one ordered flow: ``PLAN(fresh) → closed-books → CONSE
      verify-now/consume-later design leaves open.
   3. **Durable intent before execute.** A PROVE *intent* is recorded (durably) before ``execute``, so a
      crash between execute and outcome leaves an orphan intent to reconcile — never a silent posting.
-  4. **Execute, then settle.** Success → the marker is committed (single-use spent) and a ``committed``
-     outcome recorded, together (glue = one transaction). Failure → the marker is *released* back to
-     ``live`` (a failed submit must not burn the human's grant) and a ``failed`` outcome recorded — and
-     because only a ``committed`` outcome finalizes an intent, that intent stays an orphan for the
-     reconciliation sweep (a timeout that may actually have landed is not treated as a clean failure).
+  4. **Execute, then settle — and the marker is only released on an ANSWERED refusal.**
+     Success → the marker is committed (single-use spent) and a ``committed`` outcome recorded,
+     together (glue = one transaction).
 
-Side effects are injected via ``effects`` (``claim_marker(reserved) -> bool``, ``record_intent(body)
--> intent``, ``execute() -> result``, ``record_outcome(intent, status, result, final_marker)``), so
-this core is pure and unit-testable; the glue owns the store, the clocks, the seal key, the atomic CAS,
-and the single-transaction settle.
+     Failure splits, and the split is the deny-biased rule this file exists to enforce:
+
+     * **The bench ANSWERED with a refusal** (``exc.answered`` is truthy — a converted, attributable
+       error) → nothing was posted, so the marker is *released* back to ``live`` and a ``failed``
+       outcome is recorded. A refused submit must not burn the human's grant.
+     * **NO answer** (a raw exception, a connection failure, an ambiguous proxy response) → the
+       mutating call may already be **in motion server-side**, so the marker is **SPENT**, not
+       released, and the outcome resolves through a governed readback of the document's real
+       ``docstatus`` (:func:`_resolve_no_answer`). Releasing here would let one human grant initiate
+       a second act, which is the exact inversion consent exists to prevent.
+
+     Because only a ``committed`` outcome finalizes an intent, an unresolved intent stays an orphan
+     for the reconciliation sweep — a timeout that may actually have landed is never treated as a
+     clean failure.
+
+     ⚠️ **This paragraph said "Failure → the marker is *released*", flat, until 2026-08-11.** That
+     was true before 0.10.4 and the flip is deliberate and documented — the comment at
+     :func:`submit_governed`'s own exception branch says *"this used to release on the never-verified
+     assumption that an exception meant no progress; it no longer does"*, and ``broker/README.md``
+     records it. Only this header was never updated, so the **governance spine's stated invariant
+     was the opposite of the rule it implements**, in the paragraph a reader trusts most. Found by
+     an independent review of the docstring-claim pass that had just declared this module clean.
+     ``test_spine_docstring_claims.py`` now holds it.
+
+Side effects are injected via ``effects`` — **five** members, all called by this core:
+``claim_marker(reserved) -> bool``, ``record_intent(body) -> intent``, ``execute() -> result``,
+``record_outcome(intent, status, result, final_marker)``, and ``readback() -> result`` (used only
+on the no-answer path above, to ask the bench what actually happened). So this core is pure and
+unit-testable; the glue owns the store, the clocks, the seal key, the atomic CAS, and the
+single-transaction settle. ``readback`` was omitted from this list until 2026-08-11, so anyone
+implementing the protocol as documented got an ``AttributeError`` on the deny-biased path that
+matters most.
+
+**``record_outcome`` MUST BE ALL-OR-NOTHING**, and this contract did not say so until 2026-08-11.
+The refusal messages now assert a persisted fact — that after a double failure the marker row
+still reads ``reserved`` — and that is only true if a failed ``record_outcome`` leaves nothing
+behind. Both shipped implementations satisfy it (``store.BrokerStore.record_outcome`` is one
+``BEGIN IMMEDIATE`` with rollback on any error, and the marker update is state-guarded
+``AND state='reserved'``), and ``_settle``'s retry already depends on it by name. But a
+conforming-looking implementation without that property would make an operator-facing sentence
+false with no test noticing, because every test here uses an atomic one. Raised as a SUSPECTED
+design fragility by an independent review; closed by stating the requirement rather than by
+adding a guard the pure core has no way to enforce.
 
 Honest residuals (SPEC §5): a crash after ``claim`` but before ``execute``/intent leaves the marker
 stuck ``reserved`` (dead → fail-closed; a human re-mints — safe, not silent). A crash after a
@@ -54,6 +91,37 @@ from dataclasses import dataclass
 from pacioli.consent import commit, release, reserve
 from pacioli.plan import check_fresh, check_red_line
 
+# The one true statement about the marker whenever ``_settle`` returns ``recorded=False``, shared
+# by every such return so the five cannot drift apart again.
+#
+# ``commit()``/``release()`` are PURE — they return a new dataclass; only ``record_outcome``
+# persists one. So when both the original write and the sanitized retry fail, no marker write
+# happened at all and the row is left exactly as ``store.claim_marker``'s CAS left it before
+# execute: ``reserved``. Not ``live``, and NOT ``consumed``.
+#
+# ⚠️ Two of these returns said "the consent marker is spent" until 2026-08-11 — a durable fact the
+# immediately-preceding failed write means did not happen, asserted at the exact moment the
+# operator most needs the truth. Verified against a real ``BrokerStore``: the row reads
+# ``reserved`` while the message claimed spent. "Spent" tells an operator the ceremony completed
+# and there is nothing to clean up; the reality is a marker stranded in ``reserved``, which no
+# sweep collects (``prove.orphans`` sweeps open INTENTS, not markers) and which reads as neither
+# a live grant nor a spent one. Pinned by ``test_spine.TestDoubleFailureMessagesTellTheTruth`` and
+# by ``TestUnsettledMarkerIsReallyReservedInTheStore``, which reads the row rather than the fake.
+_UNSETTLED = ("the marker remains CLAIMED — state 'reserved': not spendable, and NOT recorded as "
+              "spent")
+
+# The other half of the same truth, and it must appear wherever `_UNSETTLED` does. `record_intent`
+# succeeds before every one of these returns, so an intent receipt EXISTS with no committed
+# outcome — which is exactly what `prove.orphans` collects. Naming the sweep is the only thing in
+# these messages that tells the operator where the act will resurface.
+#
+# ⚠️ An independent review caught this missing from the answered-refusal return, where it is not
+# merely true but MOST explainable ("the bench refused; nothing posted"). It also caught the
+# pointer being pinned at only one of its four sites, so three could drift silently — hence one
+# constant, and `test_spine.TestEveryDoubleFailureCarriesBothClauses`, which drives all five paths
+# rather than sampling one.
+_OPEN_INTENT = "the intent receipt stays open (sweep prove_orphans)"
+
 
 @dataclass(frozen=True)
 class SubmitResult:
@@ -61,8 +129,19 @@ class SubmitResult:
 
     :param ok: did the posting complete and get proven?
     :param reason: denial/failure reason (``None`` on success).
-    :param stage: where it ended — ``"fresh"`` | ``"red_line"`` | ``"consent"`` | ``"execute"`` | ``"done"``.
-    :param result: the execute result on success (``None`` otherwise).
+    :param stage: where it ended — ``"fresh"`` | ``"red_line"`` | ``"consent"`` | ``"execute"`` |
+        ``"done"`` | ``"unconfirmed"``.
+
+        ⚠️ ``"unconfirmed"`` was missing from this list until 2026-08-11, and it is the one a
+        caller can least afford to miss: it means **the marker is spent and the document's real
+        state is unknown — reconcile before treating this as final.** It is also the most
+        frequently constructed stage in the module. A caller switching on ``stage`` per the old
+        list would have fallen through on exactly the outcome that needs a human.
+        ``test_spine_docstring_claims.py`` pins this list against the literals the module actually
+        constructs.
+    :param result: the execute result when there is one. Present on success, and ALSO on the
+        no-answer failures that carry what the readback saw (``"unconfirmed"``) — it is not a
+        success-only field, which is what this line claimed until 2026-08-11.
     """
 
     ok: bool
@@ -136,8 +215,8 @@ def governed_submit(*, plan, marker, token, current_doc_version, now_epoch, now_
                 return SubmitResult(
                     False,
                     f"{op} failed ({exc}) and the outcome could not be durably recorded either "
-                    f"({rexc}); the consent marker's real state is uncertain — treat it as "
-                    "unspendable and inspect manually",
+                    f"({rexc}); {_UNSETTLED}, and the grant was never returned to the human — "
+                    f"inspect manually; {_OPEN_INTENT}",
                     "execute",
                 )
             return SubmitResult(False, f"{op} failed: {exc}", "execute")
@@ -160,8 +239,8 @@ def governed_submit(*, plan, marker, token, current_doc_version, now_epoch, now_
             return SubmitResult(
                 False,
                 f"{op} was accepted but NOT confirmed (docstatus {got}, expected {expected}), "
-                f"and the outcome could not be durably recorded either ({rexc}); the consent "
-                "marker is spent — reconcile against the document's real docstatus manually",
+                f"and the outcome could not be durably recorded either ({rexc}); {_UNSETTLED} — "
+                f"reconcile against the document's real docstatus manually; {_OPEN_INTENT}",
                 "execute",
             )
         return SubmitResult(
@@ -179,8 +258,8 @@ def governed_submit(*, plan, marker, token, current_doc_version, now_epoch, now_
         return SubmitResult(
             False,
             f"{op} succeeded at the bench (docstatus confirmed) but the outcome could not be "
-            f"durably recorded ({rexc}); the consent marker is spent — verify the document's "
-            "real state before assuming this is final",
+            f"durably recorded ({rexc}); {_UNSETTLED} — verify the document's real state before "
+            f"assuming this is final; {_OPEN_INTENT}",
             "execute",
         )
     if rexc is not None:
@@ -239,24 +318,36 @@ def _resolve_no_answer(effects, intent, reserved, exc, op, transition):
     marker is ALWAYS spent here (never released — a released grant for an act possibly in flight is
     the exact inversion this rule exists to prevent) and the outcome is resolved by a governed
     readback of the document's real docstatus, the same discipline ``tools.py``'s existing
-    cascade-cancel readback already applies (``_Effects.cancel``, tools.py:1744-1779): the readback
+    cascade-cancel readback already applies (``_Effects.cancel`` in ``cascade_cancel``; cited by
+    NAME rather than by line, because this citation read ``tools.py:1744-1779`` until 2026-08-11
+    and had drifted ~8,000 lines onto unrelated prose): the readback
     itself must never be allowed to crash this flow, so any exception IT raises degrades to a
     ``readback_error`` rather than propagating."""
     committed_marker = commit(reserved)
 
-    def _settle_or_deny(status, result):
+    def _settle_or_deny(status, result, detail=""):
         # WG-2b: every settle in this function is already deny-biased ("unconfirmed"/"committed",
         # never "failed" — nothing here is a known-clean refusal); _settle's own downgrade rule
         # leaves that untouched. Only a genuinely unrecoverable double failure needs a distinct
         # message: the marker is spent either way (committed_marker, computed above), so the only
         # thing degrading is whether the ledger itself could say so.
+        #
+        # ``detail`` exists because this one return is shared by BOTH no-answer sub-branches, and
+        # without it they rendered BYTE-IDENTICALLY: a readback that RAISED and a readback that
+        # ANSWERED "the transition did not happen" produced the same sentence, and that sentence
+        # says "with no answer from the bench". In the second case the bench DID answer — it said
+        # no — and an operator told otherwise at 2am will go looking for a posting that is not
+        # there. Both siblings that are not double failures carry their detail (``{rexc}`` and
+        # ``docstatus {got!r}``); this one dropped it, and because the ledger write also failed,
+        # the ``readback_error``/``docstatus`` in ``result`` is not persisted either — so the
+        # detail was lost everywhere, not merely from the message. Found by an independent review.
         recorded, oexc = _settle(effects, intent, status, result, committed_marker)
         if not recorded:
             return SubmitResult(
                 False,
                 f"{op} raised ({exc}) with no answer from the bench, and the outcome could not "
-                f"be durably recorded either ({oexc}); the consent marker's real state is "
-                "uncertain — treat it as unspendable and inspect manually",
+                f"be durably recorded either ({oexc}); {detail}{_UNSETTLED} — inspect manually; "
+                f"{_OPEN_INTENT}",
                 "execute",
             )
         return None  # recorded (possibly degraded) — caller builds its own SubmitResult
@@ -265,7 +356,9 @@ def _resolve_no_answer(effects, intent, reserved, exc, op, transition):
         got = effects.readback()
     except Exception as rexc:  # noqa: BLE001 — the readback must never raise past this point
         result = {"error": str(exc), "readback_error": str(rexc)}
-        deny = _settle_or_deny("unconfirmed", result)
+        deny = _settle_or_deny("unconfirmed", result,
+                               detail=f"the confirmatory readback ALSO failed ({rexc}), so the "
+                                      f"document's real state is unknown; ")
         if deny is not None:
             return deny
         return SubmitResult(
@@ -284,9 +377,8 @@ def _resolve_no_answer(effects, intent, reserved, exc, op, transition):
             return SubmitResult(
                 False,
                 f"{op} raised ({exc}) with no answer from the bench, but a readback confirms it "
-                f"DID complete — yet the outcome could not be durably recorded ({oexc}); the "
-                "consent marker's real state is uncertain — treat it as unspendable and inspect "
-                "manually",
+                f"DID complete — yet the outcome could not be durably recorded ({oexc}); "
+                f"{_UNSETTLED} — inspect manually; {_OPEN_INTENT}",
                 "execute",
             )
         if oexc is not None:
@@ -304,7 +396,9 @@ def _resolve_no_answer(effects, intent, reserved, exc, op, transition):
             )
         return SubmitResult(True, None, "done", result)
     result = {"error": str(exc), "docstatus": got}
-    deny = _settle_or_deny("unconfirmed", result)
+    deny = _settle_or_deny("unconfirmed", result,
+                           detail=f"a readback DID answer and shows the document at docstatus "
+                                  f"{got!r}, not the expected {expected!r}; ")
     if deny is not None:
         return deny
     return SubmitResult(

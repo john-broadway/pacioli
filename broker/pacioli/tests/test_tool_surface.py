@@ -441,9 +441,24 @@ class ToolSurfaceCharacterization(unittest.TestCase):
                       "properties": {"name": {"type": "string",
                                               "description": "Cancelled document name."}, **target}},
         }
+        # Closed to undeclared arguments since 2026-08-11 (`tools._close_schemas`). Stamped onto
+        # the expectation rather than written into all five literals above: the equality below
+        # still catches drift in BOTH directions — if the code ever stops closing a schema, the
+        # served dict loses the key the expectation carries and this reds.
+        for schema in expect.values():
+            schema["additionalProperties"] = False
         by_name = {t["name"]: t["inputSchema"] for t in TOOLS}
         for name, (verb, _doctype) in _MECHANICAL.items():
             self.assertEqual(by_name[name], expect[verb], f"{name} full schema drift")
+
+    def test_every_served_schema_is_closed_to_undeclared_arguments(self):
+        # Broader than the five mechanical verbs above: EVERY tool on the surface, including the
+        # hand-written generic ones and the doorway. A tool born open is a tool that silently
+        # swallows a misspelled argument, which is the defect this whole rule exists for.
+        from pacioli.doorway import DOORWAY_TOOLS
+        for tool in list(TOOLS) + list(DOORWAY_TOOLS):
+            with self.subTest(tool=tool["name"]):
+                self.assertIs(tool["inputSchema"].get("additionalProperties"), False)
 
     def test_no_schema_subdict_is_shared_between_tools(self):
         # aliasing guard: two generated tools must not share one mutable properties dict
@@ -499,7 +514,9 @@ if __name__ == "__main__":
 
 class TestDeclaredLimitBoundsAreActuallyEnforced(unittest.TestCase):
     """Redteam 2026-07-26. Every `list_*` publishes `{"minimum": 1, "maximum": 200}` and nothing
-    enforced it: the MCP SDK does not validate `inputSchema` and the A2A door passes params through
+    enforced it at the time: the A2A door passes params through unvalidated, and the MCP SDK did not
+    check `inputSchema` until 1.28.x (it does now, before the handler) — so ours is still the only
+    refusal on A2A, on `pacioli_call`'s inner args, and on a dynamic-mode by-name call
     as given, so the declaration was a promise with no keeper.
 
     `limit=0` was the sharp one. It reached frappe as `limit_page_length="0"`, which this very
@@ -535,7 +552,7 @@ class TestMalformedArgumentsGetAStructuredRefusalNotATraceback(unittest.TestCase
     answer (stage + reason), never a traceback", and `a2a.py` claims hostile enumeration "is a
     ledger entry, not an invisible transport error". Neither held for malformed arguments.
 
-    Neither door validates `inputSchema` — the MCP SDK does not, and the A2A door passes `params`
+    ⚠️ The MCP SDK DOES validate `inputSchema` (mcp 1.28.x, before the handler); the A2A door passes `params`
     through as given — so schema-illegal-but-JSON-legal values reach the handlers. `dispatch` caught
     only ErpnextError, RegistryError, sqlite3.OperationalError and StoreCorruptError. Real escapes:
 

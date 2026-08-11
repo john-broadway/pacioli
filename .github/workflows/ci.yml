@@ -60,6 +60,42 @@ jobs:
         working-directory: guard
         run: python -m pytest pacioli_guard/tests -q -ra
 
+  # Per-module BRANCH-coverage floors on the modules that decide whether a write happens.
+  # Coverage had never been measured in this repo before 2026-08-11; the first run found the
+  # receipt chain-linkage refusal and seven of the spine's double-failure paths had never
+  # executed, several of them PARTIAL branches on lines statement coverage already called
+  # covered. Floors are a ratchet in scripts/coverage-floors.json — raised per batch, never
+  # lowered (scripts/coverage_floor.py refuses to lower one).
+  #
+  # ONE python version on purpose: the floor is a property of the tests, not of the
+  # interpreter, and running it across the matrix would turn a version-dependent branch into
+  # a phantom red. The compat matrix above still runs every supported version.
+  #
+  # The checker's own refusals (statement-mode report, absent module, empty report) are
+  # mutation-proven in scripts/tests/test_coverage_floor.py, which the version-consistency
+  # job runs. A coverage gate that was never seen refusing is not yet a gate.
+  coverage-floor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Measure guard (branch mode — config in guard/pyproject.toml)
+        working-directory: guard
+        run: |
+          python -m pip install -e . pytest pytest-cov
+          python -m pytest pacioli_guard/tests -q -ra --cov --cov-report=json:../guard-cov.json
+      - name: Measure broker (branch mode — config in broker/pyproject.toml)
+        working-directory: broker
+        run: |
+          python -m pip install -e '.[server,a2a]' pytest pytest-cov
+          python -m pytest pacioli/tests -q -ra --cov --cov-report=json:../broker-cov.json
+      - name: Guard floors
+        run: python scripts/coverage_floor.py check guard guard-cov.json
+      - name: Broker floors
+        run: python scripts/coverage_floor.py check broker broker-cov.json
+
   lint:
     runs-on: ubuntu-latest
     steps:

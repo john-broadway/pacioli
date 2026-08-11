@@ -130,9 +130,20 @@ class ApiScope:
         raw-CRUD bypass by default).
     :param resource_doctypes: when ``allow_resource``, the DocType allowlist. An empty set **denies**
         (0.8.0 onward), matching ``methods``: a grant naming nothing permits nothing. Site-wide
-        access is expressible but must be stated — one literal ``RESOURCE_DOCTYPE_WILDCARD`` row.
+        access is expressible but must be stated — with the ``allow_all_doctypes`` Check on the
+        PARENT (see below), never with a sentinel row. ⚠️ This line instructed a
+        ``RESOURCE_DOCTYPE_WILDCARD`` row until 2026-08-11, an operator gesture that is IMPOSSIBLE:
+        ``ref_doctype`` is a validated ``Link`` and no DocType is named ``"*"``, so the row raises
+        ``LinkValidationError`` and never stores. This file's own correction at
+        ``_UNGRANTABLE_DOCTYPES`` recorded that on 2026-07-29; the :param list was never updated,
+        so it kept telling operators to perform the retired gesture.
         Still subject to the user's own role permissions downstream: scope narrows, never widens.
         (Before 0.8.0 an empty set meant "all DocTypes". That was a security defect, not a default.)
+    :param allow_all_doctypes: the parent-level Check that grants EVERY DocType, replacing the
+        retired sentinel row above. Honored before the allowlist is consulted at all, so it wins
+        regardless of what the child table holds. Undocumented here until 2026-08-11, which is why
+        ``api._resource_posture`` never learned to read it and reported the widest possible grant
+        as ``denies_all``.
     :param enabled: the **kill switch**. ``False`` denies every request from this credential,
         regardless of allowlists. Defaults ``True``, and a grant that never carried the field
         (pre-CONTAIN) reads as enabled — absence is not a kill.
@@ -639,7 +650,7 @@ def is_docstatus_changing(kind, target, http_method, form):
     ``APPLY_WORKFLOW_METHOD`` itself is NEVER flagged — it is the sanctioned path this whole gate
     exists to funnel callers toward.
 
-    The honest residual (stated in the README/CHANGELOG), NOT covered here: a generic RPC that
+    The honest residual, NOT covered by THIS PURE FUNCTION: a generic RPC that
     flips docstatus on the doctype named IN ITS BODY — ``frappe.client.submit``/``.cancel`` (whose
     name-suffix DOES match, but whose derived "doctype" ``"frappe.client"`` never matches a real
     Workflow so the gate passes), and ``frappe.client.set_value``, v2 ``run_doc_method``, top-level
@@ -648,6 +659,13 @@ def is_docstatus_changing(kind, target, http_method, form):
     the gate for the doctype it actually touches. Extending to each is open-ended per-RPC body
     parsing; ``savedocs`` above is covered specifically because it is the Desk UI's own path (high
     real-world traffic) and its ``doc`` param is a stable, documented place to read the doctype.
+
+    ⚠️ **Read "here" strictly: this is the PURE function's residual, not the app's.** Since 0.5.1
+    ``enforce.check_scope`` feeds ``body_scoped_target``'s REWRITTEN target to the workflow gate
+    (``wf_kind``/``wf_target``), so the body-doctype RPCs above are NOT invisible to the gate as
+    deployed. Until 2026-08-11 this paragraph cited the README/CHANGELOG as though the residual
+    were still the shipped posture. It errs conservative — it claims LESS coverage than exists, so
+    it was never a false safety claim — but it misdirects an auditor reading for what is exposed.
     """
     if kind == "method":
         if not isinstance(target, str) or not target:
@@ -779,17 +797,59 @@ def _docstatus_body_verb(doc):
 
 def _iter_body_docs(value):
     """Yield parsed doc dicts from a body param that may be a JSON-list string, a list, or a single
-    dict — for the multi-doc save RPCs (``insert_many``/``bulk_update``/``cancel_all_linked_docs``)."""
+    dict — for the multi-doc save RPCs (``insert_many``/``bulk_update``/``cancel_all_linked_docs``).
+
+    **Yields :data:`_DENY` for anything it cannot read**, so unreadability is visible to the caller
+    instead of looking like absence. ABSENT (``None``) still yields nothing, because a body param
+    that was never sent is not a body param we failed to understand — collapsing those two is what
+    would make every keyless call deny.
+
+    ⚠️ This discarded what it could not parse until 2026-08-11: a JSON error returned early, a
+    non-list/dict value produced an empty ``items``, and an unparseable list ENTRY was dropped
+    while its siblings were judged. Both callers read "nothing yielded" as "nothing there", so an
+    unreadable batch fell through to the all-draft create residual in
+    :func:`body_scoped_target` — while the single-doc path three lines above it deny-closed on the
+    very same input, via ``_parse_doc`` -> ``None`` -> ``_docstatus_body_verb`` -> ``_DENY``. Two
+    paths in one decision, opposite verdicts, diverging in the permissive direction.
+
+    NOT a live escape, and the fix should not be described as closing one — but the reasoning has
+    to be about the RIGHT functions, and the first version of this note was not (corrected
+    2026-08-11 after an independent review):
+
+    * The names that actually route here are ``frappe.client.insert_many``,
+      ``frappe.client.bulk_update`` and the bare v2 ``bulk_update`` (:data:`_MULTI_DOC_SAVE_METHODS`).
+      ``cancel_all_linked_docs`` was cited here and does NOT belong: ``body_scoped_target`` gives
+      it an unconditional ``("other", None)`` and never parses its body at all.
+    * The mechanism is narrower than "frappe uses ``json.loads`` too". ``frappe/client.py:219``
+      guards it with ``if isinstance(docs, str)``, and ``frappe/app.py``'s ``make_form_dict``
+      already parses a JSON request body, so on the ordinary JSON shape ``docs`` arrives as a real
+      list and that ``json.loads`` never runs. What holds is this: an unparseable STRING can only
+      reach us as a string, i.e. from a form-encoded body — which is exactly the case where
+      frappe's own ``isinstance`` IS true and its ``json.loads`` throws. A non-string, non-list
+      value dies one line later at ``len(docs)``/iteration. Either way the write never runs.
+
+    So the conclusion stands and the mechanism is now stated for the shape that actually occurs.
+    It is closed because the floor must not depend on a downstream parser agreeing with it — the
+    same "one more call site turns it live" hazard ``enforce._epoch`` already names for its
+    non-finite guard."""
+    if value is None:
+        return  # absent, not unreadable
     if isinstance(value, str):
         try:
             value = json.loads(value)
         except (ValueError, TypeError):
+            yield _DENY
             return
-    items = value if isinstance(value, list) else [value] if isinstance(value, dict) else []
+    if isinstance(value, list):
+        items = value
+    elif isinstance(value, dict):
+        items = [value]
+    else:
+        yield _DENY  # not a shape this body param can take at all
+        return
     for item in items:
-        parsed = _parse_doc(item) if not isinstance(item, dict) else item
-        if isinstance(parsed, dict):
-            yield parsed
+        parsed = item if isinstance(item, dict) else _parse_doc(item)
+        yield parsed if isinstance(parsed, dict) else _DENY
 
 
 # savedocs' `action` -> the docstatus verb it drives (mirrors frappe's own
@@ -975,9 +1035,13 @@ def body_scoped_target(kind, target, http_method, form):
         # insert_many / client.bulk_update carry a `docs` LIST — mixed doctypes possible, so ANY
         # docstatus-changing item deny-closes (one per-doctype grant cannot authorise a mixed batch);
         # an all-draft batch stays the create residual (None).
+        # No explicit `d is _DENY` branch is needed: `_iter_body_docs` yields `_DENY` for anything
+        # unreadable, and `_docstatus_body_verb` maps any non-dict to `_DENY`, which is `not None`
+        # and deny-closes here. That coupling is load-bearing rather than incidental, so it is
+        # pinned directly by `test_scope.TestUnreadableBodyDocsDenyClose`.
         for d in _iter_body_docs(form.get("docs")):
-            if _docstatus_body_verb(d) is not None:  # submit/cancel OR unparseable-docstatus
-                return ("other", None)
+            if _docstatus_body_verb(d) is not None:  # submit/cancel, unparseable docstatus, OR
+                return ("other", None)               # an item/body we could not read at all
         return None
     if target == _CANCEL_ALL_LINKED_METHOD:
         # A batch cancel of linked docs (any/mixed doctypes) — never expressible as one per-doctype
@@ -1063,6 +1127,21 @@ def docstatus_target_docname(path, form):
             candidates.add(value.strip())
     for key in ("doc", "docs", "document"):
         for doc in _iter_body_docs(form.get(key)):
+            if doc is _DENY:
+                # A source we cannot READ is not a source that names nothing. Letting it vanish
+                # leaves the remaining source resolving cleanly to exactly one name — which is
+                # this function's own spoof shape (see the docstring: "naming two is the spoof
+                # shape"), except the second name is hidden behind a parse failure rather than
+                # stated. Refuse instead of resolving past it.
+                #
+                # ⚠️ SCOPE, stated because the 2026-08-11 commit did not and an independent review
+                # called it: THIS FUNCTION HAS NO PRODUCTION CALLER. `enforce.py`'s own import
+                # note records that it stopped being load-bearing when the consent gate moved to
+                # the document layer, which reads the act off the document instead of inferring it
+                # from a request shape. So this closes no live hole — it keeps the pure core
+                # consistent with its sibling, against the day something imports it again. The
+                # `body_scoped_target` half of the same change IS on a live path.
+                return None
             name = doc.get("name")
             if isinstance(name, str) and name.strip():
                 candidates.add(name.strip())

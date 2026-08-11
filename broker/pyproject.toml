@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pacioli"
-version = "0.36.0"
+version = "0.37.0"
 description = "Governed agent broker for ERPNext (MCP + A2A doors, one spine) — no debit without a credit: PLAN, CONSENT, PROVE, UNDO over the books, on the Pacioli Guard credential floor"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -40,3 +40,25 @@ pacioli = "pacioli.cli:main"
 [tool.setuptools.packages.find]
 include = ["pacioli*"]
 exclude = ["pacioli.tests*"]   # tests are for the repo, not the wheel
+
+[tool.coverage.run]
+# BRANCH mode deliberately. Measured 2026-08-11: statement coverage scored `prove.py` at 98%
+# and `spine.py` at 90% while the receipt chain-linkage refusal and seven double-failure paths
+# had never executed — several of them PARTIAL branches on lines statement coverage already
+# counted as covered. The gate this repo needs is the stricter one.
+branch = true
+source = ["pacioli"]
+omit = ["*/tests/*"]   # measuring the tests inflates the number and hides the source
+
+[tool.coverage.report]
+# No `fail_under` here on purpose: it is a single repo-wide average, and an average lets a
+# decision module rot behind a large well-covered neighbour. The floor is PER MODULE and lives
+# in `scripts/coverage-floors.json`, enforced by `scripts/coverage_floor.py`.
+#
+# That gate reads `percent_statements_covered` and `percent_branches_covered` SEPARATELY, never
+# `percent_covered` — which under branch mode is the BLENDED (lines + branches) figure. An
+# independent review caught the first version scoring the blended number and calling it a branch
+# floor: guard's pacioli_consent_marker.py read 53.8 blended while its branch coverage was 0.0,
+# and it cleared. Statement mass masks branch loss; the two are gated apart so neither can hide
+# behind the other.
+show_missing = true

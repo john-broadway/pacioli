@@ -30,6 +30,27 @@ class PacioliConsentMarker(Document):
         ``UPDATE ... WHERE burned = 0`` in :func:`pacioli_guard.enforce._claim_consent`, which skips
         the document lifecycle entirely, so ``validate`` never runs for it. ``burned`` is also
         explicitly outside the immutable set, so a spend through the ORM would pass too.
+
+        **What walks around this guard, stated here rather than left to be discovered.** frappe
+        dispatches ``validate`` from ``Document.run_before_save_methods``, which both the insert
+        and the save paths call — but it returns *before* any dispatch when ``flags.ignore_validate``
+        is set (``frappe/model/document.py``, verified against frappe 16.27.1 source). So:
+
+        * a write carrying ``flags.ignore_validate`` edits a minted marker **unguarded**, and
+        * so does anything skipping the document lifecycle entirely — raw SQL, ``db_set``/
+          ``db_update`` field writes.
+
+        This is the same pair ``act.py`` already names for the consent gate, and it is the same
+        answer: no single frappe extension point is a floor, so coverage here is a composition
+        with a published residual rather than a claim of totality. Reaching either still requires
+        ``System Manager`` or shell, both already above this app's threat model.
+
+        ⚠️ **Not covered here at all: DELETE.** This guard runs on save. A marker can still be
+        deleted outright by a principal holding delete permission, which **erases** the record of a
+        consent that was granted and spent rather than altering it — and an erased grant is worse
+        than an edited one, because nothing remains to disagree with. Guarding it is a policy
+        choice, not a bug fix (an operator with a legitimate reason to remove records needs a
+        route), so it is named here rather than closed quietly.
         """
         violations = immutable_marker_violations(self.get_doc_before_save(), self)
         if not violations:

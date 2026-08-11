@@ -920,6 +920,22 @@ Two more advisory disclosures (never a gate):
 
 ## Honest scope
 
+- 🔴 **ARGUMENTS — an undeclared key is REFUSED, not ignored (0.37.0).** Every served schema
+  declares `additionalProperties: false` **and the broker enforces it in `dispatch`**, because
+  a declaration is only as good as whoever checks it: the A2A door validates nothing at all, and
+  the `mcp` pin (`>=1.0`) permits SDKs that do not validate either. A declaration nothing
+  enforces is a promise nothing keeps.
+  **If your client sends keys outside a tool's schema today, they will be refused after upgrading**
+  — at `stage: "request"`, before anything is claimed or spent, so no marker is consumed by a
+  rejected call. **Both layers refuse and the outcome is identical** — with the schemas closed, the
+  MCP SDK (`mcp` 1.28.x) jsonschema-validates before the handler, so an MCP client sees
+  `Input validation error: Additional properties are not allowed`; the broker's own refusal, which
+  also names every accepted key and the correction, answers on the A2A door, on `pacioli_call`'s
+  inner arguments, on a dynamic-mode by-name call, and on any SDK that does not validate.
+  What it closes: passing `doctype` instead of `pacioli_doctype` used to be dropped
+  silently, the resolver fell back to its default, and the reply named a doctype the caller never
+  asked for about a document that exists under the one they meant — a wrong answer wearing the
+  shape of a right one.
 - **PLAN** — full (native ERPNext preview), but a *preview*, not a guarantee: server-side
   validation still runs again at submit time.
 - **CONSENT** — two gates. A real out-of-band human marker, single-use and concurrency-safe

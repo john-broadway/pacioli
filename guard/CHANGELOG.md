@@ -3,6 +3,80 @@
 Least-privilege API capability scoping for Frappe/ERPNext. Honest pre-1.0 semver.
 Distribution name `pacioli-guard`; Frappe app / import module `pacioli_guard`.
 
+## 0.14.0 — 2026-08-11 — the posture report inverted the widest grant, and the gate receipt counted half the gate
+
+MINOR. Two behaviour changes an operator can observe, one deny that got stricter, and a large
+docstring-truth pass. No API is removed and nothing that worked stops working — but **two of these
+change what an existing site reports, so read them before upgrading.**
+
+### 🔴 `api._resource_posture` reported the WIDEST grant as the NARROWEST
+
+A grant with `allow_resource=1` and `allow_all_doctypes=1` — permission for every doctype on the
+site, the widest thing this app can express — read as **`denies_all`**, the narrowest of the four
+states. The function never read `allow_all_doctypes` at all: the flag replaced an earlier
+sentinel-row mechanism (a `"*"` row, retired 2026-07-29 because `ref_doctype` is a validated Link
+and cannot store it) and the posture report was never moved across.
+
+Its own docstring forbids exactly this — an operator must never be quietly unaware of how wide
+their grant is *"in either direction"* — and it inverted the answer in the direction that matters.
+
+**What you will see:** a new posture value, `all_doctypes`. Anything switching on this string needs
+a branch for it, and any site that read `denies_all` while actually granting everything now tells
+the truth.
+
+### 🔴 The gate receipt counted 2 of the 4 enforcing handlers
+
+`CONSENT_HANDLERS` — what `gate_registered`/`consent_enforced` check for — still listed only
+`before_submit` and `before_cancel`. The two preview gates shipped in 0.13.0 and **they deny**, so
+the receipt reported the gate LOADED on a site carrying only the pre-0.13.0 pair. That is precisely
+the stale-hooks-cache shape this probe exists to catch, one release later: the 2026-07-29 incident
+was a cached registry predating the handlers the site needed, and a cache predating 0.13.0 is the
+same failure wearing a newer version number.
+
+**What you will see:** ⚠️ **a readiness check that returned green may now return red, with no
+change to your site.** That is the probe working. Run `bench --site <site> migrate` and
+`bench --site <site> clear-cache` (in that order) so the 0.13.0 handlers are actually registered,
+then re-check. `after_insert` is deliberately NOT required — `hooks.py` records that it decides and
+refuses nothing, and a receipt stricter than the gate is its own kind of lie. The expected set is
+now derived from `hooks.py` itself, so it cannot drift from the registration it describes.
+
+### An unreadable multi-doc body now DENIES, matching its single-doc sibling
+
+`frappe.client.save` with a body the guard cannot parse already deny-closed. The multi-doc RPCs
+(`insert_many`, `bulk_update`, and the bare v2 `bulk_update`) did the opposite on the same input:
+the parse failure was silently discarded, "nothing yielded" read as "an all-draft batch", and the
+call fell through to the doctype-blind create residual. An unparseable *entry* inside a list was
+dropped the same way, so a batch was judged on whichever siblings happened to parse.
+
+⚠️ **This was not an escape and is not reported as one.** An unparseable string can only arrive
+form-encoded, which is exactly where frappe's own `json.loads` runs and throws; a non-string,
+non-list value dies a line later at `len(docs)`. Every newly-denied request was already failing
+downstream. It is closed because the floor must not depend on a downstream parser continuing to
+agree with it. **ABSENT is unchanged** — a body key you never sent still denies nothing.
+
+### The claims themselves, checked against the code
+
+A docstring-truth pass over the modules that decide. Two of the corrections above were found this
+way: the prose and the code disagreed, and **both times the code was what was wrong.** Also
+corrected, without behaviour change: the `_epoch` clock-domain notes, `scope.py`'s `:param` list
+still instructing operators to perform the retired sentinel-row gesture, `act.py`'s ride-walk
+paragraph contradicting its own next paragraph, and the marker controller's residual list, which
+now names `flags.ignore_validate` (verified against frappe 16.27.1 source — `run_before_save_methods`
+returns before any dispatch when it is set).
+
+`_flag_set`'s silent-failure trade is now recorded as MEASURED rather than assumed: a lost custody
+stamp aborts the governed act and never admits an ungoverned one, because every consumer reads an
+absent stamp as "no consent established". With a real frappe `Document` the recording cannot fail
+at all (`flags` is a `frappe._dict`, a plain dict subclass), so that guard is defensive — but an
+absent stamp is reachable for other reasons, and the refusal it produces is live.
+
+### Tests
+
+555 → 627. Coverage measured for the first time in this repo's life and floored per module on
+statements AND branches, so the gaps closed here cannot silently reopen. The uncovered branches
+were, uniformly, the broken-world ones — a ledger write failing mid-operation, an expiry that will
+not parse, a marker edited after minting — which for a governance product is the entire value.
+
 ## 0.13.0 — 2026-07-29 — consent covers the preview, because ERPNext previews by posting
 
 MINOR. Two new `doc_events["*"]` handlers, `before_gl_preview` and `before_sl_preview`. A ledger

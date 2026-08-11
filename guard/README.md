@@ -234,6 +234,24 @@ read-only with no docstatus/data mutation):
   as not registered. It proves the handlers are *registered*, not that they *function* — only
   watching a refusal proves that.
 
+  🔴 **0.14.0 made it stricter, and that can flip an existing answer.** Through 0.13.x it looked for
+  two handlers, `before_submit` and `before_cancel`. The two preview gates shipped in 0.13.0 and
+  **they deny**, so the receipt reported the gate loaded on a site carrying only the pre-0.13.0
+  pair — precisely the stale-hooks-cache condition this field exists to catch, one release later.
+  It now requires all four. **If `consent_enforced` was true and is now false, nothing about your
+  site changed except that it is being measured properly:** run `bench --site <site> migrate` then
+  `bench --site <site> clear-cache`, in that order, and re-check. `after_insert` is deliberately not
+  required — `hooks.py` records that it decides and refuses nothing, and a receipt stricter than the
+  gate is its own kind of lie.
+
+  🔴 **0.14.0 also fixed the resource posture, which inverted the widest grant.** A grant with
+  `allow_resource` and `allow_all_doctypes` both on reported `denies_all` — the narrowest of the
+  four states — because the report never read the `allow_all_doctypes` flag that replaced the
+  retired `"*"` row. A new value, **`all_doctypes`**, is returned; anything switching on that string
+  needs a branch for it. Nothing was mis-decided: enforcement never consulted this report. But it
+  told operators their grant was narrower than it was, and the reason to publish it is that
+  direction.
+
 **Anything else is denied even if a grant pattern fnmatches it** — a new frappe RPC is denied until
 reviewed, instead of open until enumerated. SAFE_METHODS membership is necessary-not-sufficient
 (the grant must still name it), and the **admission criterion** is strict: read-only, no

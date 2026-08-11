@@ -58,8 +58,16 @@ resource-CRUD amend shape, and the native ledger-preview RPC all take ``doctype`
 argument) and generalized accordingly: ``get_document``/``list_documents``/``submit_document``/
 ``cancel_document``/``get_doc_for_amend``/``find_amendments``/``create_amended_draft`` all take an
 explicit ``doctype``; :data:`SUPPORTED_DOCTYPES` is the broker's own "I've been built and tested
-for these" allowlist (Sales Invoice, Purchase Invoice), distinct from — and belt-and-suspenders
-alongside — ``pacioli_guard``'s per-credential ``resource_doctypes`` grant (SPEC, guard README).
+for these" allowlist, distinct from — and belt-and-suspenders alongside — ``pacioli_guard``'s
+per-credential ``resource_doctypes`` grant (SPEC, guard README).
+
+⚠️ **This paragraph used to end "(Sales Invoice, Purchase Invoice)" and was read as the whole
+allowlist. It was the first two.** The dict has grown many times since and the parenthetical was
+never revisited, so the file's own header understated its subject by an order of magnitude
+(found 2026-08-11 by the docstring-claim pass). **Read the dict, never a prose list of it** — the
+paragraphs below narrate each doctype as it was added, in the order it was added, and that
+narration is a build log rather than a current inventory. ``test_erpnext_docstring_claims.py``
+now fails if this header re-grows an enumeration that disagrees with the dict.
 **Honest limit:** every Purchase Invoice request shape here is knowledge-pinned from ERPNext's
 documented REST conventions (the same generic surface Sales Invoice already rides, source-read
 2026-07-03) — it has **not** been live-verified against a bench; live falsification of the PI path
@@ -5164,7 +5172,8 @@ document's own framing):**
   (contract.py:137) — the mirror image of Asset Maintenance Log's own scheduler
   (``asset_maintenance_log.py:80-88``, no ``docstatus`` filter at all in its ``frappe.qb`` WHERE,
   but its own ``on_submit`` refuses submission unless already Completed/Cancelled, so its real
-  blast radius turned out DRAFT-ONLY in practice, ``erpnext.py:3576-3583``). Contract carries NO
+  blast radius turned out DRAFT-ONLY in practice — see the **Asset Maintenance Log** breadth
+  note above). Contract carries NO
   analogous gate anywhere in its 144 lines — nothing stops submitting a signed Contract — so this
   scheduler genuinely, deliberately, and exclusively targets SUBMITTED contracts and NEVER
   touches drafts (a draft with ``is_signed=True`` would need ``docstatus=1`` to match the filter,
@@ -6947,7 +6956,8 @@ correctly by field presence.** ``is_return``/``return_against`` are both present
 (``json:63``/``:78``); ``update_outstanding_for_self`` is confirmed ABSENT from the full 80-field
 enumeration — the SAME stock-only shape Delivery Note's and Purchase Receipt's own landings already
 built :func:`pacioli.tools._return_risk_flags`'s field-presence branch for, called unconditionally
-at both ``plan_submit``/``plan_cancel`` call sites already (``tools.py:7708``/``:8458``) — SCR
+at both ``plan_submit``/``plan_cancel`` call sites already (in ``tools.py``; cited by NAME,
+because the line numbers this once carried had already drifted onto unrelated code) — SCR
 exercises that identical branch the moment it reaches the generic dispatch, no doctype-specific
 change required. ``status`` carries ``Return``/``Return Issued`` as two of its six real options
 (``update_status``, ``:690-693``: ``Return`` when ``is_return``, ``Return Issued`` when

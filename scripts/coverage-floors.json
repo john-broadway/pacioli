@@ -1,0 +1,146 @@
+{
+  "broker": {
+    "pacioli/a2a.py": {
+      "branches": 100,
+      "statements": 94
+    },
+    "pacioli/amend.py": {
+      "branches": 96,
+      "statements": 97
+    },
+    "pacioli/anchor.py": {
+      "branches": 97,
+      "statements": 98
+    },
+    "pacioli/baseline.py": {
+      "branches": 100,
+      "statements": 100
+    },
+    "pacioli/cascade.py": {
+      "branches": 90,
+      "statements": 95
+    },
+    "pacioli/cli.py": {
+      "branches": 89,
+      "statements": 86
+    },
+    "pacioli/clock.py": {
+      "branches": 100,
+      "statements": 100
+    },
+    "pacioli/close.py": {
+      "branches": 97,
+      "statements": 98
+    },
+    "pacioli/consent.py": {
+      "branches": 100,
+      "statements": 96
+    },
+    "pacioli/doctor.py": {
+      "branches": 92,
+      "statements": 92
+    },
+    "pacioli/doorway.py": {
+      "branches": 96,
+      "statements": 98
+    },
+    "pacioli/erpnext.py": {
+      "branches": 94,
+      "statements": 96
+    },
+    "pacioli/history.py": {
+      "branches": 88,
+      "statements": 98
+    },
+    "pacioli/plan.py": {
+      "branches": 95,
+      "statements": 97
+    },
+    "pacioli/prove.py": {
+      "branches": 100,
+      "statements": 100
+    },
+    "pacioli/receipt.py": {
+      "branches": 100,
+      "statements": 100
+    },
+    "pacioli/reconcile.py": {
+      "branches": 98,
+      "statements": 99
+    },
+    "pacioli/reconciliation.py": {
+      "branches": 90,
+      "statements": 96
+    },
+    "pacioli/registry.py": {
+      "branches": 86,
+      "statements": 92
+    },
+    "pacioli/response.py": {
+      "branches": 89,
+      "statements": 97
+    },
+    "pacioli/runtime.py": {
+      "branches": 85,
+      "statements": 93
+    },
+    "pacioli/server.py": {
+      "branches": 84,
+      "statements": 81
+    },
+    "pacioli/spine.py": {
+      "branches": 100,
+      "statements": 100
+    },
+    "pacioli/store.py": {
+      "branches": 94,
+      "statements": 95
+    },
+    "pacioli/tools.py": {
+      "branches": 95,
+      "statements": 97
+    },
+    "pacioli/webguard.py": {
+      "branches": 95,
+      "statements": 97
+    },
+    "pacioli/workflow.py": {
+      "branches": 98,
+      "statements": 99
+    }
+  },
+  "guard": {
+    "pacioli_guard/act.py": {
+      "branches": 94,
+      "statements": 94
+    },
+    "pacioli_guard/api.py": {
+      "branches": 94,
+      "statements": 97
+    },
+    "pacioli_guard/enforce.py": {
+      "branches": 96,
+      "statements": 96
+    },
+    "pacioli_guard/hooks.py": {
+      "branches": 100,
+      "statements": 100
+    },
+    "pacioli_guard/mint.py": {
+      "branches": 87,
+      "statements": 97
+    },
+    "pacioli_guard/patches/v0_6_0/warn_unresolved_method_grants.py": {
+      "branches": 68,
+      "statements": 55
+    },
+    "pacioli_guard/scope.py": {
+      "branches": 95,
+      "statements": 97
+    },
+    "pacioli_guard/scoping/doctype/pacioli_consent_marker/pacioli_consent_marker.py": {
+      "branches": 100,
+      "statements": 100
+    }
+  }
+}

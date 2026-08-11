@@ -26,6 +26,7 @@ see, and they are exactly the paths this gate exists to cover.
 
 Run: ``python3 -m pytest pacioli_guard/tests/test_act.py -q``. No frappe required.
 """
+import contextlib
 import sys
 import types
 import unittest
@@ -45,6 +46,28 @@ from pacioli_guard.tests.test_enforce import (  # noqa: E402
 )
 
 TOKEN = "floor-consent-token"
+
+
+@contextlib.contextmanager
+def unspendable_marker():
+    """Force ``_claim_consent`` to report a lost claim, then RESTORE the real one.
+
+    ⚠️ Both call sites used to end in ``del act._claim_consent``, which does not restore anything
+    — it DELETES the name ``act`` imported from ``enforce``. After either test ran, any later test
+    reaching the successful-claim path died with ``NameError: name '_claim_consent' is not
+    defined``. It stayed invisible for as long as nothing downstream of line ~1400 exercised that
+    path, and it surfaced the moment one did (2026-08-11, the fail-closed-lookup tests).
+
+    A cleanup that deletes instead of restoring makes TEST ORDER load-bearing, which is its own
+    silent failure mode: the suite's result depends on the order pytest happens to collect in.
+    """
+    original = act._claim_consent
+    act._claim_consent = lambda record: False
+    try:
+        yield
+    finally:
+        act._claim_consent = original
+
 
 
 class FakeDoc:
@@ -1369,12 +1392,9 @@ class TestTheRemedyAnOperatorIsToldToRunActuallyWorks(unittest.TestCase):
         messages.append(self._preview_refusal())
 
         fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker())
-        act._claim_consent = lambda record: False
-        try:
+        with unspendable_marker():
             with self.assertRaises(FakePermissionError):
                 act.before_submit(FakeDoc(), "before_submit")
-        finally:
-            del act._claim_consent
         messages.append(fake.thrown[0])
 
         self.assertEqual(len(messages), 3, "every refusal site must be exercised here")
@@ -1389,11 +1409,277 @@ class TestTheRemedyAnOperatorIsToldToRunActuallyWorks(unittest.TestCase):
     def test_the_unspendable_marker_refusal_does_not_name_the_brokers_plan_bound_cli(self):
         # act.py's second refusal: a marker that could not be spent. Shipped text, same defect.
         fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker())
-        act._claim_consent = lambda record: False
-        try:
+        with unspendable_marker():
             with self.assertRaises(FakePermissionError):
                 act.before_submit(FakeDoc(), "before_submit")
-        finally:
-            del act._claim_consent
         self.assertIn("single-use", fake.thrown[0])
         self.assertNotIn("pacioli mint", fake.thrown[0])
+
+
+class TestABrokenMarkerLookupDENIES(unittest.TestCase):
+    """README residual #2, driven at last: *"an actor who can break the grant read"*.
+
+    ``enforce._consent_record`` wraps its read in ``except Exception: return None`` under the
+    comment *"a broken lookup must deny, not open the gate"*. The first branch-coverage run of
+    this repo (2026-08-11) found those two lines had **never executed**. So the intent was
+    published in the public README as a stated residual, and the behaviour had never been
+    observed once.
+
+    ⭐ **These assert the REFUSAL, not the None.** A test pinning ``_consent_record(...) is None``
+    would stay green even if a caller read None as "this document is ungated" — which is the
+    fail-OPEN this design exists to prevent, and exactly the shape of the 0.9.1/0.9.2 failures.
+    The question is not what the helper returns, it is what the gate does.
+
+    ⭐ **A VALID MARKER EXISTS in every one of these.** With no marker the gate refuses anyway and
+    the test would pass for the wrong reason. Wiring a marker that WOULD pass, then breaking only
+    the read, is what makes the refusal attributable to the broken lookup.
+    """
+
+    def _broken(self, **kw):
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(**kw))
+        fake.db.consent_read_raises = True
+        return fake
+
+    def test_the_marker_would_otherwise_pass_AT_EVERY_SITE(self):
+        """Guard-the-guard: without the break, each of the three wirings SUCCEEDS. Without this,
+        a fixture regression would turn the fail-closed tests below into passes for the wrong
+        reason — refused because the marker was never valid, not because the read broke.
+
+        ⚠️ Pinned at ALL THREE sites since 2026-08-11. The first version pinned only
+        ``before_submit``, which is the very "proven at one entry point is not proven at the
+        others" defect the class docstring lectures about, reproduced inside the commit that
+        lectured. Found by an independent review.
+        """
+        cases = (
+            ("submit", dict(), lambda: act.before_submit(FakeDoc(), "before_submit")),
+            ("cancel", dict(action="cancel"),
+             lambda: act.before_cancel(FakeDoc(), "before_cancel")),
+            ("preview", dict(), lambda: act.before_gl_preview(FakeDoc(), "before_gl_preview")),
+        )
+        for label, kw, call in cases:
+            with self.subTest(site=label):
+                fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(**kw))
+                call()
+                self.assertIsNone(fake.thrown, f"{label} must succeed with an unbroken read")
+
+    def test_a_broken_lookup_refuses_a_SUBMIT(self):
+        fake = self._broken()
+        with self.assertRaises(FakePermissionError):
+            act.before_submit(FakeDoc(), "before_submit")
+        self.assertIn("consent", fake.thrown[0].lower())
+
+    def test_a_broken_lookup_refuses_a_CANCEL(self):
+        """The same defect class at a second site. `test_consent.py` had a test for a lying
+        refusal message since 0.7.0 that reached only one of three sites, and the lie lived on at
+        the other two — so a fail-closed path proven at one entry point is not proven at the
+        others."""
+        fake = self._broken(action="cancel")
+        with self.assertRaises(FakePermissionError):
+            act.before_cancel(FakeDoc(), "before_cancel")
+        self.assertIn("consent", fake.thrown[0].lower())
+
+    def test_a_broken_lookup_refuses_a_LEDGER_PREVIEW(self):
+        """The third site, and the one guard 0.13.0 added. A preview that sailed through on a
+        broken read would rehearse a posting the floor never authorised."""
+        fake = self._broken()
+        with self.assertRaises(FakePermissionError):
+            act.before_gl_preview(FakeDoc(), "before_gl_preview")
+        self.assertIn("consent", fake.thrown[0].lower())
+
+    def test_the_refusal_does_not_blame_the_operator_for_a_broken_database(self):
+        """Not a correctness property, an honesty one. The operator is told no marker was found,
+        which is what the gate actually knows — it cannot distinguish "absent" from "unreadable"
+        by design, and the message must not assert the one it did not establish."""
+        fake = self._broken()
+        with self.assertRaises(FakePermissionError):
+            act.before_submit(FakeDoc(), "before_submit")
+        self.assertNotIn("database", fake.thrown[0].lower())
+
+    def test_an_UNGATED_credential_NEVER_REACHES_the_marker_table_at_all(self):
+        """The gate is inert for anyone without `require_consent`, so one bad row cannot take down
+        every write on the site — the outage this project's own line warns about.
+
+        ⚠️ Renamed and strengthened 2026-08-11. This asserted only "no throw" while setting
+        `consent_read_raises`, and an independent review showed the broken read is never reached:
+        `_require_consent` returns at `act.py:504` on `not _gated(user)`, before `_consent_record`
+        is called. So the test established inertness and quietly claimed something stronger — it
+        would have passed identically with `consent_read_raises` deleted.
+
+        Inertness is worth proving; it just has to be proven as itself. The assertion is now that
+        the consent doctype is never QUERIED, which is the actual property: an ungated credential
+        does not touch the marker table, so the table's health is irrelevant to it.
+        """
+        fake = wire(gated=False, headers={act.CONSENT_HEADER: TOKEN}, markers=marker())
+        fake.db.consent_read_raises = True
+        queried = []
+        real_get_value = fake.db.get_value
+        fake.db.get_value = lambda doctype, *a, **kw: (queried.append(doctype),
+                                                       real_get_value(doctype, *a, **kw))[1]
+
+        act.before_submit(FakeDoc(), "before_submit")
+
+        self.assertIsNone(fake.thrown)
+        self.assertNotIn(enforce.CONSENT_DOCTYPE, queried,
+                         "an ungated credential must never read the marker table")
+        self.assertIn(enforce.SCOPE_DOCTYPE, queried,
+                      "guard-the-guard: it DID look up the scope, so the probe is wired")
+
+
+class TestTheSuiteDoesNotLeaveActDismantled(unittest.TestCase):
+    """Regression guard for the `del act._claim_consent` landmine (found 2026-08-11).
+
+    Two tests patched `act._claim_consent` and 'cleaned up' with `del`, which removes the name
+    `act` imported from `enforce` rather than restoring it. Nothing downstream used that name, so
+    the suite stayed green while any test added after those two would die with a NameError on the
+    successful-claim path — a failure that looks like a bug in the NEW test and is not.
+
+    These assert the module is intact. They are cheap, and the class of defect (a fixture that
+    dismantles the module under test) is invisible until something happens to look.
+    """
+
+    IMPORTED_FROM_ENFORCE = ("_claim_consent", "_consent_record", "_deny", "CONSENT_HEADER",
+                             "CONSENT_DOCTYPE", "_scope_from_doctype", "_scope_from_legacy_field")
+
+    def test_every_name_act_imports_from_enforce_is_still_bound(self):
+        for name in self.IMPORTED_FROM_ENFORCE:
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(act, name),
+                                f"act.{name} is gone — a test deleted it instead of restoring it")
+
+    def test_act_still_uses_enforces_implementation_not_a_leftover_double(self):
+        """Restored means restored TO THE REAL ONE. A test that put a lambda back would satisfy
+        the check above while leaving the gate driven by a double for the rest of the run."""
+        self.assertIs(act._claim_consent, enforce._claim_consent)
+        self.assertIs(act._consent_record, enforce._consent_record)
+
+    def test_the_helper_restores_what_it_replaced(self):
+        original = act._claim_consent
+        with unspendable_marker():
+            self.assertIsNot(act._claim_consent, original)
+        self.assertIs(act._claim_consent, original)
+
+
+class UnstampableFlags(dict):
+    """A ``flags`` object that refuses every write, by BOTH idioms ``_flag_set`` tries.
+
+    Reads still work — this is a ``dict`` — so ``in_insert`` and the absence of a stamp are read
+    exactly as they would be on a real document. Only the recording fails, which is precisely the
+    condition ``_flag_set``'s ``except Exception: pass`` was written to survive."""
+
+    def __setitem__(self, key, value):
+        raise TypeError("flags reject item assignment")
+
+    def __setattr__(self, key, value):
+        raise AttributeError("flags reject attribute assignment")
+
+
+class TestAStampThatCannotBeRecordedBreaksCLOSED(unittest.TestCase):
+    """``_flag_set`` swallows a recording failure with a bare ``pass`` (act.py:176-177). The comment
+    justifies it — *"a stamp we cannot record must not break the write"* — but until now the
+    CONSEQUENCE of that trade had never been observed, and a trade whose downside is unmeasured is
+    a guess.
+
+    **The question the audit board asked:** if the stamp is lost, does the ride break closed, or
+    does something nested go ungoverned?
+
+    **Answer, proven here: it breaks CLOSED.** Every consumer of ``_CONSENT_ESTABLISHED`` and
+    ``_CREATED_IN_ACT`` reads an absent stamp as "no consent was established" / "this act did not
+    create the document", and both of those refuse. A lost stamp therefore costs the governed act
+    — it aborts — and never admits an ungoverned one. That is the right side of this house's own
+    line, *"a gate that only says no is an outage"*: the trade deliberately prefers the outage.
+
+    So the trade is KEPT, not changed. What changes is that it is now pinned: a future
+    ``_flag_set`` that fails open, or a consumer that starts reading an absent stamp as
+    permission, turns these red.
+
+    ⚠️ **Scope correction, 2026-08-11 (second lens).** A real frappe ``Document.flags`` is a
+    ``frappe._dict``, a plain ``dict`` subclass (``types/frappedict.py:14-23``), so
+    ``flags[key] = value`` cannot raise and the ``pass`` these tests were written around is
+    unreachable *from frappe itself*. ``UnstampableFlags`` is therefore faithful to the interface
+    but models a failure frappe cannot produce. That does not make the tests idle: what they
+    actually assert is the CONSUMERS' behaviour when a stamp is ABSENT, which is entirely live —
+    a document can arrive unstamped from a fresh ``get_doc``, from never passing through
+    ``after_insert``, or from a cascade node built outside the act. The double is just the
+    cleanest way to produce that state on demand. The original commit called the trade live; it
+    is defensive.
+    """
+
+    def _unstampable(self, **kw):
+        d = FakeDoc(**kw)
+        in_insert = d.flags["in_insert"]
+        object.__setattr__(d, "flags", UnstampableFlags({"in_insert": in_insert}))
+        return d
+
+    def test_the_harness_really_does_defeat_both_recording_idioms(self):
+        # Prove the double before trusting any conclusion drawn through it: if `_flag_set` somehow
+        # still lands the stamp, every test below would be measuring nothing.
+        d = self._unstampable()
+        act._flag_set(d, act._CONSENT_ESTABLISHED, "submit")
+        self.assertIsNone(act._flag_value(d, act._CONSENT_ESTABLISHED))
+        act._flag_set(d, act._CREATED_IN_ACT)
+        self.assertIsNone(act._flag_value(d, act._CREATED_IN_ACT))
+
+    def test_flag_set_never_raises_through_the_write(self):
+        # The property the bare `pass` exists to provide, stated directly.
+        act._flag_set(self._unstampable(), act._CONSENT_ESTABLISHED, "submit")   # must not raise
+        act._flag_set(FakeDoc(), "anything", True)                               # nor the ordinary case
+
+    def test_a_cascade_under_an_unstampable_parent_is_REFUSED_not_admitted(self):
+        # The consequence that matters. The identical cascade rides when the parent CAN be stamped
+        # (TestTopLevelWritesThatTraverseTwoWriteFrames proves that). With the parent's custody
+        # stamp lost, the nested document must be refused — the act aborts, nothing slips through.
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker())
+        si = self._unstampable()
+
+        def cascade():
+            ple = FakeDoc(doctype="Payment Ledger Entry", name="ple-9")
+            insert(ple, act.before_submit, ple, "before_submit")
+
+        with self.assertRaises(FakePermissionError):
+            _save(si, lambda: insert(si, lambda: (act.before_submit(si, "before_submit"),
+                                                  cascade())))
+        # Attribution: the refusal must be OF THE NESTED DOCUMENT. A PermissionError alone would
+        # also be raised if the parent itself were denied, which would make this test pass while
+        # measuring something else entirely.
+        self.assertIn("Payment Ledger Entry", fake.thrown[0])
+        self.assertIn("ple-9", fake.thrown[0])
+
+    def test_the_same_cascade_DOES_ride_when_the_stamp_lands(self):
+        # The contrast that makes the test above attributable. Same wiring, same cascade, only the
+        # flags object differs — so the refusal above is caused by the lost stamp and nothing else.
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker())
+        si = FakeDoc()
+
+        def cascade():
+            ple = FakeDoc(doctype="Payment Ledger Entry", name="ple-9")
+            insert(ple, act.before_submit, ple, "before_submit")
+
+        _save(si, lambda: insert(si, lambda: (act.before_submit(si, "before_submit"), cascade())))
+        self.assertIsNone(fake.thrown)
+
+    def test_a_lost_creation_record_refuses_the_submit_it_would_have_licensed(self):
+        # The `_CREATED_IN_ACT` half. `_may_ride`'s SUBMIT branch asks whether the act CREATED the
+        # document; with the recording lost it falls back to `in_insert`, which is False for the
+        # save-then-submit idiom, so the document reads as pre-existing and is refused.
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker())
+        si = FakeDoc(in_insert=False)
+        created = self._unstampable(doctype="Serial and Batch Bundle", name="SBB-NEW",
+                                    in_insert=False)
+
+        def cascade():
+            insert(created, act.after_insert, created, "after_insert")
+            insert(created, act.before_submit, created, "before_submit")
+
+        with self.assertRaises(FakePermissionError):
+            _save(si, lambda: (act.before_submit(si, "before_submit"), cascade()))
+        self.assertIn("Serial and Batch Bundle", fake.thrown[0])
+        self.assertIn("SBB-NEW", fake.thrown[0])
+
+    def test_an_unstampable_document_never_reads_as_already_consented(self):
+        # The fail-OPEN shape this class exists to exclude, asserted directly rather than inferred:
+        # `_establish_consent_for_preview` returns early when the stamp is present (act.py:633), so
+        # an absent stamp must never read as present. If it did, a lost stamp would SKIP the gate
+        # instead of re-running it.
+        d = self._unstampable()
+        self.assertFalse(act._flag_get(d, act._CONSENT_ESTABLISHED))
+        self.assertIsNone(act._flag_value(d, act._CONSENT_ESTABLISHED))

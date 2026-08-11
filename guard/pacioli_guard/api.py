@@ -26,11 +26,27 @@ from pacioli_guard.scope import RESOURCE_DOCTYPE_WILDCARD
 
 SCOPE_DOCTYPE = "API Key Scope"
 
-# The handlers that ARE the consent gate. Named here so the probe below checks for the real
-# thing rather than for the mere presence of some `before_submit` on the site.
+# The handlers that ARE the consent gate — every `doc_events` entry that can DENY. Named here so
+# the probe below checks for the real thing rather than for the mere presence of some
+# `before_submit` on the site.
+#
+# ⚠️ This held only `before_submit`/`before_cancel` until 2026-08-11, while `hooks.py` has
+# registered the two preview gates since 0.13.0 and both of them refuse (`act.py`'s
+# `_deny("consent (preview)", …)`). So the receipt reported the gate LOADED on a site carrying
+# only the pre-0.13.0 pair — which is exactly the stale-hooks-cache shape this probe was written
+# to catch, one release later: the 2026-07-29 incident was a cached registry that predated the
+# handlers the site needed, and a cache predating 0.13.0 is the same failure wearing a newer
+# version number.
+#
+# `after_insert` is deliberately NOT here: hooks.py's own comment records that it decides nothing
+# and refuses nothing, so requiring it would make the receipt stricter than the gate.
+# `test_api_reports_the_truth.py` derives the expected set from `hooks.py` itself, so this cannot
+# drift from the registration it describes.
 CONSENT_HANDLERS = {
     "before_submit": "pacioli_guard.act.before_submit",
     "before_cancel": "pacioli_guard.act.before_cancel",
+    "before_gl_preview": "pacioli_guard.act.before_gl_preview",
+    "before_sl_preview": "pacioli_guard.act.before_sl_preview",
 }
 
 
@@ -97,6 +113,21 @@ def _resource_posture(user):
         doc = frappe.get_doc(SCOPE_DOCTYPE, name)
         if not getattr(doc, "allow_resource", 0):
             return "off"
+        # The parent-level flag grants EVERY doctype regardless of the child table
+        # (``scope.is_permitted`` returns True before it ever looks at the rows), so it is read
+        # first and reported first.
+        #
+        # ⚠️ This branch did not exist until 2026-08-11. Without it, the widest grant this app can
+        # express — ``allow_resource=1, allow_all_doctypes=1`` with an empty child table — fell
+        # through to the ``not named`` case and was reported as ``denies_all``, the NARROWEST of
+        # the four states. This function's own docstring says an operator must never be quietly
+        # unaware of how wide their grant is "in either direction", and it inverted the answer in
+        # the direction that matters. Found by an independent review; the sentinel-row mechanism
+        # named in the docstring above was retired (see ``scope.py``'s own correction: a ``"*"``
+        # row is a validated Link and cannot be stored) and this flag replaced it, but the posture
+        # report was never moved across.
+        if getattr(doc, "allow_all_doctypes", 0):
+            return "all_doctypes"
         rows = getattr(doc, "resource_doctypes", None) or []
         named = [r for r in (getattr(row, "ref_doctype", None) for row in rows)
                  if isinstance(r, str) and r.strip()]

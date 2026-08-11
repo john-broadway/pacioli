@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 # 2026-07-02, pre-any-install: a generic app_name squats the bench's flat app namespace and the
 # env's top-level import namespace on exactly the customer benches this app exists to protect.
 name = "pacioli-guard"
-version = "0.13.0"
+version = "0.14.0"
 description = "Deny-by-default credential governance for Frappe/ERPNext — the counting-house door (credential-layer, no core fork)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,3 +33,27 @@ include-package-data = true
 [tool.setuptools.packages.find]
 include = ["pacioli_guard*"]
 exclude = ["pacioli_guard.tests*"]   # tests are for the repo, not the wheel
+
+[tool.coverage.run]
+# BRANCH mode deliberately — see the note in broker/pyproject.toml. Guard IS the floor, so its
+# uncovered branches are the ones that decide whether a credential may post.
+branch = true
+source = ["pacioli_guard"]
+omit = [
+    "*/tests/*",   # measuring the tests inflates the number and hides the source
+    # The three frappe DocType controller STUBS: `class X(Document): pass`, no logic at all.
+    # They cannot be imported without frappe, so the bench-free suite can never cover them and
+    # a permanent 0% floor would only train readers to ignore this file. They are held to being
+    # stubs by `test_scope.py::test_the_omitted_doctype_controllers_are_still_logic_free`, so
+    # this omission cannot quietly start hiding real code.
+    # NOTE: pacioli_consent_marker.py is NOT here — it carries the immutable-marker guard, and
+    # it stays measured and floored.
+    "*/scoping/doctype/api_key_scope/*",
+    "*/scoping/doctype/api_key_scope_doctype/*",
+    "*/scoping/doctype/api_key_scope_method/*",
+]
+
+[tool.coverage.report]
+# Per-module floors live in `scripts/coverage-floors.json` (see broker/pyproject.toml for why
+# `fail_under` is the wrong instrument here).
+show_missing = true

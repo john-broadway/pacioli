@@ -10,7 +10,7 @@ HTTP auth hook is the wrong altitude for it in two ways that the 2026-07-25 bypa
    and the bench console reached the ledger without meeting the gate at all. Consent placed there
    inherited that boundary exactly.
 2. *Legibility.* At the transport layer "is this a submit, and of what document" has to be inferred
-   from a request shape, which is why the classifier carries ``?cmd=`` dominance, five body-carrying
+   from a request shape, which is why the classifier carries ``?cmd=`` dominance, nine body-carrying
    RPC rewrites, a ``savedocs`` action map, three REST mounts, container-DocType 2-hop deny-lists and
    a disclosed residual on raw ``docstatus`` writes. Here the same question is ``doc.doctype``,
    ``doc.name`` and the event name. No inference, so no residual.
@@ -141,7 +141,10 @@ _CONSENT_ESTABLISHED = "pacioli_consent_established"
 #
 # It carries the same narrow guarantees as ``_CONSENT_ESTABLISHED`` above, for the same reason: a
 # stamp alone licenses NOTHING, because it is only ever READ when a live enclosing governed write
-# frame is on this stack. A stamp that survived into redis cannot manufacture that frame.
+# OR PREVIEW frame is on this stack. A stamp that survived into redis cannot manufacture either.
+# (This said "write frame" alone until 2026-08-11. `_may_ride` is also reached from the PREVIEW
+# walk — `_previewing_governed_act` — and the stamp is set on either, so the security argument
+# needs both or it is describing a narrower mechanism than the one that exists.)
 _CREATED_IN_ACT = "pacioli_created_in_act"
 
 
@@ -162,6 +165,38 @@ def _flag_get(doc, key):
 
 
 def _flag_set(doc, key, value=True):
+    """Record a custody stamp, or record nothing. Never raise into the write.
+
+    **The consequence of "record nothing" is an ABORT, never an admission** — measured 2026-08-11
+    rather than assumed. Every consumer of :data:`_CONSENT_ESTABLISHED` and
+    :data:`_CREATED_IN_ACT` reads an absent stamp as "no consent was established here" /
+    "this act did not create that document", and both of those REFUSE:
+
+    * a cascade under a parent whose stamp was lost is denied (the nested document, by name),
+    * a created-then-submitted document falls back to ``in_insert``, False for the save-then-submit
+      idiom, so it reads as pre-existing and is denied,
+    * ``_establish_consent_for_preview``'s early return at the top requires the stamp to be
+      PRESENT, so a lost stamp re-runs the gate instead of skipping it.
+
+    So the trade this ``pass`` makes is: lose the governed act rather than let an ungoverned one
+    ride. That is the right side of *"a gate that only says no is an outage"* — the outage is
+    chosen deliberately. Kept, and pinned by
+    ``test_act.TestAStampThatCannotBeRecordedBreaksCLOSED``, which reds if either the recording
+    starts raising or an absent stamp ever starts reading as permission.
+
+    ⚠️ **With a REAL frappe Document that trade cannot arise, and the 2026-08-11 commit describing
+    it as live was wrong.** ``Document.__init__`` sets ``self.flags = frappe._dict()``
+    (``model/document.py:217``) and ``frappe._dict`` is a plain ``dict`` subclass whose
+    ``__setattr__`` IS ``dict.__setitem__`` (``types/frappedict.py:14-23``, read at 16.27.1), so
+    ``flags[key] = value`` cannot raise and neither fallback is reached. The guard is defensive
+    against a duck-typed or partially-built document, not against frappe. Corrected after an
+    independent review measured it.
+
+    What survives that correction is the part worth having: **an absent stamp refuses**, and a
+    stamp can be absent for reasons that have nothing to do with this function — a fresh
+    ``get_doc`` instance, a document that never passed through ``after_insert``, a cascade node
+    built outside the act. The tests assert the CONSUMERS' behaviour, which is live, using an
+    unstampable double only as the cleanest way to produce the absent-stamp state."""
     flags = getattr(doc, "flags", None)
     if flags is None:
         return
@@ -703,7 +738,9 @@ def after_insert(doc, method=None):
     any later refusal message would have to quote.
 
     **This handler grants nothing on its own.** It writes a stamp that is only ever READ when a live
-    enclosing governed write frame is on the stack (:func:`_may_ride` is unreachable otherwise), and
+    enclosing governed write **or preview** frame is on the stack (:func:`_may_ride` is unreachable
+    otherwise) — "write" alone until 2026-08-11, contradicted by this docstring's own next
+    paragraph, which explains why BOTH walks exist — and
     it writes it only when such a frame is ALREADY there. An insert with no governed act enclosing
     it leaves no stamp, so an ungoverned creation cannot manufacture a later ride.
 

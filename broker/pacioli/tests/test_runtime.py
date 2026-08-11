@@ -6,6 +6,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+import unittest.mock   # explicit: `import unittest` does not bind the .mock submodule
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -16,6 +17,24 @@ from pacioli.cli import cmd_mint, cmd_verify
 
 REG = '[targets.prod]\nbase_url = "https://erp.example.com"\n' \
       'api_key = "env:K"\napi_secret = "env:S"\ndefault = true\n'
+
+
+def gl_line(case, out):
+    """The single `projected GL:` line.
+
+    Assertions about the TOTALS line must be made against the totals line: the RISK line below it
+    carries the same "N of M ... could not be read" substring, so `assertIn(..., out)` over the
+    whole output is satisfied by either one.
+
+    MODULE-LEVEL since 2026-08-11. It used to be a method on one test class, and a test in a
+    DIFFERENT class 60 lines above therefore asserted `assertIn("could not be read", out)` over
+    the whole output — the exact shape this helper's own docstring forbids, in the same file.
+    Proven dead by an independent review: blanking the disclosure from the totals line
+    (`cli.py:132`) while leaving the RISK line kept that test green.
+    """
+    lines = [ln for ln in out.splitlines() if "projected GL:" in ln]
+    case.assertEqual(len(lines), 1, f"expected exactly one projected-GL line, got: {out}")
+    return lines[0]
 
 
 class TestSealKey(unittest.TestCase):
@@ -386,7 +405,10 @@ class TestMintDisclosesTheActNotJustThePlanId(unittest.TestCase):
                      risk_flags=["posting date is in a prior period"])
         _, out = self._mint("p1")
         self.assertIn("projected GL:", out)
-        self.assertIn("could not be read", out)
+        # ON THE TOTALS LINE, not merely somewhere in the output: the RISK line underneath carries
+        # the same substring, so the whole-output form was satisfied by either and stayed green
+        # when the totals-line disclosure was blanked entirely (independent review, 2026-08-11).
+        self.assertIn("could not be read", gl_line(self, out))
         self.assertIn("26 prior submitted", out)
         self.assertLess(out.index("projected GL:"), out.index("26 prior submitted"),
                         "the GL summary renders before the party context")
@@ -447,12 +469,7 @@ class TestGlDisclosureDegradesPerRow(unittest.TestCase):
         return out.getvalue() + err.getvalue()
 
     def _gl_line(self, out):
-        """The single `projected GL:` line. Assertions about the TOTALS line must be made against
-        the totals line: the RISK line below it carries the same "N of M ... could not be read"
-        substring, so `assertIn(..., out)` over the whole output is satisfied by either one."""
-        lines = [ln for ln in out.splitlines() if "projected GL:" in ln]
-        self.assertEqual(len(lines), 1, f"expected exactly one projected-GL line, got: {out}")
-        return lines[0]
+        return gl_line(self, out)
 
     def test_a_readable_majority_still_reports_its_totals(self):
         """0.34.1 blanked the totals on any unreadable row; the readable subtotal survives now.
@@ -744,10 +761,53 @@ class TestGlDisclosureDegradesPerRow(unittest.TestCase):
 
     def test_a_non_finite_amount_is_unreadable(self):
         """float('nan') does not raise, so it sails through a bare try/except and prints
-        'debits nan'. Every other money reader in this package applies math.isfinite."""
+        'debits nan'. Every other money reader in this package applies math.isfinite.
+
+        **Scoped to the GL line, and that is load-bearing.** Until 2026-08-11 this asserted
+        ``assertNotIn("nan", out.lower())`` over the WHOLE mint output — which also carries the
+        freshly minted marker token. That token is ``secrets.token_urlsafe(24)``, i.e. 32 base64url
+        characters, so it contains the letters ``nan`` on its own now and then and reddened a
+        correct build. Seen live as ``marker: FHl9y8io_UetACzDU7DAZWRnanGWZvn4``.
+
+        ⚠️ **Rate corrected 2026-08-11 by an independent review, and the correction is its own
+        lesson.** The first note here said *"measured over 300 real mints: 1 hit (0.3%)"*. One hit
+        in 300 draws is an OBSERVATION, not a rate — quoting it as a measured frequency turned a
+        single sample into a statistic, in a docstring, during a campaign about claims being true.
+        The real rate over 2,000,000 draws is **0.092%, about 1 in 1,090** (a single hit in 300 is
+        perfectly ordinary at that rate). Rare enough to look like anything but what it was, which
+        is exactly why it read as a coverage interaction.
+
+        This is the same lesson ``_gl_line`` above already records in its own docstring, and that
+        ``test_an_empty_projection_still_says_something`` records again in its comment about
+        ``assertNotIn("posts no GL", out)``: an assertion about what a LINE says must be made
+        against that line. A whole-output ``assertNotIn`` is both too weak (some other line can
+        satisfy it) and too strong (unrelated random text can break it).
+        ``test_the_disclosure_is_not_fooled_by_the_TOKEN`` pins this deterministically.
+        """
         out = self._mint_with([self._row(debit=float("nan")), self._row(credit=1450.0)])
-        self.assertNotIn("nan", out.lower())
-        self.assertIn("could not be read", out)
+        gl_line = self._gl_line(out)
+        self.assertNotIn("nan", gl_line.lower())
+        self.assertIn("could not be read", gl_line)
+
+    def test_the_disclosure_is_not_fooled_by_the_TOKEN(self):
+        """Deterministic proof of the scoping fix above: force a token that contains ``nan``.
+
+        With the token pinned, the old whole-output assertion fails and the line-scoped one
+        passes — so this test would have caught the flake on every run instead of 1 in 300.
+        """
+        poisoned = "AAAAnanAAAA"
+        with unittest.mock.patch("pacioli.cli.secrets.token_urlsafe", return_value=poisoned):
+            out = self._mint_with([self._row(debit=float("nan")), self._row(credit=1450.0)])
+
+        self.assertIn(f"marker: {poisoned}", out, "the poisoned token must reach the output")
+
+        # the old assertion: reds on a correct build purely because of the token
+        self.assertIn("nan", out.lower())
+
+        # the fixed assertion: reads only the line whose rendering is under test
+        gl_line = self._gl_line(out)
+        self.assertNotIn("nan", gl_line.lower())
+        self.assertIn("could not be read", gl_line)
 
     def test_a_boolean_is_not_a_money_value(self):
         """float(True) is 1.0. get_gl_entries already refuses non-bool numbers at its seam."""
