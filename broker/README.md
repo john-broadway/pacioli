@@ -923,8 +923,10 @@ Two more advisory disclosures (never a gate):
 - 🔴 **ARGUMENTS — an undeclared key is REFUSED, not ignored (0.37.0).** Every served schema
   declares `additionalProperties: false` **and the broker enforces it in `dispatch`**, because
   a declaration is only as good as whoever checks it: the A2A door validates nothing at all, and
-  the `mcp` pin (`>=1.0,<2`) permits 1.x SDKs that do not validate either. A declaration nothing
-  enforces is a promise nothing keeps.
+  `pacioli_call`'s inner arguments and dynamic by-name calls never reach the SDK's schema check.
+  (Through 0.37.1 the `mcp` pin was `>=1.0`, which also permitted SDKs that did not validate at
+  all; 0.37.2 raised the floor to `>=1.10`, where the SDK does validate, so that half of the
+  argument no longer applies.) A declaration nothing enforces is a promise nothing keeps.
   **If your client sends keys outside a tool's schema today, they will be refused after upgrading**
   — at `stage: "request"`, before anything is claimed or spent, so no marker is consumed by a
   rejected call. **Both layers refuse and the outcome is identical** — with the schemas closed, the

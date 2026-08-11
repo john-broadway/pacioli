@@ -1,10 +1,11 @@
 [build-system]
-requires = ["setuptools>=77.0"]   # SPDX license expression (PEP 639)
+requires = ["setuptools>=77.0,<85"]   # >=77: SPDX license expression (PEP 639). <85: an sdist
+# build is adopter-facing too, and this line had drifted seven majors past its floor unnoticed.
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pacioli"
-version = "0.37.1"
+version = "0.37.2"
 description = "Governed agent broker for ERPNext (MCP + A2A doors, one spine) — no debit without a credit: PLAN, CONSENT, PROVE, UNDO over the books, on the Pacioli Guard credential floor"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,26 +22,41 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-# The agent-facing MCP stdio server (glue). The pure cores + human CLI are stdlib-only.
-# `<2` is NOT caution — it is the observed break. mcp 2.0.0 (2026-07-28) removed the decorator
-# registration API (`Server.list_tools` / `Server.call_tool`) that `_register_tool_handlers`
-# is built on, so a fresh `pacioli[server]` install resolved a door that could not start.
-# An unbounded major protects the lockfile and nobody else. Lift this to `<3` only after the
-# door is ported to the 2.x `MCPServer` / `add_request_handler` shape.
-server = ["mcp>=1.0,<2"]
+# The agent-facing MCP doors (stdio + streamable HTTP). The pure cores + human CLI are stdlib-only.
+#
+# BOTH ENDS OF THE mcp RANGE ARE MEASURED, not guessed. 0.37.1 capped the ceiling and left the
+# floor at the `>=1.0` it had always carried, which was never true:
+#   ceiling  mcp 2.0.0 (2026-07-28) removed the decorator registration API (`Server.list_tools` /
+#            `Server.call_tool`) that `_register_tool_handlers` is built on. Lift to `<3` only
+#            after the door is ported to 2.x, whose registration is constructor callbacks
+#            (`Server(name, on_list_tools=..., on_call_tool=...)`), NOT a renamed decorator.
+#   floor    `mcp.server.streamable_http_manager` does not exist before 1.8.0, so `serve --http`
+#            could not start anywhere in 1.0-1.7 while the extra claimed to supply it. And this
+#            package's own door suite is RED below 1.10.0, where the SDK gained `validate_input`.
+#            1.10.0 is therefore the oldest mcp we actually test and can honestly support.
+# `uvicorn` is declared HERE and not only on `[a2a]` because `serve_http` imports it directly
+# (`server.py`). It used to arrive only as a transitive of mcp: an undeclared, unbounded,
+# inherited dependency, which is the exact hazard the rest of this block exists to close.
+server = ["mcp>=1.10,<2", "uvicorn>=0.30,<1"]
 # The A2A door (Agent2Agent JSON-RPC + agent card) — the first non-MCP door
 # (docs/plans/2026-07-16-a2a-door.md). Lazily imported; nothing outside `pacioli serve --a2a`
 # needs it. `a2a-sdk[signing]` (pulls PyJWT) + `cryptography` add opt-in ES256 agent-card
 # signing (docs/plans/2026-07-17-a2a-card-signing.md); inert unless a signing key is configured.
-# Majors bounded per dep by the surface actually reached, not by blanket rule:
-#   a2a-sdk  — deep surface (`a2a.server.routes.*`, `a2a.types.a2a_pb2`, `a2a.utils.signing`);
-#              same break shape as mcp, so it is capped.
-#   uvicorn  — one call (`uvicorn.run`), but 0.x breaks on MINOR, so cap at the 1.0 line.
-#   cryptography — DELIBERATELY UNCAPPED. Only `serialization` + `asymmetric.ec` are touched
-#              (its most stable surface) and this floor tracks a security advisory; a major cap
-#              here would block the next advisory bump, which is the opposite of the point.
-a2a = ["a2a-sdk[signing]>=1.1,<2", "uvicorn>=0.30,<1", "cryptography>=50"]  # >=50: PYSEC-2026-3552
-#       fixed in 50.0.0 — the floor is the fix's floor, raised deliberately per advisory, not tracked
+#   `http-server` is REQUIRED, not optional taste: `a2a.py` imports `a2a.server.routes.*`, which
+#   needs `starlette` + `sse-starlette`, and the `signing` extra does not carry them. Through
+#   0.37.1 they arrived only because `[server]`'s mcp happens to depend on them, so `pacioli[a2a]`
+#   ALONE built an import error instead of a door. Same defect class as the mcp ceiling: a real
+#   requirement satisfied by accident, in a neighbouring extra, invisible to CI because CI
+#   installs `.[server,a2a]` together.
+#   `cryptography` is capped like everything else. 0.37.1 left it uncapped and justified that as a
+#   proximo lesson; proximo in fact caps it at `<51` and guards the floor separately, and the
+#   standing rule is bound the major THEN widen promptly when an advisory lands. Widening on an
+#   advisory is a release we can make in an hour. An unbounded major is a break we cannot see.
+a2a = [
+    "a2a-sdk[signing,http-server]>=1.1,<2",
+    "uvicorn>=0.30,<1",
+    "cryptography>=50,<51",   # >=50: PYSEC-2026-3552 fixed in 50.0.0. RAISE this floor when the
+]                             # next advisory lands; never lower it to solve a resolution problem.
 
 [project.urls]
 Homepage = "https://github.com/john-broadway/pacioli"

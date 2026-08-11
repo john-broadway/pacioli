@@ -6,6 +6,86 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.37.2 — 2026-08-11 — 0.37.1 was half a fix, and its guard passed a pin that reproduces the bug
+
+PATCH. Packaging only. No enforcement path, no allow/deny decision, and nothing a served call does
+changes. Every fix here was found by an independent adversarial review of 0.37.1, three hours after
+0.37.1 shipped, and every one of them is in work that release introduced or touched.
+
+### 🔴 `pip install 'pacioli[a2a]'` on its own could not build the A2A door
+
+`a2a.py` imports `a2a.server.routes.*`, which needs `starlette` and `sse-starlette`. The
+`a2a-sdk[signing]` extra does not carry them. They were present the whole time only because
+`[server]`'s `mcp` happens to depend on them, so the door worked in CI and in this workshop, where
+both extras are always installed together, and failed for anyone who installed the A2A door alone:
+
+```
+ModuleNotFoundError: No module named 'sse_starlette'
+```
+
+Worse than a clean failure: `serve_a2a`'s availability probe only checks `import uvicorn` and
+`import a2a`, both of which succeed, so it sails past its own guard, assembles the broker against
+the live registry, and then dies on an unhandled traceback instead of the governed exit it was
+written to give. Now `a2a-sdk[signing,http-server]`.
+
+**This is the same defect as the one 0.37.1 fixed**, in the extra 0.37.1 edited, missed because the
+verification installed both extras together. A requirement satisfied by accident is not declared.
+
+### 🔴 The `mcp` floor was wrong, and 0.37.1 did not look at it
+
+0.37.1 capped the ceiling and left `>=1.0`, which had never been true. Measured:
+
+| mcp | `serve --http` | door suite |
+|---|---|---|
+| 1.0.0 – 1.7.1 | **cannot start** (`mcp.server.streamable_http_manager` does not exist) | red |
+| 1.8.0 – 1.9.4 | starts | **red** (no SDK `validate_input`) |
+| 1.10.0 and up | starts | green |
+
+The floor is now `>=1.10`, the oldest mcp this package actually tests. A floor is a promise that
+everything at or above it works; `>=1.0` was never that promise, it was just the number nobody had
+questioned. In the same place, **`uvicorn` is now declared by the `server` extra** rather than
+inherited as an undeclared, unbounded transitive of `mcp`, because `serve_http` imports it directly.
+
+One consequence worth stating: from mcp 1.10.0 the SDK validates arguments before the handler, so
+every version this package now permits does validate. The reason dispatch still enforces
+`additionalProperties` itself is no longer "the SDK might not check". It is that the A2A door,
+`pacioli_call`'s inner arguments, and dynamic by-name calls never reach the SDK's check at all.
+
+### 🔴 `cryptography` is now capped, and the reasoning it was left open on was misattributed
+
+0.37.1 left it uncapped and cited a lesson from a sibling project. That project caps it at `<51`
+and guards the floor separately, and the standing rule is bound the major, then widen promptly when
+an advisory lands. Widening on an advisory is a release we can cut in an hour. An unbounded major
+is a break we cannot see. Now `>=50,<51`, floor still tracking PYSEC-2026-3552 and still tested.
+
+`[build-system] requires` is bounded too, in both packages. It had drifted seven majors past its
+floor with nothing watching, and an sdist build is adopter-facing.
+
+### 🔴 The guard 0.37.1 added would have passed the bug it was named after
+
+`scripts/tests/test_dependency_bounds.py` asked `"<2" in requirement`. That is a substring test.
+`mcp>=1.0,<2.5` contains `<2`, so the guard went green on a pin that resolves mcp 2.0.0 and
+reproduces the original break byte for byte. Two more holes in the same file: distribution names
+were compared case-sensitively, so `Cryptography>=42` slipped the advisory floor entirely, and the
+generic check only asked whether *some* upper bound existed, so `a2a-sdk<3` passed while admitting
+the exact major it was written to exclude. It also rejected `mcp~=1.29`, which is *tighter* than
+`<2`, teaching the maintainer that the weak spelling was the acceptable one.
+
+Rewritten to parse with `packaging` and ask the only question that matters: **given what this
+requirement admits, is the version we know breaks us still allowed?** Prereleases count as admitted,
+names are PEP 503 normalized, markers can no longer be mistaken for bounds, `[build-system]` is
+swept, and the package list is globbed so a third package is guarded on arrival instead of silently
+exempt. Both ends of the mcp range now have named tests, and so does the a2a-sdk extra.
+
+**A guard that answers the easy question is worse than no guard, because it is believed.**
+
+### Verified
+
+Baseline green, then every bypass above re-run as a mutation and confirmed caught, and both
+false positives confirmed fixed. `pacioli[a2a]` alone now builds the door; `pacioli[server]` alone
+carries uvicorn and a working HTTP manager; at the declared floor (`--resolution lowest-direct`) the
+resolve gives mcp 1.10.0 and uvicorn 0.30.0 and the door suite passes there. Full suite 3423.
+
 ## 0.37.1 — 2026-08-11 — the MCP door was dead on arrival for anyone installing it fresh
 
 PATCH. No behaviour in this package changed. One dependency bound moved, and that is the entire
@@ -25,9 +105,19 @@ working install degraded, and no governed act ever ran under a half-started door
 registration, before the door serves anything.
 
 It stayed invisible because nothing exercised the pin as a resolved environment. This workspace's
-venv held mcp 1.28.1, so local runs were green. CI did resolve mcp 2.0.0, but had no test that
-started the door. The door-startup tests added in 0.37.0 are what turned a shipped break into a red
-build, one push after they landed.
+venv held mcp 1.28.1, so local runs were green. CI did resolve mcp 2.0.0 from its first run after
+the 07-28 publish and stayed quiet about it for fourteen days, because no test started a real
+`Server`. A test added in 0.37.0 is what turned a shipped break into a red build, on the very push
+that landed it.
+
+**Correction, 2026-08-11 (0.37.2), made here rather than quietly dropped.** The paragraph above
+first said "the door-startup tests" and "one push after they landed". Both were wrong, and an
+independent review caught them. The tests literally named for the door's startup path use a local
+`FakeApp` stub and passed under mcp 2.0.0; a stub cannot see an SDK break. What went red was
+`TestWhichLayerActuallyRefusesAnUndeclaredArgument`, which happens to construct a **real**
+`mcp.server.Server` — and it went red on the same push that introduced it, not a later one, because
+the public mirror squashes the batch into one commit. **The lesson is better than the version I
+first wrote: a startup test wired to a fake proves the wiring, never the dependency.**
 
 ### The rule this restates
 
@@ -37,15 +127,20 @@ Majors are now bounded per dependency by the surface actually reached, not by bl
 
 - `mcp>=1.0,<2` and `a2a-sdk[signing]>=1.1,<2`: both are reached through deep API surface
   (`a2a.server.routes.*`, `a2a.types.a2a_pb2`, `a2a.utils.signing`), so both are capped.
-- `uvicorn>=0.30,<1`: one call (`uvicorn.run`), but a 0.x project breaks on minor, so the cap sits
+- `uvicorn>=0.30,<1`: one API (`uvicorn.run`), but a 0.x project breaks on minor, so the cap sits
   at the 1.0 line.
-- `cryptography>=50`: deliberately left uncapped. Only `serialization` and `asymmetric.ec` are
-  touched, which is its most stable surface, and this floor tracks a security advisory
-  (PYSEC-2026-3552). Capping the major here would block the next advisory bump, which is the
-  opposite of the point.
+- `cryptography>=50`: left uncapped, on the reasoning that a major cap would block the next
+  advisory bump.
 
-Porting the door to the mcp 2.x `MCPServer` / `add_request_handler` shape is separate work, tracked
-on its own. Until it lands, 2.x is refused outright rather than half-supported.
+**Superseded by 0.37.2 on all three counts; see that entry.** In short: the `uvicorn` line above
+describes a bound that only existed on `[a2a]`, while the same API is reached from the MCP HTTP
+door under `[server]`, where nothing was declared at all. The `cryptography` reasoning was
+attributed to a lesson that says the opposite. And the mcp line fixed only the ceiling.
+
+Porting the door to mcp 2.x is separate work, tracked on its own. Until it lands, 2.x is refused
+outright rather than half-supported. (2.x registration is constructor callbacks,
+`Server(name, on_list_tools=..., on_call_tool=...)`; this entry first named `MCPServer` /
+`add_request_handler`, which exist but are not the replacement for this door's decorators.)
 
 ## 0.37.0 — 2026-08-11 — an argument you misspell is now refused instead of silently dropped
 

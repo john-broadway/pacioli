@@ -2490,11 +2490,15 @@ def _close_schemas(tools):
     keys and the correction. Do not claim the guidance reaches every caller — it reaches the A2A
     door, inner ``pacioli_call`` args, and dynamic-mode by-name calls.
 
-    The pin is ``mcp>=1.0,<2``, so an older non-validating 1.x SDK is still permitted, and there
-    the server-side refusal is the only one. That is exactly why enforcement lives in
-    :meth:`dispatch` rather than in the declaration alone. (The upper bound arrived in 0.37.1 and
-    narrows nothing here: it excludes 2.x, which cannot serve this door at all, not any of the
-    1.x SDKs this paragraph is about.)
+    The pin is ``mcp>=1.10,<2``. **0.37.2 raised that floor, and it changes what this paragraph
+    can claim.** Through 0.37.1 the floor was ``>=1.0``, which permitted SDKs with no
+    ``validate_input`` at all, so on those the server-side refusal was the only one. From 1.10.0
+    the SDK validates before the handler, so every mcp version this package now permits does
+    validate. The reason enforcement stays in :meth:`dispatch` is therefore NOT "the SDK might not
+    check" any more. It is that two of the three ways in are not the SDK at all: the A2A door
+    validates nothing, and ``pacioli_call``'s inner arguments plus dynamic by-name calls never
+    pass through the SDK's schema check. A declaration is still only as good as whoever checks it;
+    the honest list of who does not check is just shorter than it was.
 
     Indexes rather than ``.get``-guards deliberately: a tool entry with no ``inputSchema`` should
     fail loudly at import, not be skipped into shipping OPEN. There is no safe way to serve a tool
