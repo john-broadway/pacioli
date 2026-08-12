@@ -107,23 +107,51 @@ def _bearer_ok(header, token):
     return hmac.compare_digest(presented.encode(), token.encode())
 
 
-def _register_tool_handlers(app, broker, types, served):
-    """The ONE registration of the MCP tool surface — both doors call this (review finding 4:
-    the stdio and HTTP copies had already diverged into a maintenance hazard). Handlers offload
-    to :func:`dispatch_tool_async` so no door ever runs dispatch on its event loop.
+def _advertised(types, served):
+    """The advertised Tool list. One construction, both SDK majors.
 
-    ``served`` is the ADVERTISED list (:func:`pacioli.doorway.served_tools`, resolved once at
-    door start) — what ``tools/list`` sends, never what ``dispatch`` accepts: an unadvertised
-    catalog tool called by name still dispatches (advertisement is a context choice, not
-    reachability, and never authorization — the guard enforces at the floor regardless)."""
-    @app.list_tools()
-    async def list_tools():
-        return [types.Tool(name=t["name"], description=t["description"],
-                           inputSchema=t["inputSchema"]) for t in served]
+    ``served`` is the ADVERTISED list (:func:`pacioli.doorway.served_tools`, resolved once at door
+    start) — what ``tools/list`` sends, never what ``dispatch`` accepts: an unadvertised catalog
+    tool called by name still dispatches (advertisement is a context choice, not reachability, and
+    never authorization — the guard enforces at the floor regardless)."""
+    return [types.Tool(name=t["name"], description=t["description"],
+                       inputSchema=t["inputSchema"]) for t in served]
 
-    @app.call_tool()
-    async def call_tool(name, arguments):
-        return await dispatch_tool_async(broker, types, name, arguments)
+
+def build_server(Server, types, broker, served, name="pacioli"):  # noqa: N803 — it IS a class
+    """Build the MCP server for whichever ``mcp`` major is installed. The ONE place the tool
+    surface is registered; both doors call this.
+
+    mcp 2.0 removed the decorator registration API (``Server.list_tools`` / ``Server.call_tool``)
+    and moved handlers into the constructor, so a function that mutates an already-built server
+    cannot express both shapes. Hence a builder.
+
+    The branch is a CAPABILITY check on the class, not a version parse: a version string says what
+    the package calls itself, ``hasattr`` says what it can actually do, and the second one is what
+    we depend on. Checked on the class so nothing is constructed twice."""
+    if hasattr(Server, "list_tools"):
+        app = Server(name)
+
+        @app.list_tools()
+        async def list_tools():
+            return _advertised(types, served)
+
+        @app.call_tool()
+        async def call_tool(tool_name, arguments):
+            return await dispatch_tool_async(broker, types, tool_name, arguments)
+
+        return app
+
+    # mcp 2.x. Handlers take (ctx, params) and return Result objects. `ctx` is unused: every
+    # authorization decision belongs to the guard at the floor, never to transport context.
+    async def on_list_tools(ctx, params):
+        return types.ListToolsResult(tools=_advertised(types, served))
+
+    async def on_call_tool(ctx, params):
+        content = await dispatch_tool_async(broker, types, params.name, params.arguments)
+        return types.CallToolResult(content=content)
+
+    return Server(name, on_list_tools=on_list_tools, on_call_tool=on_call_tool)
 
 
 async def dispatch_tool_async(broker, types, name, arguments):
@@ -201,8 +229,7 @@ def serve(env=None):
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    app = Server("pacioli")
-    _register_tool_handlers(app, broker, types, served)
+    app = build_server(Server, types, broker, served)
 
     async def _run():
         async with stdio_server() as (read, write):
@@ -265,8 +292,7 @@ def serve_http(env=None, *, bind="127.0.0.1", port=8791, auth=None, allowed_host
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    app = Server("pacioli")
-    _register_tool_handlers(app, broker, types, served)
+    app = build_server(Server, types, broker, served)
 
     from pacioli.webguard import default_allowed_hosts, guard_asgi
 

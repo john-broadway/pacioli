@@ -2473,32 +2473,35 @@ def _close_schemas(tools):
     — inherited from :func:`_bounded_limit`'s 2026-07-26 doctrine, which was true then. It is not
     true now:
 
-    * **MCP door** — ``mcp.server.lowlevel.Server.call_tool`` takes ``validate_input: bool = True``
-      and runs ``jsonschema.validate(instance=arguments, schema=tool.inputSchema)`` BEFORE the
-      registered handler (cited by NAME, upstream ``mcp`` 1.28.x — a line number into a dependency
-      we do not control rots just as fast as one into our own tree). So for an ADVERTISED tool the
-      SDK refuses first and the caller sees *"Input validation error: Additional properties are
-      not allowed"* — never :func:`_unknown_args_deny`'s message. Measured through a real
-      ``Server``, not read off the source.
+    * **MCP door, mcp 1.x** — ``mcp.server.lowlevel.Server.call_tool`` takes
+      ``validate_input: bool = True`` and runs
+      ``jsonschema.validate(instance=arguments, schema=tool.inputSchema)`` BEFORE the registered
+      handler (cited by NAME, upstream ``mcp`` 1.28.x — a line number into a dependency we do not
+      control rots just as fast as one into our own tree). So for an ADVERTISED tool the SDK
+      refuses first and the caller sees *"Input validation error: Additional properties are not
+      allowed"* — never :func:`_unknown_args_deny`'s message. Measured through a real ``Server``,
+      not read off the source.
+    * **MCP door, mcp 2.x**: schema validation was removed from the SDK entirely (measured
+      against 2.0.0). Even for an advertised tool, an undeclared argument reaches the registered
+      handler unrefused. :func:`_unknown_args_deny` is the only refusal on this major.
     * **A2A door** — passes ``params`` straight to ``dispatch_raw``; nothing validates. Ours is the
       only refusal.
     * **`pacioli_call`'s INNER arguments** and any unadvertised catalog tool called by name in
       dynamic mode — the SDK has no schema cached for them, so ours is again the only refusal.
 
     Both layers agree on the OUTCOME (refused, never silently dropped), which is the property that
-    matters and is now defended twice. They differ in the MESSAGE: only ours names the accepted
-    keys and the correction. Do not claim the guidance reaches every caller — it reaches the A2A
-    door, inner ``pacioli_call`` args, and dynamic-mode by-name calls.
+    matters: it is defended twice on mcp 1.x and by :meth:`dispatch` alone on 2.x. They differ in
+    the MESSAGE: only ours names the accepted keys and the correction. On mcp 1.x, do not claim the
+    guidance reaches every caller: it reaches the A2A door, inner ``pacioli_call`` args, and
+    dynamic-mode by-name calls, never an advertised MCP-door call closed by the SDK itself. On mcp
+    2.x it reaches every caller, because :meth:`dispatch` is the only refusal there, advertised
+    MCP-door calls included.
 
-    The pin is ``mcp>=1.10,<2``. **0.37.2 raised that floor, and it changes what this paragraph
-    can claim.** Through 0.37.1 the floor was ``>=1.0``, which permitted SDKs with no
-    ``validate_input`` at all, so on those the server-side refusal was the only one. From 1.10.0
-    the SDK validates before the handler, so every mcp version this package now permits does
-    validate. The reason enforcement stays in :meth:`dispatch` is therefore NOT "the SDK might not
-    check" any more. It is that two of the three ways in are not the SDK at all: the A2A door
-    validates nothing, and ``pacioli_call``'s inner arguments plus dynamic by-name calls never
-    pass through the SDK's schema check. A declaration is still only as good as whoever checks it;
-    the honest list of who does not check is just shorter than it was.
+    The pin is ``mcp>=1.10,<3``, so the SDK may or may not validate: 1.10+ does, 2.x removed
+    schema validation entirely. Enforcement lives in :meth:`dispatch` because two of the three
+    ways in never reach the SDK's check at all. The A2A door validates nothing, and
+    ``pacioli_call``'s inner arguments and dynamic by-name calls do not pass through it. The
+    outcome is the same on every path; only the message differs.
 
     Indexes rather than ``.get``-guards deliberately: a tool entry with no ``inputSchema`` should
     fail loudly at import, not be skipped into shipping OPEN. There is no safe way to serve a tool
@@ -2662,11 +2665,13 @@ def _bounded_limit(raw):
 
     Every `list_*` tool publishes ``{"type": "integer", "minimum": 1, "maximum": 200}`` and neither
     door validated it when this was written (2026-07-26): the A2A door passes params through as
-    given, and the MCP SDK did not check `inputSchema` then. ⚠️ It DOES now — mcp 1.28.x
-    jsonschema-validates against the advertised schema before the handler — but `minimum`/`maximum`
+    given, and the MCP SDK did not check `inputSchema` then. ⚠️ On mcp 1.x it DOES now: mcp 1.28.x
+    jsonschema-validates against the advertised schema before the handler, but `minimum`/`maximum`
     are only enforced where a schema is cached, i.e. never on A2A and never for a by-name call in
-    dynamic mode. So the declaration was a promise nothing kept, and this clamp is still the only
-    one that covers every door.
+    dynamic mode. On mcp 2.x schema validation was removed from the SDK entirely (measured against
+    2.0.0), so an advertised tool's `minimum`/`maximum` goes unenforced there too, same as A2A and
+    dynamic mode always were. So the declaration was a promise nothing kept, and this clamp is
+    still the only one that covers every door, on every mcp major.
 
     Two concrete escapes. ``limit=0`` reached frappe as ``limit_page_length="0"``, which this same
     client uses DELIBERATELY elsewhere to mean "all rows" — so a tool whose schema says the minimum

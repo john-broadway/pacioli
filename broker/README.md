@@ -924,16 +924,19 @@ Two more advisory disclosures (never a gate):
   declares `additionalProperties: false` **and the broker enforces it in `dispatch`**, because
   a declaration is only as good as whoever checks it: the A2A door validates nothing at all, and
   `pacioli_call`'s inner arguments and dynamic by-name calls never reach the SDK's schema check.
-  (Through 0.37.1 the `mcp` pin was `>=1.0`, which also permitted SDKs that did not validate at
-  all; 0.37.2 raised the floor to `>=1.10`, where the SDK does validate, so that half of the
-  argument no longer applies.) A declaration nothing enforces is a promise nothing keeps.
+  (The pin is `mcp>=1.10,<3`, so the SDK may or may not validate: 1.10+ does, 2.x removed schema
+  validation entirely. Enforcement lives in `dispatch` because two of the three ways in never
+  reach the SDK's check at all. The A2A door validates nothing, and `pacioli_call`'s inner
+  arguments and dynamic by-name calls do not pass through it. The outcome is the same on every
+  path; only the message differs.) A declaration nothing enforces is a promise nothing keeps.
   **If your client sends keys outside a tool's schema today, they will be refused after upgrading**
   — at `stage: "request"`, before anything is claimed or spent, so no marker is consumed by a
-  rejected call. **Both layers refuse and the outcome is identical** — with the schemas closed, the
-  MCP SDK (`mcp` 1.28.x) jsonschema-validates before the handler, so an MCP client sees
-  `Input validation error: Additional properties are not allowed`; the broker's own refusal, which
-  also names every accepted key and the correction, answers on the A2A door, on `pacioli_call`'s
-  inner arguments, on a dynamic-mode by-name call, and on any SDK that does not validate.
+  rejected call. **On mcp 1.x both layers refuse and the outcome is identical.** With the schemas
+  closed, the MCP SDK (`mcp` 1.28.x) jsonschema-validates before the handler, so an MCP client sees
+  `Input validation error: Additional properties are not allowed`. **On mcp 2.x only the broker's
+  refusal answers, with the same outcome.** The broker's own refusal, which also names every
+  accepted key and the correction, answers on the A2A door, on `pacioli_call`'s inner arguments, on
+  a dynamic-mode by-name call, and on any SDK that does not validate.
   What it closes: passing `doctype` instead of `pacioli_doctype` used to be dropped
   silently, the resolver fell back to its default, and the reply named a doctype the caller never
   asked for about a document that exists under the one they meant — a wrong answer wearing the

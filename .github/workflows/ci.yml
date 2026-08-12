@@ -30,6 +30,10 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
+        # EXPLICIT, not whatever the resolver picks. mcp 2.0.0 landed 2026-07-28 and CI resolved it
+        # silently for fourteen days while the door could not start on it, because nothing pinned
+        # the axis and no test built a real Server.
+        mcp-major: ["1", "2"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -38,6 +42,12 @@ jobs:
       - name: Install broker (with the MCP + A2A doors) + pytest
         working-directory: broker
         run: python -m pip install -e '.[server,a2a]' pytest
+      - name: Pin the mcp major under test
+        working-directory: broker
+        run: python -m pip install 'mcp>=${{ matrix.mcp-major }},<${{ matrix.mcp-major }}.999999'
+      - name: Show what actually resolved
+        working-directory: broker
+        run: python -c "import importlib.metadata as m; v = m.version('mcp'); assert v.split('.')[0] == '${{ matrix.mcp-major }}', v; print('mcp', v)"
       - name: Test broker
         working-directory: broker
         run: python -m pytest pacioli/tests -q -ra

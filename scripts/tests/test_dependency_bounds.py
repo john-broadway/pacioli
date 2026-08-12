@@ -17,6 +17,11 @@ advisory floor entirely; and it asked only whether SOME upper bound existed, so 
 passed while admitting the very major it was written to exclude. An adversarial review found all
 three. **A guard that answers the easy question is worse than no guard, because it is believed.**
 
+This paragraph narrates the 0.37.1-era bug, not the pin as it now stands: 0.38.0 ported the door
+itself, so mcp 2.0.0 no longer reproduces a break today. `SUPPORTED_MAJORS` below now admits it
+deliberately, and `test_the_mcp_range_admits_both_supported_majors_and_excludes_the_next_unknown_one`
+asserts exactly that.
+
 So this version asks the only question that matters, with a real parser rather than string
 matching: **given what this requirement admits, is the version we know breaks us still allowed?**
 
@@ -81,9 +86,21 @@ def _admits(spec: SpecifierSet, version: str) -> bool:
     return spec.contains(Version(version), prereleases=True)
 
 
+# Dependencies proven to run on more than one major, measured rather than assumed. `mcp` is the
+# only entry: 1.x and 2.x are BOTH proven against the real SDK (full 265-tool catalog, both
+# majors green). This is DATA a reader can see, not a name a reader has to trust: a second
+# dual-major dependency extends this table, and the rule below stays the same for everyone,
+# `mcp` included, rather than carving `mcp` out of the rule.
+SUPPORTED_MAJORS: dict[str, int] = {"mcp": 2}
+
+
 def test_every_adopter_facing_requirement_excludes_the_next_major():
-    """The real question, asked properly: does this pin still admit the next major after its own
-    floor? `<2.5` on a 1.x floor answers YES and is therefore a failure, however bounded it looks.
+    """The real question, asked properly: does this pin still admit the major AFTER the highest
+    one this package is proven to run on? For almost every dependency that highest-proven major is
+    just its floor's own major, so `<2.5` on a 1.x floor answers YES and is therefore a failure,
+    however bounded it looks. `mcp` answers the same question with a different highest-proven
+    input, `SUPPORTED_MAJORS["mcp"]`, because it is proven across two consecutive majors rather
+    than one: the ceiling must still exclude the major past THAT, not past the floor's major.
     """
     offenders = []
     for pkg, where, req in _runtime_requirements():
@@ -92,7 +109,8 @@ def test_every_adopter_facing_requirement_excludes_the_next_major():
         if floor is None:
             offenders.append(f"{pkg}/{where}: {req}  (no lower bound at all)")
             continue
-        nxt = f"{floor.major + 1}.0.0"
+        highest_proven = max(SUPPORTED_MAJORS.get(name, 0), floor.major)
+        nxt = f"{highest_proven + 1}.0.0"
         if _admits(spec, nxt):
             offenders.append(f"{pkg}/{where}: {req}  (admits {name} {nxt})")
     assert not offenders, (
@@ -116,19 +134,23 @@ def test_build_requirements_are_bounded():
     )
 
 
-def test_the_mcp_ceiling_excludes_the_sdk_major_that_removed_the_decorator_api():
-    """Named, because this is the one that actually bit, and because the generic test above cannot
-    speak for it: that test only knows about the major after the FLOOR. Lift this when the door is
-    ported to mcp 2.x constructor callbacks, not before.
-    """
+def test_the_mcp_range_admits_both_supported_majors_and_excludes_the_next_unknown_one():
+    """0.37.1 capped mcp at `<2` because 2.x removed the decorator registration API. 0.38.0 ports
+    the door to run on both, so the cap moves to `<3` and this test changes shape with it.
+
+    It asserts BOTH directions on purpose. An accidental re-narrowing to `<2` silently drops 2.x
+    support and every other test here would stay green, because they only ask about ceilings."""
     specs = [(p, w, s) for p, w, r in _runtime_requirements()
              for n, s in [_spec_of(r)] if n == "mcp" for w, p in [(w, p)]]
     assert specs, "mcp is the MCP door's dependency; it must stay declared"
-    bad = [f"{p}/{w}" for p, w, s in specs if _admits(s, "2.0.0") or _admits(s, "2.0.0rc1")]
-    assert not bad, (
-        "mcp must stay excluded at 2.0.0 (and its prereleases) until "
-        "pacioli.server._register_tool_handlers is ported off the decorator API "
-        f"(Server.list_tools / Server.call_tool), which 2.x removed: {bad}")
+    for p, w, s in specs:
+        assert _admits(s, "1.29.0"), f"{p}/{w} no longer admits mcp 1.x, which the door supports"
+        assert _admits(s, "2.0.0"), f"{p}/{w} no longer admits mcp 2.x, which the door supports"
+        assert not _admits(s, "3.0.0"), (
+            f"{p}/{w} admits mcp 3.0.0, an unknown major. Port the door first, then widen.")
+        assert not _admits(s, "3.0.0rc1"), (
+            f"{p}/{w} admits a prerelease of mcp 3.0.0, an unknown major. Port the door first, "
+            "then widen.")
 
 
 def test_the_mcp_floor_excludes_versions_this_package_cannot_run_on():

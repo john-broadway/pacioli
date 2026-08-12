@@ -6,6 +6,38 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## 0.38.0 - 2026-08-11 - the door runs on mcp 1.x and 2.x from one build
+
+MINOR. New capability, nothing removed, no enforcement path changed. The `mcp` pin widens from
+`>=1.10,<2` to `>=1.10,<3`, so a fresh install can resolve either major and the door builds and
+starts on both.
+
+### What moved, and what did not
+
+Tool registration moved from the SDK's decorator API (`@server.list_tools()`, `@server.call_tool()`)
+to its constructor-callback API, which is the shape mcp 2.0.0 kept. `stdio_server`,
+`StreamableHTTPSessionManager`, `Server.run`, and `ClientSession` are the same objects as the door
+uses them on both majors; the door constructs the request/response types identically on both majors
+too, though 2.x renames model fields to snake_case with camelCase aliases, so construction by the
+1.x spelling works while attribute reads do not. Nothing about a 1.x install changes; it behaves
+exactly as it did under the `<2` ceiling.
+
+### mcp 2.x does not validate tool arguments
+
+Measured on both majors with an undeclared argument. On mcp 1.29.0 the SDK refuses before the
+handler runs (`isError=True`; the handler never sees the call). On mcp 2.0.0 the SDK's schema
+validation is gone entirely; the call reaches the handler (`isError=None`) carrying the misspelled
+argument. On 2.x the broker's own `dispatch` enforcement is the only refusal, which is not a new
+gap: the A2A door and `pacioli_call`'s inner arguments already relied on it and never on the SDK.
+The outcome is identical on both majors, refused and never silently dropped; only the message
+differs.
+
+### CI
+
+The build matrix now runs `mcp-major: ["1", "2"]` explicitly and asserts the resolved `mcp`
+version matches the pinned major, so a leg that silently resolved the wrong major fails red
+instead of passing green by accident.
+
 ## 0.37.2 — 2026-08-11 — 0.37.1 was half a fix, and its guard passed a pin that reproduces the bug
 
 PATCH. Packaging only. No enforcement path, no allow/deny decision, and nothing a served call does
@@ -51,6 +83,11 @@ every version this package now permits does validate. The reason dispatch still 
 `additionalProperties` itself is no longer "the SDK might not check". It is that the A2A door,
 `pacioli_call`'s inner arguments, and dynamic by-name calls never reach the SDK's check at all.
 
+**Superseded by 0.38.0 on the pin:** the ceiling is now `<3` and mcp 2.x does not validate; see
+that entry.
+
+**Also: on mcp 2.x the broker's own `dispatch` is the only refusal, and the outcome is unchanged, refused and never silently dropped.**
+
 ### 🔴 `cryptography` is now capped, and the reasoning it was left open on was misattributed
 
 0.37.1 left it uncapped and cited a lesson from a sibling project. That project caps it at `<51`
@@ -79,6 +116,8 @@ exempt. Both ends of the mcp range now have named tests, and so does the a2a-sdk
 
 **A guard that answers the easy question is worse than no guard, because it is believed.**
 
+**Superseded by 0.38.0: mcp 2.0.0 no longer breaks this door, and the guard now asserts that both majors are admitted and 3.x is not.**
+
 ### Verified
 
 Baseline green, then every bypass above re-run as a mutation and confirmed caught, and both
@@ -90,6 +129,8 @@ resolve gives mcp 1.10.0 and uvicorn 0.30.0 and the door suite passes there. Ful
 
 PATCH. No behaviour in this package changed. One dependency bound moved, and that is the entire
 fix: the `server` extra now resolves `mcp>=1.0,<2` instead of `mcp>=1.0`.
+
+**Superseded twice since: the floor moved to `>=1.10` in 0.37.2 and the ceiling to `<3` in 0.38.0.**
 
 ### What was broken
 
@@ -137,10 +178,14 @@ describes a bound that only existed on `[a2a]`, while the same API is reached fr
 door under `[server]`, where nothing was declared at all. The `cryptography` reasoning was
 attributed to a lesson that says the opposite. And the mcp line fixed only the ceiling.
 
+**Superseded again by 0.38.0: the mcp ceiling above is now `<3`, not `<2`. The sentence above about the mcp line fixing only the ceiling describes 0.37.2's correction, not the pin as it now stands.**
+
 Porting the door to mcp 2.x is separate work, tracked on its own. Until it lands, 2.x is refused
 outright rather than half-supported. (2.x registration is constructor callbacks,
 `Server(name, on_list_tools=..., on_call_tool=...)`; this entry first named `MCPServer` /
 `add_request_handler`, which exist but are not the replacement for this door's decorators.)
+
+**Superseded by 0.38.0: the port landed and the ceiling moved to `<3`. 2.x is supported, not refused.**
 
 ## 0.37.0 — 2026-08-11 — an argument you misspell is now refused instead of silently dropped
 
@@ -187,6 +232,8 @@ silently dropped**, now defended at two independent layers. It matters most for 
 doorway exists to serve: a small local model reconstructs argument names from memory rather than
 from 265 schemas, so this misspelling is not exotic — it is the likeliest thing such a caller does,
 and a silent drop is the one response that cannot teach it otherwise.
+
+**Superseded by 0.38.0 throughout this section: the pin quoted above is now `mcp>=1.10,<3`, and mcp 2.x removed the SDK's schema validation, so on 2.x the broker's own `dispatch` is the only layer that refuses and its message is the one an MCP client sees. The outcome is unchanged, refused and never silently dropped; only the message differs.**
 
 ### `cascade_cancel` accepts `pacioli_doctype` and CROSS-CHECKS it
 
@@ -1103,6 +1150,8 @@ wire, so a stdio-only door was a posture, not a proof.
   deny (`stage: request`), unreachable bench → structured refusal (never a raw traceback),
   forged submit → refused at `stage: plan`. Bonus: the SDK's inputSchema validation refuses
   malformed arguments before dispatch — an outer belt the wire adds for free.
+
+  **Superseded by 0.38.0: mcp 2.x removed that SDK validation, so on 2.x the belt is the broker's own `dispatch`, not the wire.**
 - **`pacioli serve --http` — the HTTP door (F1, F2, F4):** OFF by default,
   deliberate opt-in. Deny-biased start-up: binds `127.0.0.1` by default; a non-loopback bind
   REFUSES TO START without `--auth`; the token is held by reference only (`env:VAR` /

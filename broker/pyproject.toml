@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pacioli"
-version = "0.37.2"
+version = "0.38.0"
 description = "Governed agent broker for ERPNext (MCP + A2A doors, one spine) — no debit without a credit: PLAN, CONSENT, PROVE, UNDO over the books, on the Pacioli Guard credential floor"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,9 +27,11 @@ dependencies = []
 # BOTH ENDS OF THE mcp RANGE ARE MEASURED, not guessed. 0.37.1 capped the ceiling and left the
 # floor at the `>=1.0` it had always carried, which was never true:
 #   ceiling  mcp 2.0.0 (2026-07-28) removed the decorator registration API (`Server.list_tools` /
-#            `Server.call_tool`) that `_register_tool_handlers` is built on. Lift to `<3` only
-#            after the door is ported to 2.x, whose registration is constructor callbacks
-#            (`Server(name, on_list_tools=..., on_call_tool=...)`), NOT a renamed decorator.
+#            `Server.call_tool`). 0.38.0 ports `build_server` to detect which shape the installed
+#            SDK offers at runtime (`hasattr(Server, "list_tools")`): the decorators on 1.x, or
+#            constructor callbacks (`Server(name, on_list_tools=..., on_call_tool=...)`) on 2.x.
+#            Proven green against the real SDK on both 1.29.0 and 2.0.0, full 265-tool catalog
+#            included, so the cap moves to `<3`. Lift again only after a further port to 3.x.
 #   floor    `mcp.server.streamable_http_manager` does not exist before 1.8.0, so `serve --http`
 #            could not start anywhere in 1.0-1.7 while the extra claimed to supply it. And this
 #            package's own door suite is RED below 1.10.0, where the SDK gained `validate_input`.
@@ -37,7 +39,7 @@ dependencies = []
 # `uvicorn` is declared HERE and not only on `[a2a]` because `serve_http` imports it directly
 # (`server.py`). It used to arrive only as a transitive of mcp: an undeclared, unbounded,
 # inherited dependency, which is the exact hazard the rest of this block exists to close.
-server = ["mcp>=1.10,<2", "uvicorn>=0.30,<1"]
+server = ["mcp>=1.10,<3", "uvicorn>=0.30,<1"]
 # The A2A door (Agent2Agent JSON-RPC + agent card) — the first non-MCP door
 # (docs/plans/2026-07-16-a2a-door.md). Lazily imported; nothing outside `pacioli serve --a2a`
 # needs it. `a2a-sdk[signing]` (pulls PyJWT) + `cryptography` add opt-in ES256 agent-card
