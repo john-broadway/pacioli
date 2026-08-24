@@ -1,0 +1,65 @@
+# Daily fresh-resolve smoke of the PUBLISHED wheel — the adopter's install, not this repo's.
+#
+# Ported from proximo 2026-08-24, on John's word: "i asked for pacioli to release like proximo".
+# Proximo has had this since 2026-08-20; pacioli did not, which is the same
+# "a rule that lives in one repo is a coincidence" gap that let one dependency defect break both
+# repos separately in August.
+#
+# WHAT A RED HERE MEANS: a fresh `pip install pacioli[server]` off PyPI is broken or lying RIGHT
+# NOW for new adopters — most likely a dependency published a breaking version inside our declared
+# ranges. It does NOT mean main is bad. No commit is implicated, and every per-commit gate stays
+# green while this reds, because all of them test the CHECKOUT and this tests the ARTIFACT.
+# Remediation is a human moving a bound and cutting a release; this job detects, it cannot fix.
+#
+# WHY IT EXISTS. CI tests the checkout. `release-pypi.yml`'s verify job tests the published wheel
+# but only at release time. Between releases, the exact path most adopters take — an unpinned
+# resolve of the published wheel picking whatever PyPI serves today — was covered by nobody. That
+# window is where mcp 2.0.0 sat undetected for fourteen days in July.
+#
+# Two legs, deliberately different questions:
+#   server-extra: `pacioli[server]` — the MCP door, the extra most adopters install. Installing
+#                 bare `pacioli` would prove nothing about the door; that exact mistake once had
+#                 a DEAD door reported as verified.
+#   rest-alone:   `pacioli[rest]` ALONE — no mcp present. This is the leg that proves the REST
+#                 door's dependencies are really its own rather than borrowed from a neighbour,
+#                 which is a thing this repo has got wrong twice (starlette via [server]'s mcp,
+#                 and anyio before it was declared).
+name: PyPI smoke (published artifact)
+
+on:
+  schedule:
+    - cron: "41 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [server-extra, rest-alone]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Smoke the published wheel, fresh-resolved
+        run: |
+          set -uo pipefail
+          # No version pin: whatever PyPI calls latest today is exactly what an adopter gets.
+          bash scripts/install_smoke.sh --published
+        if: matrix.leg == 'server-extra'
+      - name: "[rest] alone — no mcp, dependencies must be its own"
+        if: matrix.leg == 'rest-alone'
+        run: |
+          set -uo pipefail
+          uv venv /tmp/restonly
+          uv pip install --python /tmp/restonly/bin/python -q 'pacioli[rest]'
+          /tmp/restonly/bin/python - <<'PY'
+          import importlib.util, sys
+          if importlib.util.find_spec("mcp") is not None:
+              sys.exit("[rest] pulled mcp — its dependencies are not its own")
+          import pacioli.rest  # noqa: F401  — the import that proves anyio/uvicorn really arrived
+          print("[rest] installs alone and imports:", sys.version.split()[0])
+          PY

@@ -157,21 +157,33 @@ fi
 printf '\n----------------------------------------\n'
 if [ "$RC" -eq 0 ]; then
   if [ "$PKG" = broker ]; then
-    PUBLISH_EXTRA=$'  6. mcp-publisher publish            # validates + pushes server.json to the official MCP registry\n  7. (LobeHub) npx -y @lobehub/market-cli plugin update --dir .   # update, NEVER 'publish' — in market-cli >=0.0.40 'publish' means a NEW listing and demands a gitUrl (proximo 0.31.1 ripple hit this)'
+    PUBLISH_EXTRA=$'  8. mcp-publisher publish            # validates + pushes server.json to the official MCP registry\n  9. (LobeHub) npx -y @lobehub/market-cli plugin update --dir .   # update, NEVER 'publish' — in market-cli >=0.0.40 'publish' means a NEW listing and demands a gitUrl (proximo 0.31.1 ripple hit this)'
   else
-    PUBLISH_EXTRA='  6. (guard ships no MCP/LobeHub manifest — PyPI + gh release only)'
+    PUBLISH_EXTRA='  8. (guard ships no MCP/LobeHub manifest — PyPI + gh release only)'
   fi
   cat <<EOF
 release: $PKG $TAG set, gate GREEN.
 NEXT (Claude does the git; John's go for the public push):
-  1. write the "## $V" $CL entry (human prose)
-  2. commit, then: git tag $TAG   (internal gitea: git push origin main --tags)
+  1. write the "## $V" $CL entry (human prose) — it becomes the PUBLIC commit body in step 3
+  2. commit, then: git tag $TAG
+       internal gitea:  git push origin main && git push origin $TAG
+       NEVER --tags. On a curated mirror old tags diverge local-vs-remote, so --tags is
+       rejected forever and fails a push that already landed.
   3. publish to github via the curated FF tree (strips .gitea/, refuses leaks):
        T=\$($PY scripts/release_leak_audit.py build-tree) || exit 1
-       C=\$(git commit-tree "\$T" -p github/main -m "release: $PKG $V")
-       git push github "\$C:main"          # fast-forward, NEVER --force
-  4. gh release create $TAG                # release event fires release-pypi.yml (SBOM + provenance)
-  5. approve the gated PyPI publish job    (John's click — tokenless OIDC, "pypi" environment)
+       M=\$($PY scripts/public_commit_message.py $PKG $V) || exit 1   # the CHANGELOG entry IS the reason
+       PUB=\$(printf '%s' "\$M" | git commit-tree "\$T" -p github/main -F -)
+       git push github "\$PUB:main"        # fast-forward, NEVER --force
+  4. tag the PUBLIC line — the CURATED TWIN, never the local tag:
+       git push github "\$PUB:refs/tags/$TAG"
+       The local tag points at the INTERNAL commit; its history is the internal line, not the
+       curated one. Pushing it publishes every internal commit. That is not hypothetical: it is
+       how v0.24.0 exposed 592 commits (2026-08-09), and the pre-push guard caught the same
+       mistake again during the 0.39.0 publish (2026-08-24).
+  5. gh release create $TAG --target "\$PUB"   # --target, or the release retags the wrong commit
+  6. approve the gated PyPI publish job    (John's click — tokenless OIDC, "pypi" environment)
+  7. verify what actually PUBLISHED, do not assume:  scripts/install_smoke.sh --published $V
+       (release-pypi.yml runs this itself now; this is the by-hand form)
 $PUBLISH_EXTRA
 release.sh never pushes.
 EOF

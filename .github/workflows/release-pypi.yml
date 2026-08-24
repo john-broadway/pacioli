@@ -127,3 +127,31 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1 (1.14.2)
+
+  # Publishing is not proving. Until 2026-08-24 this workflow published and stopped, so the first
+  # thing that ever touched the PUBLISHED artifact was an adopter -- or a human running the smoke
+  # by hand, which on the 0.39.0 release was me, with curl. Proximo has verified its published
+  # artifact since 2026-08-20; that fix never travelled here, which is the "a rule that lives in
+  # one repo is a coincidence" shape.
+  #
+  # This runs the smoke this repo ALREADY had (`scripts/install_smoke.sh --published`) against the
+  # version just published, in a clean runner. Two things make it a real check rather than a
+  # ceremony: it resolves from PyPI (not the local tree), and it installs `pacioli[server]` WITH
+  # THE EXTRA IT SHIPS -- installing bare `pacioli` once "verified" a door that was actually dead.
+  #
+  # `!cancelled()` rather than a bare `if`: a bare condition would let a skipped `needs` skip this
+  # too, and a run that verified nothing must never read as green.
+  verify-pypi:
+    needs: publish-pypi
+    if: ${{ !cancelled() && github.event_name == 'release' && needs.publish-pypi.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Smoke the PUBLISHED artifact, resolved from PyPI
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          echo "verifying published pacioli $V"
+          bash scripts/install_smoke.sh --published "$V"
