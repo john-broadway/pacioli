@@ -45,6 +45,7 @@ from inside a single request.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import warnings
 from urllib.parse import urlparse
@@ -78,6 +79,68 @@ def default_allowed_hosts(bind):
     return sorted(hosts)
 
 
+def socket_is_local(server):
+    """Is ``scope["server"]`` -- the address this connection actually landed on -- local?
+
+    Shared by every door, and deliberately ONE definition. It was written for the REST door on
+    2026-08-17 and lived in ``rest.py``; on 2026-08-24 the HTTP and A2A doors were found to have
+    no request-time socket check at all, and copying a hardened security classifier into three
+    modules is how two of the copies quietly drift. What must never be re-invented is the
+    classification below; the REFUSAL each door emits is not shared, because each door answers in
+    its own shape (REST a JSON body, HTTP text/plain, A2A a JSON-RPC error envelope).
+
+    ``scope["server"]`` is server-reported and not forgeable by a client (confirmed: uvicorn's
+    ProxyHeadersMiddleware, which ``uvicorn.run`` enables by default, rewrites ``client`` and
+    ``scheme`` and never ``server``, so a spoofed ``X-Forwarded-For`` cannot move it). This is the
+    whole point: ``bind`` is a CLAIM an operator typed, the socket is a FACT.
+
+    The first version of this reused :func:`pacioli.server._bind_requires_auth`, and that was
+    wrong in the way this codebase keeps relearning: same name, different thing. That function
+    allowlists three literals an OPERATOR types as a bind argument. A SOCKET address is a
+    different domain, and it measured badly on three real shapes -- ``127.0.1.1`` (loopback),
+    ``::ffff:127.0.0.1`` (IPv4-mapped loopback on a dual-stack listener), and a Unix socket,
+    whose ``server`` is ``(path, None)`` and which has no address at all. Each would have been
+    refused. A UDS deployment is arguably a STRICTER boundary than TCP loopback, being gated by
+    filesystem permissions rather than reachable by any local UID, and the fix silently
+    forbade it.
+
+    Deny-biased on anything it cannot classify. Returns True (allow) for an absent ``server``.
+    That branch was first documented as "the in-process harness case", which an adversarial lens
+    refuted on 2026-08-24: a REAL uvicorn reaches it too. An abstract-namespace Unix socket (Linux
+    ``\0name``) makes ``socket.getsockname()`` return ``bytes``, and uvicorn's ``get_local_addr``
+    handles only ``tuple`` and ``str`` before falling through to ``return None`` -- so a live
+    abstract-UDS deployment has ``scope["server"] is None``. Measured, not read.
+
+    Allowing it is still right, but NOT for the reason given one paragraph up: an abstract UDS has
+    no filesystem permissions gating it at all. It is confined to the network namespace instead,
+    which makes it comparable to TCP loopback (reachable by any local UID), and loopback is
+    already allowed. In both the absent-server cases -- real abstract UDS and the in-process
+    harness -- the builder's declared-bind refusal is the only cover, exactly as before this check
+    existed, never worse.
+    """
+    if not server:
+        return True
+    host = server[0]
+    port = server[1] if len(server) > 1 else None
+    if port is None:
+        return True                      # Unix domain socket: no address, filesystem-gated
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False                     # unclassifiable: treat as exposed
+    # The `ipv4_mapped` unwrap is DEAD as written, measured 2026-08-24 on CPython 3.11/3.12/3.13/
+    # 3.14 (every version `requires-python = ">=3.11"` claims): `IPv6Address.is_loopback` already
+    # unwraps a mapped address itself, so `ip.is_loopback` alone answers True for
+    # `::ffff:127.0.0.1`. A mutation lens proved the shape-table row cannot tell the two apart.
+    # Kept, not deleted, and labelled -- the same call the REST door made about `_read_body`'s
+    # bounds being dead on POST and load-bearing on GET. It costs nothing, it is correct if a
+    # future implementation stops unwrapping, and dead defensive code that LOOKS load-bearing is
+    # its own hazard. This comment is the difference.
+    return (ip.ipv4_mapped or ip).is_loopback if ip.version == 6 else ip.is_loopback
+
+
 def _host_ok(host_header, allowed):
     """True when the request's ``Host`` (port stripped, case-folded) is on the allowlist. A ``*``
     in the allowlist means the check is disabled (accept any). An empty/None Host fails closed."""
@@ -102,6 +165,36 @@ def _is_cross_origin(origin, host_header):
     if parts.scheme not in ("http", "https") or not parts.netloc:
         return True
     return parts.netloc.casefold() != (host_header or "").strip().casefold()
+
+
+def refuse_exposed_socket(inner, token, *, reject):
+    """Wrap ``inner`` so an UNTOKENED door answering on a non-local socket is refused at once.
+
+    The CONDITION lives here and nowhere else. All three doors need it, it is the whole guard, and
+    a security predicate copied into three modules is a predicate that will differ in two of them
+    within a year. What is genuinely per-door is the response SHAPE, so that arrives as ``reject``:
+    REST answers its ``{"ok": false, "error": ...}`` envelope, the MCP HTTP door answers
+    text/plain like its own 401, and A2A answers this module's ``{"error": ...}`` perimeter shape.
+
+    ``token in (None, "")`` rather than ``is None``: this guard exists precisely for the case where
+    no bearer gate will run, and an empty token installs no gate on any door. The two conditions
+    MUST agree. On 2026-08-24 the REST door had them disagreeing -- socket check on ``is None``,
+    bearer gate on ``is not None`` -- and the two narrownesses cancelled into an accidental
+    fail-closed that answered 401 to everyone. Widening only the gate would have turned that
+    accident into a genuinely open door, measured.
+
+    ALWAYS wrap this OUTSIDE :func:`guard_asgi`, never inside. The perimeter drains a POST body in
+    full before calling the app it wraps, so a refusal from inside costs the perimeter's whole
+    read deadline before it answers. Order of wrapping is a security property.
+    """
+    async def guarded(scope, receive, send):
+        if (scope.get("type") == "http" and token in (None, "")
+                and not socket_is_local(scope.get("server"))):
+            await reject(send)
+            return
+        await inner(scope, receive, send)
+
+    return guarded
 
 
 def _reject(status, message):

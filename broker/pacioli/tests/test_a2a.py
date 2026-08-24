@@ -247,6 +247,40 @@ class TestA2aPerimeter(_A2aAppFixture):
         app = build_app(broker, rpc_url="http://192.168.1.50:8792/", token="s3cret")
         self.assertIsNotNone(app)
 
+    def test_build_app_public_url_with_empty_token_refuses(self):
+        # An EMPTY-STRING token is not a token — it is no auth. serve_a2a can never hand one
+        # here (_resolve_transport_token refuses empty), but build_app is direct public API and
+        # `token=""` on a public bind must refuse exactly like `token=None`, matching the HTTP
+        # door's `token in (None, "")` (server.py). The narrower `token is None` would have
+        # built a fully-open public door whose bearer gate demanded the empty string.
+        from pacioli.a2a import build_app
+        from pacioli.runtime import assemble
+        from pacioli.server import TransportConfigError
+        broker = assemble(self.env, via={"transport": "a2a", "principal": "loopback"})
+        for public in ("http://0.0.0.0:8792/", "http://192.168.1.50:8792/"):
+            with self.assertRaises(TransportConfigError, msg=public):
+                build_app(broker, rpc_url=public, token="")
+
+    def test_empty_token_loopback_rpc_is_open_not_gated_on_empty_bearer(self):
+        # The bearer middleware must treat `token=""` as no-gate (return the app unwrapped),
+        # never install a guard that (fails closed and) refuses everyone. Pinned on the
+        # loopback path where an empty token is allowed to build.
+        app = self._app(token="")
+        r = self._post(app, "/", self.RPC_BODY)
+        self.assertNotEqual(r.status_code, 401)
+
+    def test_empty_token_card_is_honestly_unsecured(self):
+        # build_app's card call is `secured=token not in (None, "")`, so a `token=""` door
+        # advertises NO bearer scheme — the card must not claim a security it does not enforce.
+        # The dedicated tooth for that line: a bare `is not None` there would advertise
+        # `securityRequirements` on an open empty-token door, and no other test drives
+        # build_app→card with an empty token. Positive control: a real token DOES advertise it.
+        empty = self._get(self._app(token=""), "/.well-known/agent-card.json").json()
+        self.assertNotIn("securityRequirements", empty)
+        self.assertNotIn("securitySchemes", empty)
+        secured = self._get(self._app(token="s3cret"), "/.well-known/agent-card.json").json()
+        self.assertIn("securityRequirements", secured)
+
     def test_build_app_loopback_without_token_still_builds(self):
         # no regression: the dev default (loopback, no token) must keep working.
         from pacioli.a2a import build_app
@@ -573,3 +607,94 @@ class TestCliA2aSurface(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestA2aRefusesAnExposedSocket(_A2aAppFixture):
+    """The A2A door refuses on the ADVERTISED host; until 2026-08-24 it never checked the SOCKET.
+
+    `build_app` refuses to construct when `urlparse(rpc_url).hostname` is non-loopback and there
+    is no token, and its runtime protection is the perimeter's Host allowlist. Both are claims:
+    the advertised URL is what an operator typed, and a Host header is what a client typed. The
+    REST door demonstrated in the most direct way available that neither is the socket -- built
+    loopback-declared and served on `0.0.0.0`, a forged `Host: 127.0.0.1` from off-box reached
+    dispatch unauthenticated, because Host allowlisting only ever defeated BROWSER rebinding.
+
+    Shipped `serve_a2a` is safe: it refuses a non-loopback bind without auth, so bind, served and
+    advertised all agree. The exposure is the direct-embedder path, which is exactly what
+    `build_app` is public API for: `build_app(rpc_url="http://127.0.0.1/", token=None)` passes the
+    advertised-host check, and nothing then stopped it being served on a public socket.
+
+    Driven over raw ASGI rather than the httpx fixture the rest of this file uses, because httpx's
+    ASGITransport synthesises `scope["server"]` from its own base_url. That coupling is invisible
+    and it is the one value these tests are actually about, so it is set explicitly here.
+    """
+
+    def _answer(self, token, server, path="/"):
+        """Returns (status_or_None, body_bytes, body_was_read).
+
+        `body_was_read` is the ordering property. Both sibling doors pin it and this one did not,
+        which a mutation lens found on 2026-08-24 by swapping `refuse_exposed_socket` INSIDE
+        `guard_asgi` here: the whole suite stayed green while the module's own docstring calls the
+        wrap order a security property. `guard_asgi` drains a POST body in full before calling
+        what it wraps, so a refusal from inside costs the perimeter's entire read deadline.
+        """
+        app = self._app(token=token)
+        sent = []
+        read = []
+
+        async def send(message):
+            sent.append(message)
+
+        async def receive():
+            read.append(1)
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+
+        scope = {"type": "http", "method": "POST", "path": path, "raw_path": path.encode(),
+                 "headers": [(b"host", b"127.0.0.1:8792"),
+                             (b"content-type", b"application/json"),
+                             (b"content-length", b"2")],
+                 "query_string": b"", "server": server, "scheme": "http",
+                 "root_path": "", "http_version": "1.1", "client": ("203.0.113.9", 51234)}
+
+        async def go():
+            await app(scope, receive, send)
+        try:
+            asyncio.run(go())
+        except Exception:
+            pass
+        starts = [m["status"] for m in sent if m["type"] == "http.response.start"]
+        body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+        return (starts[0] if starts else None), body, bool(read)
+
+    def test_an_untokened_door_on_a_non_local_socket_is_refused(self):
+        status, body, body_read = self._answer(None, ("192.0.2.1", 8792))
+        self.assertEqual(status, 403)
+        self.assertIn(b"non-local socket", body)
+        self.assertFalse(body_read, "refused only AFTER the perimeter drained the body: the "
+                                    "socket guard has been wrapped inside guard_asgi, and a "
+                                    "refusal that costs the full read deadline is not a cheap one")
+
+    def test_an_empty_token_is_refused_identically_to_no_token(self):
+        """`build_app` and `_bearer_middleware_asgi` have treated `""` as no token since
+        2026-08-18. The socket check has to agree, or the one value that reaches neither gate
+        would reach dispatch."""
+        status, body, body_read = self._answer("", ("192.0.2.1", 8792))
+        self.assertEqual(status, 403)
+        self.assertIn(b"non-local socket", body)
+        self.assertFalse(body_read)
+
+    def test_a_tokened_door_on_a_non_local_socket_is_left_to_its_bearer_gate(self):
+        """The control against 'refuse every non-local socket'. A door WITH a token is a legitimate
+        non-local deployment. 401 rather than 403 proves the socket check stood aside and the real
+        gate answered."""
+        status, _, _ = self._answer("s3cret", ("192.0.2.1", 8792))
+        self.assertEqual(status, 401)
+
+    def test_a_loopback_socket_is_not_refused(self):
+        """The other end: the ordinary loopback deployment must be untouched.
+
+        Asserts the EXACT status, not `assertNotEqual(403)`. A lens noted the weaker form would
+        also pass on `None` -- the value this helper returns when nothing was sent at all -- so a
+        defect that made a loopback request die silently would have read as success."""
+        status, _, _ = self._answer(None, ("127.0.0.1", 8792))
+        self.assertEqual(status, 200)

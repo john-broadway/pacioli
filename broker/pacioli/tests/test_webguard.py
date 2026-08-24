@@ -17,6 +17,8 @@ from pacioli.webguard import (
     _is_cross_origin,
     default_allowed_hosts,
     guard_asgi,
+    refuse_exposed_socket,
+    socket_is_local,
 )
 
 
@@ -406,6 +408,96 @@ class TestGuardReplayAfterBody(unittest.TestCase):
 
         asyncio.run(app(self._scope(), receive, send))
         self.assertEqual(seen["after_body"], "http.disconnect")
+
+
+class TestSocketIsLocal(unittest.TestCase):
+    """The shared classifier, over the shapes a real socket actually reports.
+
+    It lives here, in the module that owns it, since 2026-08-24. A lens pointed out that the
+    module which now holds the security predicate for all three doors had no test of its own --
+    the only direct coverage sat in `test_rest.py`, a leftover of where the function used to live.
+    A predicate consolidated into one place should be pinned in that place.
+    """
+
+    def test_the_shapes_a_real_socket_reports(self):
+        for server, local in ((("/run/pacioli.sock", None), True),   # UDS: no address at all
+                              (("127.0.0.1", 8793), True),
+                              (("127.0.1.1", 8793), True),           # still loopback/8
+                              (("::ffff:127.0.0.1", 8793), True),    # dual-stack mapped loopback
+                              (("::1", 8793), True),
+                              (("192.0.2.1", 8793), False),
+                              (("10.0.0.42", 8793), False),          # RFC1918: private != local.
+                              #   The canonical example subnet, deliberately. An earlier draft of
+                              #   this row carried this machine's actual LAN address and the
+                              #   pre-push leak audit refused the tree over it -- the same defect
+                              #   class as 2026-08-17, where a real infra address reached a public
+                              #   test fixture. Never a real address; use the documented ranges.
+                              (("0.0.0.0", 8793), False),
+                              (("not-an-address", 8793), False),     # deny-biased
+                              ((None, 8793), False),
+                              ((), True),                            # empty tuple: absent
+                              (None, True)):                         # absent: harness / abstract UDS
+            self.assertIs(socket_is_local(server), local, f"{server!r}")
+
+
+class TestRefuseExposedSocket(unittest.TestCase):
+    """The shared refusal, pinned at the shared level rather than three times over at the doors."""
+
+    def _drive(self, *, token, server, method="POST", scope_type="http"):
+        """Returns (reject_fired, inner_reached)."""
+        fired, reached = [], []
+
+        async def inner(scope, receive, send):
+            reached.append(1)
+
+        async def reject(send):
+            fired.append(1)
+
+        app = refuse_exposed_socket(inner, token, reject=reject)
+
+        async def send(_message):
+            pass
+
+        async def receive():
+            raise AssertionError("the body was read before the socket was refused")
+
+        scope = {"type": scope_type, "method": method, "path": "/", "headers": [],
+                 "server": server}
+        asyncio.run(app(scope, receive, send))
+        return bool(fired), bool(reached)
+
+    def test_it_refuses_every_method_not_just_post(self):
+        """Every door-level test of this guard drives a POST. A mutation lens scoped the guard to
+        `method == "POST"` and the entire suite stayed green, so an untokened door answering an
+        unauthenticated GET on a public socket would have gone unnoticed. The REST door has three
+        GET routes and the A2A door serves its agent card over GET, so this is not hypothetical."""
+        for method in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+            fired, reached = self._drive(token=None, server=("192.0.2.1", 8793), method=method)
+            self.assertTrue(fired, f"{method} was not refused on a non-local socket")
+            self.assertFalse(reached, f"{method} reached the app behind the guard")
+
+    def test_an_empty_token_is_refused_like_no_token(self):
+        for token in (None, ""):
+            fired, _ = self._drive(token=token, server=("192.0.2.1", 8793))
+            self.assertTrue(fired, f"token={token!r} was not refused")
+
+    def test_a_tokened_door_is_left_alone_on_any_socket(self):
+        """The guard exists only for doors with no bearer gate behind them. A tokened door on a
+        public socket is a legitimate deployment and must reach its own gate, not this one."""
+        fired, reached = self._drive(token="s3cret", server=("192.0.2.1", 8793))
+        self.assertFalse(fired)
+        self.assertTrue(reached)
+
+    def test_a_local_socket_is_left_alone(self):
+        for server in (("127.0.0.1", 8793), ("::1", 8793), ("/run/p.sock", None), None):
+            fired, reached = self._drive(token=None, server=server)
+            self.assertFalse(fired, f"{server!r} was wrongly refused")
+            self.assertTrue(reached, f"{server!r} did not reach the app")
+
+    def test_a_non_http_scope_is_passed_through(self):
+        fired, reached = self._drive(token=None, server=("192.0.2.1", 8793), scope_type="websocket")
+        self.assertFalse(fired)
+        self.assertTrue(reached)
 
 
 if __name__ == "__main__":

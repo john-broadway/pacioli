@@ -56,8 +56,12 @@ if [ "$MODE" = local ]; then
     || { printf 'smoke: install of local wheel failed\n' >&2; exit 1; }
 else
   SPEC="pacioli[server]"; [ -n "$PINVER" ] && SPEC="pacioli[server]==$PINVER"
-  printf '== installing %s from PyPI ==\n' "$SPEC"
-  uv pip install -q --python "$PY" "$SPEC" \
+  printf '== installing %s from PyPI (--refresh) ==\n' "$SPEC"
+  # --refresh is not optional here: uv caches indexes and wheels, so minutes after a release this
+  # would happily "verify" the PREVIOUS version's artifact out of cache and report the new one as
+  # confirmed. The whole point of --published is to look at what PyPI is actually serving now.
+  REFRESH=--refresh
+  uv pip install -q --refresh --python "$PY" "$SPEC" \
     || { printf 'smoke: install from PyPI failed\n' >&2; exit 1; }
 fi
 
@@ -79,10 +83,38 @@ else
 fi
 
 if "$PACIOLI" serve --help >/dev/null 2>&1; then
-  printf '  ok   `pacioli serve` door is wired (not booted — needs a credential)\n'
+  printf '  ok   `pacioli serve` subcommand is wired (argparse only; says nothing about the door)\n'
 else
-  printf '  FAIL `pacioli serve --help` did not run (the [server] door is not wired)\n'; RC=1
+  printf '  FAIL `pacioli serve --help` did not run (the CLI subcommand is missing)\n'; RC=1
 fi
+
+# The door ITSELF. The check above is blind to a dead one. Measured 2026-08-16 against the 0.38.0
+# wheel: a venv with no `mcp` at all, and a venv whose door advertised zero tools, BOTH passed every
+# other assertion in this file. argparse prints help without reaching `build_server`, and `serve()`
+# assembles the broker before it builds, so a credential-less run never touches the builder.
+# `scripts/door_check.py` drives real in-process MCP round trips instead, two legs: the door lists
+# the full catalog, and one tool call reaches the broker and renders back. It runs from $SMOKE so
+# nothing in the repo root or cwd can shadow the installed package.
+if DOOR="$(cd "$SMOKE" && "$PY" "$ROOT/scripts/door_check.py" 2>&1)"; then
+  printf '  ok   the door BUILDS, LISTS and DISPATCHES: %s\n' "$DOOR"
+else
+  printf '  FAIL the door did not build, list or dispatch: %s\n' "$DOOR"; RC=1
+fi
+
+# The HTTP door on a REAL SOCKET. Everything above is in-process: it proves what serve_http
+# builds and nothing it runs on, so uvicorn, the bind, and the console script an adopter actually
+# types all sit below the line. This starts the installed `pacioli serve --http` on an ephemeral
+# loopback port and talks to it over TCP. Exit 2 means it could not test, which must never read
+# as a pass; exit 1 is a real failure.
+SOCK="$(cd "$SMOKE" && "$PY" "$ROOT/scripts/door_socket_check.py" 2>&1)"; SOCK_RC=$?
+case "$SOCK_RC" in
+  # One line, deliberately: release.sh greps `^  ok   ` out of this output, so a multi-line
+  # assertion would show up there as a heading with its evidence silently dropped.
+  0) printf '  ok   the HTTP door binds a real socket: %s\n' \
+       "$(printf '%s' "$SOCK" | awk 'NR>1{printf "; "} {printf "%s", $0}')" ;;
+  2) printf '  FAIL the socket check could not run (UNPROVEN, not a pass): %s\n' "$SOCK"; RC=1 ;;
+  *) printf '  FAIL the HTTP door did not serve over a real socket: %s\n' "$SOCK"; RC=1 ;;
+esac
 
 GOT_TOOLS="$("$PY" -c 'from pacioli.server import TOOLS; print(len(TOOLS))' 2>&1)"
 if printf '%s' "$GOT_TOOLS" | grep -qE '^[0-9]+$' && [ "$GOT_TOOLS" -ge 1 ]; then
@@ -98,9 +130,40 @@ else
   printf '  ok   test suite not shipped (pacioli.tests absent from the artifact)\n'
 fi
 
+# THE REST DOOR, IN ITS OWN VENV WITH ITS EXTRA ALONE. Not a stylistic separation: `pacioli[rest]`
+# declares uvicorn AND anyio precisely because uvicorn does not depend on anyio and `mcp` does, so
+# checking REST inside the [server] venv above would prove nothing about the extra an adopter
+# actually installs. That is the "an extra only ever installed alongside another is CARRIED, not
+# verified" law, and it has shipped a dead door here twice.
+printf '\n== rest door: a second venv, [rest] ALONE ==\n'
+uv venv "$SMOKE/rvenv" -q || { printf 'smoke: rest venv create failed\n' >&2; exit 1; }
+RPY="$SMOKE/rvenv/bin/python"
+if [ "$MODE" = local ]; then
+  RSPEC="${WHEEL}[rest]"
+else
+  RSPEC="pacioli[rest]"; [ -n "$PINVER" ] && RSPEC="pacioli[rest]==$PINVER"
+fi
+if uv pip install -q ${REFRESH:-} --python "$RPY" "$RSPEC"; then
+  # mcp MUST be absent here, or the leg is measuring the [server] world again by accident.
+  if "$RPY" -c 'import importlib.util,sys; sys.exit(0 if importlib.util.find_spec("mcp") is None else 1)'; then
+    printf '  ok   [rest] installs alone (no mcp present, so anyio is really its own dependency)\n'
+  else
+    printf '  FAIL mcp is present in the [rest]-only venv; this leg proves nothing about the extra\n'; RC=1
+  fi
+  RSOCK="$(cd "$SMOKE" && "$RPY" "$ROOT/scripts/door_socket_check.py" rest 2>&1)"; RSOCK_RC=$?
+  case "$RSOCK_RC" in
+    0) printf '  ok   the REST door binds a real socket: %s\n' \
+         "$(printf '%s' "$RSOCK" | awk 'NR>1{printf "; "} {printf "%s", $0}')" ;;
+    2) printf '  FAIL the REST socket check could not run (UNPROVEN, not a pass): %s\n' "$RSOCK"; RC=1 ;;
+    *) printf '  FAIL the REST door did not serve over a real socket: %s\n' "$RSOCK"; RC=1 ;;
+  esac
+else
+  printf '  FAIL pacioli[rest] did not install on its own\n' >&2; RC=1
+fi
+
 printf '\n----------------------------------------\n'
 if [ "$RC" -eq 0 ]; then
-  printf 'install-smoke: PASS — the %s pacioli[server] artifact installs clean and its surface loads.\n' \
+  printf 'install-smoke: PASS — the %s artifact serves on both extras: [server] (MCP stdio door + HTTP door on a real socket) and [rest] ALONE (REST door on a real socket, no mcp present).\n' \
     "$([ "$MODE" = local ] && echo 'freshly-built' || echo 'published')"
 else
   printf 'install-smoke: FAIL — see assertions above.\n'

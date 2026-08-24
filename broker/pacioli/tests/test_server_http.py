@@ -94,6 +94,49 @@ class TestServeHttpRefusals(unittest.TestCase):
             rc = serve_http({}, bind="127.0.0.1", port=8791, auth="inline-literal")
         self.assertEqual(rc, 2)
 
+    def test_build_http_asgi_refuses_a_non_loopback_bind_with_no_token(self):
+        """DEFENSE-IN-DEPTH (security lens 2026-08-17, Major). `build_http_asgi` is public API an
+        embedder or a `uvicorn --factory` path can reach directly, bypassing serve_http's own
+        bind check above. It must refuse ITSELF, exactly as `pacioli.a2a.build_app` does for the
+        same reason (redteam 2026-07-16) and as this file's sibling test asserts there. Without
+        it, `build_http_asgi(..., bind="0.0.0.0", token=None)` returns a fully-open governed
+        door -- measured, before the guard was added.
+
+        The SDK classes are passed as None on purpose: if this raises anyway, the refusal
+        provably happens BEFORE anything is constructed, which is the deny-biased order the
+        door claims. A guard that fired after building the app would pass a laxer test.
+        """
+        from pacioli.server import build_http_asgi
+        for public in ("0.0.0.0", "192.168.1.50", "::", "10.0.0.7"):
+            with self.assertRaises(TransportConfigError, msg=public):
+                build_http_asgi(None, None, None, object(), [], token=None, bind=public)
+
+    def test_build_http_asgi_does_not_refuse_loopback_or_a_bound_token(self):
+        """Catches a guard that refuses EVERYTHING, which the negative test above would happily
+        pass. That is precisely and only what this proves.
+
+        Its first docstring claimed more -- that reaching the TypeError from the None SDK classes
+        proved the guard had run. A reviewer deleted the guard entirely and this test stayed
+        green, because the identical TypeError fires at the identical place either way. Deletion
+        is caught by its sibling above; this one discriminates always-refusing from
+        correctly-discriminating. Saying so exactly is the difference between a test and a
+        reassurance."""
+        from pacioli.server import build_http_asgi
+        for bind, token in (("127.0.0.1", None), ("0.0.0.0", "a-token")):
+            with self.assertRaises(Exception) as caught:
+                build_http_asgi(None, None, None, object(), [], token=token, bind=bind)
+            self.assertNotIsInstance(caught.exception, TransportConfigError,
+                                     f"{bind!r} with token={token!r} was refused by the bind "
+                                     "guard and should not have been")
+
+    def test_build_http_asgi_treats_an_empty_token_as_no_token(self):
+        """`token=""` used to slip the guard (`is None`) and build a door whose bearer gate then
+        refused every request, correct one included. Fail-closed, but as a silent lock rather
+        than a refusal anyone could see. An empty token is not a token."""
+        from pacioli.server import build_http_asgi
+        with self.assertRaises(TransportConfigError):
+            build_http_asgi(None, None, None, object(), [], token="", bind="0.0.0.0")
+
 
 class TestDispatchOffload(unittest.TestCase):
     """Review finding 1 (CONFIRMED): dispatch under a threading.Lock ran ON the event loop
@@ -192,6 +235,47 @@ class TestAsgiWrapper(unittest.TestCase):
         # Must not raise — a dead lifespan channel is uvicorn's problem, not a crash of ours.
         asyncio.run(self._app(None)({"type": "lifespan"}, receive, send))
         self.assertEqual(sent[0]["type"], "lifespan.startup.complete")
+
+
+    def _status_for(self, token):
+        """Status the door answers to a request carrying NO Authorization header."""
+        import asyncio
+        sent = []
+
+        async def send(m):
+            sent.append(m)
+
+        async def receive():
+            return {"type": "http.request"}
+
+        asyncio.run(self._app(token)({"type": "http", "headers": []}, receive, send))
+        return sent[0]["status"]
+
+    def test_an_empty_token_installs_no_gate_rather_than_a_silent_doorstop(self):
+        """``token=""`` must behave exactly like ``token=None``: no bearer gate at all.
+
+        The BUILD check in :func:`build_http_asgi` has used ``token in (None, "")`` since
+        2026-08-17, and :func:`pacioli.a2a.build_app` since 2026-08-18, but this runtime
+        gate-install stayed on ``token is not None``. An empty string is not None, so it installed
+        a gate, and ``_bearer_ok`` fails closed on an empty configured token (pinned next door by
+        ``TestBearerOk.test_empty_configured_token_never_admits``). The door therefore answered 401
+        to EVERY request, including a correct one: fail-closed, but as a silent lock nobody asked
+        for rather than an honest refusal. Unreachable from ``serve_http``, whose token resolution
+        refuses empty, so the exposure is the direct-embedder path this function is public API for.
+        Exactly the defect the a2a door carried, and the same fix.
+        """
+        self.assertEqual(self._status_for(""), 200)
+
+    def test_no_token_installs_no_gate(self):
+        """The control that makes the test above mean something.
+
+        Without it, a ``_asgi_app`` that never gated anything would satisfy the empty-token
+        assertion just as well as the correct one. This pins the OTHER end: None is the loopback
+        dev default and is open, so 200 here plus 401 in
+        ``test_http_without_bearer_is_401_before_the_mcp_layer`` proves the two cases are actually
+        distinguished rather than both landing on the same answer.
+        """
+        self.assertEqual(self._status_for(None), 200)
 
 
 class TestHttpDoorPerimeter(unittest.TestCase):

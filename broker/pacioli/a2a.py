@@ -20,7 +20,8 @@ Deny-biased posture, identical to the HTTP door (the same tested primitives from
 :mod:`pacioli.server`, not re-grown copies): OFF by default (``pacioli serve --a2a`` is a
 deliberate act); binds loopback by default; a non-loopback bind REFUSES TO START without a
 bearer token held by reference (``env:VAR``/``file:/path``); the JSON-RPC route answers 401
-before the SDK sees the request. The Agent Card stays readable WITHOUT auth — an A2A client must
+before the SDK sees the request. The Agent Card stays readable WITHOUT auth on any correctly
+configured door (loopback, or tokened) — an A2A client must
 be able to discover how to authenticate before it can authenticate — and when a token is
 configured the card DECLARES the bearer scheme so clients self-configure from discovery.
 
@@ -354,8 +355,13 @@ def build_agent_card(rpc_url, *, secured=False, signing_key=None, jwks_url=None)
 def _bearer_middleware_asgi(app, token, rpc_path):
     """Wrap ``app`` so the JSON-RPC route requires ``Authorization: Bearer <token>`` — answered
     as a JSON-RPC error envelope (-32001) BEFORE the SDK sees the request. Discovery routes
-    (the card) stay readable pre-auth. No-op wrapper when ``token`` is None (loopback-only)."""
-    if token is None:
+    (the card) stay readable pre-auth. No-op wrapper when there is no token (loopback-only) —
+    ``None`` OR ``""``. An empty string is not a bearer: it slips a bare ``is None`` check, and
+    then ``_bearer_ok`` answers False for EVERY request (it fails closed on an empty configured
+    token), so a gate built on it would refuse everyone — a silent lock nobody asked for, not an
+    open door. No-gating it here (and ``build_app`` refusing to construct on a public bind) is
+    the honest posture, matching the HTTP door's ``token in (None, "")`` (server.py)."""
+    if token in (None, ""):
         return app
 
     import json
@@ -410,20 +416,22 @@ def build_app(broker, *, rpc_url, token=None, allowed_hosts=None, signing_key=No
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
-    from pacioli.webguard import default_allowed_hosts, guard_asgi
+    from pacioli.webguard import (_reject, default_allowed_hosts, guard_asgi,
+                                  refuse_exposed_socket)
 
     host = urlparse(rpc_url).hostname
-    if _bind_requires_auth(host) and token is None:
+    if _bind_requires_auth(host) and token in (None, ""):
         raise TransportConfigError(
             f"advertised host {host!r} is not loopback — refusing to "
             "build an A2A app with no bearer token; a governed door that admits everyone is the "
-            "one thing this must never construct")
+            "one thing this must never construct (an empty-string token is no token — the HTTP "
+            "door refuses it the same way)")
 
     jwks_url = None
     if signing_key is not None:
         parts = urlparse(rpc_url)
         jwks_url = f"{parts.scheme}://{parts.netloc}{_JWKS_PATH}"
-    card = build_agent_card(rpc_url, secured=token is not None,
+    card = build_agent_card(rpc_url, secured=token not in (None, ""),
                             signing_key=signing_key, jwks_url=jwks_url)
     handler = DefaultRequestHandler(
         agent_executor=make_executor(broker),
@@ -453,10 +461,31 @@ def build_app(broker, *, rpc_url, token=None, allowed_hosts=None, signing_key=No
     # router might still route to the RPC handler. Path-independent, exactly like the HTTP door,
     # removes that coincidental-safety gap. (The bearer gate keeps its own RPC-path scoping so the
     # card stays readable pre-auth; only the perimeter widens.)
-    return guard_asgi(
-        gated,
-        allowed_hosts=allowed_hosts or default_allowed_hosts(host),
-        protect=lambda p: True)
+    # NOTE ON DISCOVERY: the card and JWKS routes are described throughout this module as
+    # "readable pre-auth", and that stays true for every correctly configured door. It is NOT
+    # unconditional any more. An UNTOKENED door answering on a NON-LOCAL socket refuses
+    # everything, discovery included, because the refusal below sits outside every route. That is
+    # deliberate: such a door is one whose declared bind lied, and leaking a working agent card
+    # (skills, endpoint, capabilities) to whoever can reach it is worse than answering 403. A
+    # loopback door and a tokened door are both untouched.
+    #
+    # REQUEST-TIME socket refusal, added 2026-08-24. Everything above decides on CLAIMS: the
+    # advertised `rpc_url` an operator typed, and the Host header a client typed. Neither is the
+    # socket. Shipped `serve_a2a` is safe because bind, served and advertised all agree there, but
+    # `build_app` is public API an embedder reaches directly, and `rpc_url="http://127.0.0.1/"`
+    # with `token=None` passed every check here while being servable on any interface. Measured on
+    # 2026-08-24 before the fix: that door answered 200 to an unauthenticated POST arriving on a
+    # non-local socket. OUTSIDE the perimeter, like the other two doors.
+    return refuse_exposed_socket(
+        guard_asgi(
+            gated,
+            allowed_hosts=allowed_hosts or default_allowed_hosts(host),
+            protect=lambda p: True),
+        token,
+        # The perimeter's own `{"error": ...}` shape: it is what a peer already sees from this
+        # door for a refused Host, so a refused socket should not invent a third envelope.
+        reject=_reject(403, "this door was built without a bearer token and is answering on a "
+                            "non-local socket; refusing"))
 
 
 def serve_a2a(env=None, *, bind="127.0.0.1", port=DEFAULT_PORT, auth=None, allowed_hosts=None):

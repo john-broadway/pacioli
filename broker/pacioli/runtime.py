@@ -114,11 +114,16 @@ def _load_registry_from_env(env):
         raise RuntimeError_(f"registry {reg_path}: {exc}") from exc
 
 
-def assemble(env=None, *, via=None):
+def assemble(env=None, *, via=None, transport=None):
     """Build a fully-wired :class:`PacioliBroker` from the environment. The seal key and each
     target's store are created lazily/opened here; credential resolution is deferred to call time
     (nothing secret is cached). ``via`` is the serving door's stamp, threaded into every
-    store this broker opens (F3, the doors ruling); ``None`` = undeclared, byte-identical."""
+    store this broker opens (F3, the doors ruling) AND onto the broker itself — what the
+    operator-tool spine gate reads (the corrected CLI-door plan, 2026-08-18); ``None`` =
+    undeclared, byte-identical for stores and refused by that gate. ``transport`` is
+    :class:`~pacioli.erpnext.ErpnextClient`'s own pure testing seam, reachable through assembly
+    so the close-path suites can drive the governed reroute over fake HTTP routes; ``None`` =
+    the client's real default, byte-identical."""
     env = os.environ if env is None else env
     registry = _load_registry_from_env(env)
 
@@ -127,12 +132,13 @@ def assemble(env=None, *, via=None):
 
     def client_provider(target):
         key, secret = resolve_auth(target, env=env, read_file=_read_file)
-        return ErpnextClient(base_url=target.base_url, api_key=key, api_secret=secret)
+        kwargs = {} if transport is None else {"transport": transport}
+        return ErpnextClient(base_url=target.base_url, api_key=key, api_secret=secret, **kwargs)
 
     cascade_max = int(_env(env, "PACIOLI_CASCADE_MAX", default="25") or "25")
 
     return PacioliBroker(registry=registry, store_provider=store_provider,
-                         client_provider=client_provider, cascade_max=cascade_max)
+                         client_provider=client_provider, cascade_max=cascade_max, via=via)
 
 
 def _read_file(path):

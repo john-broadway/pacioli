@@ -483,6 +483,17 @@ class TestCloseReconcileCli(unittest.TestCase):
         self.assertIn("unreadable", err.lower())
         self.assertNotIn("Traceback", err)
 
+    def test_garbage_cascade_max_env_refuses_cleanly_not_a_traceback(self):
+        # The reroute (2026-08-18) assembles the broker, which parses PACIOLI_CASCADE_MAX —
+        # a var the OLD direct-client close path never read. A garbage value must NOT escape as
+        # a raw ValueError traceback: the glue's contract is "never raises; the caller branches
+        # on the return type" (cli.py). Lens 3, 2026-08-18.
+        self.env["PACIOLI_CASCADE_MAX"] = "banana"
+        rc, out, err = self._run(_routing_transport(dict(READY_RECON_ROUTES)))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("error:", err)
+        self.assertNotIn("Traceback", err)
+
     def test_unreadable_reposts_is_a_nonfatal_flag_reconciliation_still_renders(self):
         store = open_store(self.env, "prod")
         intent = store.record_intent({"tool": "submit", "target": "prod",

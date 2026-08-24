@@ -26,6 +26,7 @@ from pacioli.registry import load_registry
 from pacioli.runtime import open_store
 from pacioli.store import BrokerStore
 from pacioli import tools as tools_mod
+from pacioli.operator import CLI_VIA, OPERATOR_NAMES
 from pacioli.tools import (DOORWAY_NAMES, READ_ONLY_TOOLS, PacioliBroker, format_seal_refusal,
                            tool_names)
 
@@ -441,6 +442,17 @@ class FakeClient:
     def cancel_document(self, doctype, name, consent=None):
         return {"name": name, "docstatus": 2, "modified": "2026-07-01 11:00:00.000001"}
 
+    # The operator three (the CLI door's audit reads) — the sealed/corrupt read-survival sweeps
+    # must genuinely run them, same law as the doorway three (design review finding 6).
+    def sweep_gl_entries(self, company, since, until):
+        return [{"name": "GL-1", "company": company}]
+
+    def get_accounts_settings(self, fields):
+        return {f: 1 for f in fields}
+
+    def get_reposts(self, company, since, until):
+        return []
+
 
 class NoCallClient:
     """A client double for the blanket sealed-governed-tool sweep: ANY attribute access resolves to
@@ -494,7 +506,7 @@ class RaisingSealStateStoreBareSqliteError:
         return _boom
 
 
-def make_broker(client=None, reg=None, key=b"k" * 32):
+def make_broker(client=None, reg=None, key=b"k" * 32, via=None):
     client = client or FakeClient()
     stores = {}
 
@@ -510,6 +522,7 @@ def make_broker(client=None, reg=None, key=b"k" * 32):
         client_provider=lambda target: client,
         now_epoch=lambda: 1_000.0,
         now_date=lambda: "2026-07-01",
+        via=via,
     )
     return broker, client, store_provider
 
@@ -569,6 +582,12 @@ def _read_args(name):
         return {"name": "get_sales_invoice"}
     if name == "pacioli_call":
         return {"tool": "get_sales_invoice", "arguments": {"name": "SI-1"}}
+    # The operator three (the CLI door's audit reads) — same law as the doorway three above:
+    # the sweep must genuinely run the tool, or read-survival is asserted about a deny.
+    if name in ("sweep_gl_entries", "get_reposts"):
+        return {"since": "2026-06-01 00:00:00", "until": "2026-06-30 23:59:59"}
+    if name == "get_accounts_settings":
+        return {"fields": ["enable_immutable_ledger"]}
     return {}
 
 
@@ -662,9 +681,17 @@ class TestClassificationCompleteness(unittest.TestCase):
     def test_read_only_and_governed_partition_every_tool_exactly(self):
         # No drift, no double-counting: the two sets exactly partition the dispatchable surface —
         # the governed catalog PLUS the doorway three, which live beside the catalog (dispatch
-        # accepts them, TOOLS does not list them; doorway design, placement decision 1/2).
+        # accepts them, TOOLS does not list them; doorway design, placement decision 1/2), PLUS
+        # the operator three (the CLI door's audit reads — dispatch accepts them only on the CLI
+        # via; the corrected CLI-door plan, 2026-08-18).
+        # OPERATOR_NAMES as a LITERAL, not the imported object: it is already folded into
+        # READ_ONLY_TOOLS on the left (tools.py's `| OPERATOR_NAMES`), so putting the same
+        # object on the right would let a wrong OPERATOR_NAMES shift both sides together and
+        # pass — the expected side must owe nothing to the code under test (the 08-17 law;
+        # lens 1, 2026-08-18). The doorway three carry the same latent shape, pre-dating this.
         self.assertEqual(READ_ONLY_TOOLS | self.GOVERNED_TOOLS_COVERED_BY_THIS_SUITE,
-                         set(tool_names()) | DOORWAY_NAMES)
+                         set(tool_names()) | DOORWAY_NAMES
+                         | {"sweep_gl_entries", "get_accounts_settings", "get_reposts"})
         self.assertEqual(READ_ONLY_TOOLS & self.GOVERNED_TOOLS_COVERED_BY_THIS_SUITE, set())
 
 
@@ -701,7 +728,11 @@ class TestSealGateBlocksEveryGovernedTool(unittest.TestCase):
 
 class TestReadOnlyToolsSurviveSealed(unittest.TestCase):
     def test_all_read_only_tools_succeed_while_sealed(self):
-        broker, client, stores = make_broker()
+        # CLI via: the operator three are only reachable on the CLI door (the spine gate,
+        # test_operator_tools.py), and this sweep's property is "the SEAL never blocks a read"
+        # — so every read runs on the one door where all of them are reachable. The stamp
+        # changes nothing for any other tool.
+        broker, client, stores = make_broker(via=CLI_VIA)
         stores("prod").seal("incident", source="operator")
         for name in sorted(READ_ONLY_TOOLS):
             with self.subTest(tool=name):
@@ -755,7 +786,9 @@ class TestReadOnlyToolsSurviveCorruptSealState(unittest.TestCase):
         self.assertEqual(state["cause"], "seal history gap (rollback?)")
 
     def test_reads_survive_a_seal_history_gap(self):
-        broker, client, stores = make_broker()
+        # CLI via for the same reason as the sealed sweep: all of READ_ONLY_TOOLS is reachable
+        # only on the CLI door (the operator three), and the property here is about the SEAL.
+        broker, client, stores = make_broker(via=CLI_VIA)
         self._corrupt_gap(stores("prod"))
         for name in sorted(READ_ONLY_TOOLS):
             with self.subTest(tool=name):

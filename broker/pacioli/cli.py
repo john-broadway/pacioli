@@ -347,9 +347,10 @@ def cmd_close(env, target, since, until, expected_head, as_json, reconcile=False
     default) is UNCHANGED — offline, store-only, no bench call — behavior above this point is
     identical to before Half 2 existed.
 
-    ``--reconcile`` additionally resolves the target's registry entry, builds a live
-    :class:`~pacioli.erpnext.ErpnextClient` (mirroring :func:`pacioli.runtime.assemble`:
-    :func:`~pacioli.registry.resolve_auth` + ``ErpnextClient``), sweeps the GL Entry
+    ``--reconcile`` additionally resolves the target's registry entry, assembles the broker on
+    the CLI door's own stamp (:func:`pacioli.runtime.assemble` + ``operator.CLI_VIA`` — the
+    three audit reads dispatch through the spine like every other governed call; the corrected
+    CLI-door plan, 2026-08-18), sweeps the GL Entry
     creation-window movement and reads the accounts-settings posture (BOTH required — an
     unreadable audit source refuses the whole reconciliation, deny-biased), and separately reads
     Repost Accounting Ledger (non-fatal — an unreadable repost source degrades to a flag, the
@@ -450,8 +451,8 @@ def cmd_close(env, target, since, until, expected_head, as_json, reconcile=False
     and ``--reconcile`` ADDS an honest clock note saying so — the one output addition on the
     undeclared path.
 
-    ``transport`` is a pure testing seam (forwarded to ``ErpnextClient``, defaulting to
-    :func:`pacioli.erpnext.default_transport` when ``None``) — real CLI dispatch never sets it."""
+    ``transport`` is a pure testing seam (threaded through :func:`pacioli.runtime.assemble` to
+    ``ErpnextClient``; ``None`` = the client's real default) — real CLI dispatch never sets it."""
     from pacioli.close import build_statement, render_statement
     from pacioli.prove import GENESIS
 
@@ -972,7 +973,6 @@ def _build_reconciliation_for_close(env, target, name, receipts, since, until, *
     call the bench. ``sweep_gl_entries``/``get_accounts_settings`` failing is FATAL (the audit
     source itself is unreadable); ``get_reposts`` failing is NON-FATAL (corroboration only — the
     reconciliation still builds, with a flag appended)."""
-    from pacioli.erpnext import ErpnextClient, ErpnextError, default_transport
     from pacioli.reconciliation import build_reconciliation
     from pacioli.registry import RegistryError, resolve_auth
     from pacioli.runtime import _load_registry_from_env, _read_file
@@ -1019,33 +1019,63 @@ def _build_reconciliation_for_close(env, target, name, receipts, since, until, *
     until_frappe = _to_frappe_clock(raw_until, end_of_day=True)
 
     try:
-        key, secret = resolve_auth(t, env=env, read_file=_read_file)
+        # Pre-flight only, for this message's exact shape and timing (before any read is
+        # attempted): the dispatch path below resolves the credential again, lazily, inside
+        # runtime.assemble's client_provider. No client is constructed here.
+        resolve_auth(t, env=env, read_file=_read_file)
     except RegistryError as exc:
         return f"cannot resolve credential for reconciliation: {exc}"
 
-    client = ErpnextClient(base_url=t.base_url, api_key=key, api_secret=secret,
-                           transport=transport or default_transport)
-
+    # THE REROUTE (docs/plans/2026-08-17-the-cli-is-a-door.md, corrected 2026-08-18): these
+    # three reads were the package's ONE path constructing its own ErpnextClient outside
+    # dispatch — "every door governed" was not literally true while that stood. They now flow
+    # through the spine on the CLI door's own stamp: the operator gate admits them here and
+    # refuses them on every agent door, and the refusal discipline (structured denies, the
+    # exception taxonomy) is the spine's, not this module's. `transport` stays the same pure
+    # testing seam it always was, threaded through assembly. Reads record nothing, like every
+    # read; output below is byte-identical (the deny's `reason` IS str(exc) for the same
+    # failures the old direct calls raised).
+    from pacioli.operator import CLI_VIA
+    from pacioli.runtime import assemble
     try:
-        gl_rows = client.sweep_gl_entries(t.company, since_frappe, until_frappe)
-        settings = client.get_accounts_settings(
-            ["enable_immutable_ledger", "delete_linked_ledger_entries"])
-        if not isinstance(settings, dict):
-            # A proxy-shaped {"data": null}/list body — posture unreadable. Refuse INSIDE the try so
-            # the glue keeps its "never raises past its boundary" contract: the later settings.get()
-            # would otherwise AttributeError out of cmd_close as a raw traceback (sec-A).
-            raise ErpnextError("accounts-settings read returned a non-dict body; posture "
-                               "unreadable, refusing")
-    except ErpnextError as exc:
-        return f"reconciliation audit source unreadable: {exc}"
+        # assemble reads the environment (a bad PACIOLI_CASCADE_MAX raises ValueError; a missing
+        # registry raises RuntimeError_ — though it was already loaded in this function's own
+        # pre-flight above). The OLD direct-client path never assembled and so never touched
+        # those; this glue's contract is "never raises, the caller branches on the return type"
+        # (Lens 3, 2026-08-18), so a config error here becomes a clean refusal, not a traceback.
+        # cascade_max is irrelevant to these three reads, but assemble is the one governed
+        # constructor and must stay the one governed constructor.
+        broker = assemble(env, via=CLI_VIA, transport=transport)
+    except (ValueError, RuntimeError_) as exc:
+        return f"reconciliation could not assemble the governed broker: {exc}"
+    routed = {} if target is None else {"pacioli_target": target}
+    op_args = {**routed, "since": since_frappe, "until": until_frappe}
+
+    swept = broker.dispatch("sweep_gl_entries", dict(op_args))
+    if not swept["ok"]:
+        return f"reconciliation audit source unreadable: {swept['reason']}"
+    gl_rows = swept["rows"]
+
+    read = broker.dispatch("get_accounts_settings",
+                           {**routed, "fields": ["enable_immutable_ledger",
+                                                 "delete_linked_ledger_entries"]})
+    if not read["ok"]:
+        return f"reconciliation audit source unreadable: {read['reason']}"
+    settings = read["settings"]
+    if not isinstance(settings, dict):
+        # A proxy-shaped {"data": null}/list body — posture unreadable (sec-A). Same refusal
+        # text as ever, composed the same way the old raise-then-catch produced it.
+        return ("reconciliation audit source unreadable: accounts-settings read returned a "
+                "non-dict body; posture unreadable, refusing")
 
     extra_flags = []
-    try:
-        reposts = client.get_reposts(t.company, since_frappe, until_frappe)
-    except ErpnextError as exc:
+    reposted = broker.dispatch("get_reposts", dict(op_args))
+    if reposted["ok"]:
+        reposts = reposted["rows"]
+    else:
         reposts = []
-        extra_flags.append(
-            f"repost source unreadable — second-generation attribution unavailable ({exc})")
+        extra_flags.append(f"repost source unreadable — second-generation attribution "
+                           f"unavailable ({reposted['reason']})")
 
     posture = {"enable_immutable_ledger": _posture_bool(settings.get("enable_immutable_ledger")),
               "delete_linked_ledger_entries": _posture_bool(
@@ -1895,6 +1925,12 @@ def build_parser():
                       help="serve the A2A door (Agent2Agent JSON-RPC; agent card at "
                            "/.well-known/agent-card.json) instead of stdio — OFF by default, "
                            "a deliberate opt-in; needs pip install 'pacioli[a2a]'")
+    door.add_argument("--rest", action="store_true",
+                      help="serve the REST door (the governed VERB set over HTTP/JSON: plan, "
+                           "submit/cancel/amend per doctype, reconcile, prove — NOT the 265-tool "
+                           "catalog, and no consent endpoint, which is deliberate) instead of "
+                           "stdio — OFF by default, a deliberate opt-in; needs pip install "
+                           "'pacioli[rest]'")
     sv.add_argument("--bind", default="127.0.0.1",
                     help="bind address (default 127.0.0.1; any non-loopback bind "
                          "refuses to start without --auth)")
@@ -1960,6 +1996,11 @@ def main(argv=None, env=None):
             from pacioli.a2a import DEFAULT_PORT, serve_a2a
             return serve_a2a(env, bind=args.bind, port=args.port or DEFAULT_PORT,
                              auth=args.auth, allowed_hosts=allowed_hosts)
+        if getattr(args, "rest", False):
+            from pacioli.rest import DEFAULT_PORT as REST_PORT
+            from pacioli.rest import serve_rest
+            return serve_rest(env, bind=args.bind, port=args.port or REST_PORT,
+                              auth=args.auth, allowed_hosts=allowed_hosts)
         from pacioli.server import serve
         return serve(env)
     if args.command == "a2a-keygen":

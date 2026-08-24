@@ -132,6 +132,28 @@ else
   printf 'release: WARNING — gitleaks not installed; public CI runs it and WILL fail on entropy hits this gate never saw.\n' >&2
 fi
 
+# The ADOPTER'S PATH, on the exact tree about to ship: build the wheel, install it into a throwaway
+# venv, and prove the artifact actually works — entry point, the MCP door driven by a real client,
+# and the HTTP door on a real socket. Broker only; guard is a Frappe bench app, not a plain-venv
+# install, and install_smoke.sh scopes itself the same way.
+#
+# It is IN the gate as of 2026-08-17 because it was documented as "rail 8" and invoked by nothing:
+# not CI, not this script. A check that runs only when someone remembers is a check that will be
+# forgotten, and the defect class it exists to catch — an artifact that installs clean and cannot
+# serve — has already shipped once. Costs roughly a minute, which is the price of not finding that
+# out from an adopter.
+if [ "$PKG" = broker ]; then
+  SMOKELOG="$(mktemp)"
+  if bash scripts/install_smoke.sh >"$SMOKELOG" 2>&1; then
+    sed -n 's/^  ok   /release: install-smoke ok — /p' "$SMOKELOG"
+  else
+    printf 'release: install-smoke FAILED — the artifact this tree builds does not work:\n' >&2
+    cat "$SMOKELOG" >&2
+    RC=1
+  fi
+  rm -f "$SMOKELOG"
+fi
+
 printf '\n----------------------------------------\n'
 if [ "$RC" -eq 0 ]; then
   if [ "$PKG" = broker ]; then

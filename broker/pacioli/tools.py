@@ -1930,6 +1930,7 @@ from datetime import datetime, timezone
 from pacioli import consent  # noqa: F401 — re-exported for the CLI's mint path
 from pacioli import doorway, history
 from pacioli.doorway import DOORWAY_NAMES, DOORWAY_TOOLS
+from pacioli.operator import OPERATOR_NAMES, OPERATOR_TOOLS
 from pacioli import workflow
 from pacioli.amend import seat_conflict
 from pacioli.cascade import build_cascade, run_cascade
@@ -2517,7 +2518,7 @@ TOOLS = _close_schemas(_generate_mechanical_tools() + _GENERIC_TOOLS)
 # hand-listed, so it cannot drift from what is published.
 _DECLARED_ARGS = {
     tool["name"]: frozenset(tool.get("inputSchema", {}).get("properties", {}) or {})
-    for tool in list(TOOLS) + list(DOORWAY_TOOLS)
+    for tool in list(TOOLS) + list(DOORWAY_TOOLS) + list(OPERATOR_TOOLS)
 }
 
 
@@ -2705,6 +2706,11 @@ READ_ONLY_TOOLS = frozenset(
     # classification, and it is safe exactly as long as _tool_pacioli_call delegates through
     # self.dispatch and nothing else (its docstring states why).
     | DOORWAY_NAMES
+    # The operator three: reads over audit metadata feeding `close --reconcile`, the confession
+    # path — a sealed store must never hide the books that explain it (Global constraint #6).
+    # Reachability is the SPINE GATE's job (dispatch refuses them off the CLI door); read-only
+    # classification only says the seal never blocks them.
+    | OPERATOR_NAMES
 )
 
 
@@ -8231,13 +8237,17 @@ class PacioliBroker:
     """
 
     def __init__(self, registry, store_provider, client_provider,
-                 now_epoch=_now_epoch, now_date=_now_date, cascade_max=25):
+                 now_epoch=_now_epoch, now_date=_now_date, cascade_max=25, via=None):
         self._registry = registry
         self._store = store_provider
         self._client = client_provider
         self._now_epoch = now_epoch
         self._now_date = now_date
         self._cascade_max = cascade_max
+        # The serving door's own stamp (the same dict runtime.assemble threads into every store,
+        # F3) — what the OPERATOR gate in dispatch() reads. None = undeclared: every legacy
+        # in-process construction, refused by the gate the same as any agent door.
+        self._via = dict(via) if via is not None else None
 
     # --- dispatch ------------------------------------------------------------------
     def dispatch(self, name, arguments):
@@ -8247,8 +8257,18 @@ class PacioliBroker:
         # clause: a transport error, a different envelope per door, and no receipt (doorway
         # design review, finding 1). Non-string names take the same deny every unknown name does.
         if not isinstance(name, str) or (name not in tool_names()
-                                         and name not in DOORWAY_NAMES):
+                                         and name not in DOORWAY_NAMES
+                                         and name not in OPERATOR_NAMES):
             return _deny(f"unknown tool {name!r}")
+        if name in OPERATOR_NAMES and (self._via or {}).get("transport") != "cli":
+            # The SPINE gate (corrected plan, 2026-08-18): the operator three exist for
+            # `close --reconcile` and belong to the local operator's own hand. Every agent door
+            # — and an undeclared broker (via=None) — is refused BEFORE the handler is looked
+            # up, before any target, store or client is touched. An honest refusal, not
+            # "unknown tool": the names are public source, and a refusal that lies about its
+            # reason teaches the wrong correction.
+            return _deny(f"{name} is operator-only: reachable through the local pacioli CLI "
+                         "door, never an agent door")
         handler = getattr(self, f"_tool_{name}", None)
         if handler is None:
             return _deny(f"unknown tool {name!r}")
@@ -8320,13 +8340,18 @@ class PacioliBroker:
         the only thing in the DISPATCH PATH that talks to ERPNext, and this gate's entire job is to
         make sure that never happens while sealed.
 
-        ⚠️ This said "the only thing that ever talks to ERPNext", flat, until 2026-08-11. That is
-        false of the package: ``cli.py``'s close/reconcile path and ``doctor.py``'s probes both
-        construct clients of their own, outside any handler. Both are READS, so there is no seal
-        bypass and the gate's behaviour was never wrong — the ABSOLUTE was. It also survived a
-        docstring pass that cited ``test_seal_gate.py`` as already pinning it; that suite pins the
-        narrower and true property (a governed tool reaches no client while sealed), and nothing
-        pinned the absolute, because nothing could.
+        ⚠️ This said "the only thing that ever talks to ERPNext", flat, until 2026-08-11. It was
+        false of the package then: ``cli.py``'s close/reconcile path built its own client and
+        ``doctor.py``'s probes call the raw transport, both outside any handler. The close path
+        was rerouted through dispatch on the CLI door 2026-08-18 (the operator tools;
+        ``test_operator_tools.TestOneSpine`` now pins "no client construction outside
+        erpnext.py/runtime.py" structurally), so the remaining out-of-handler ERPNext traffic is
+        ``doctor.py`` alone — raw-transport READS, diagnostic by design (a doctor that needed a
+        healthy broker to run could not diagnose a broken one). No seal bypass either way, and
+        the gate's behaviour was never wrong — the ABSOLUTE was. It also survived a docstring
+        pass that cited ``test_seal_gate.py`` as already pinning it; that suite pins the narrower
+        and true property (a governed tool reaches no client while sealed), and nothing pinned
+        the absolute, because nothing could.
 
         Returns ``None`` when the write may proceed; otherwise a structured deny. Three distinct
         outcomes (review F1, Task 2 review — the pre-existing failure taxonomy, restored):
@@ -10721,6 +10746,54 @@ class PacioliBroker:
             return _deny("'arguments' must be an object: the named tool's own arguments, "
                          "exactly as pacioli_tool_schema declares them")
         return self.dispatch(tool, arguments or {})
+
+    # --- OPERATOR tools (CLI door only — the dispatch gate refuses every other via) ----------
+    # The three audit reads `close --reconcile` needs and no catalog tool covers
+    # (docs/plans/2026-08-17-the-cli-is-a-door.md, corrected 2026-08-18). Reads over audit
+    # metadata: like every read tier handler they record nothing and return the client's rows
+    # verbatim — the value here is ONE construction path and the spine's refusal discipline,
+    # not a receipt. `company` comes from the registry pin, never from caller args.
+
+    def _company_pinned_target(self, args):
+        """(target, None) when the resolved target carries a company pin, else (None, deny) —
+        the GL sweep and the repost read are company-scoped; sweeping without a pin would
+        silently include cross-company movement (the CLI refuses this too, earlier and in its
+        own words; this is the spine's own floor for the same law)."""
+        target = self._registry.get(args.get("pacioli_target"))
+        if not target.company:
+            return None, _deny(f"target {target.name!r} has no company pin — this read is "
+                               "company-scoped", stage="request")
+        return target, None
+
+    def _tool_sweep_gl_entries(self, args):
+        missing = _require(args, "since", "until")
+        if missing:
+            return missing
+        target, deny = self._company_pinned_target(args)
+        if deny:
+            return deny
+        rows = self._client(target).sweep_gl_entries(target.company,
+                                                     args["since"], args["until"])
+        return {"ok": True, "rows": rows}
+
+    def _tool_get_accounts_settings(self, args):
+        fields = args.get("fields")
+        if (not isinstance(fields, list) or not fields
+                or not all(isinstance(f, str) and f.strip() for f in fields)):
+            return _deny("'fields' is required: a non-empty list of Accounts Settings "
+                         "field names", stage="request")
+        target = self._registry.get(args.get("pacioli_target"))
+        return {"ok": True, "settings": self._client(target).get_accounts_settings(fields)}
+
+    def _tool_get_reposts(self, args):
+        missing = _require(args, "since", "until")
+        if missing:
+            return missing
+        target, deny = self._company_pinned_target(args)
+        if deny:
+            return deny
+        rows = self._client(target).get_reposts(target.company, args["since"], args["until"])
+        return {"ok": True, "rows": rows}
 
 
 # --- generate the 20 mechanical wrapper methods onto PacioliBroker -----------------------------

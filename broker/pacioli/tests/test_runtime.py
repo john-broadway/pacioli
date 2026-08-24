@@ -92,6 +92,49 @@ class TestAssemble(unittest.TestCase):
             assemble({"PACIOLI_REGISTRY": "/nonexistent/targets.toml"})
         self.assertIn("targets.toml", str(ctx.exception))
 
+    def _env(self, d):
+        reg = Path(d) / "targets.toml"
+        reg.write_text(REG)
+        return {"PACIOLI_REGISTRY": str(reg), "PACIOLI_STATE_DIR": d, "K": "kk", "S": "ss"}
+
+    def test_assemble_without_via_leaves_operator_tools_refused(self):
+        # Deny-biased default: an undeclared broker never reaches the operator three.
+        with tempfile.TemporaryDirectory() as d:
+            broker = assemble(self._env(d))
+            out = broker.dispatch("sweep_gl_entries",
+                                  {"since": "2026-06-01 00:00:00",
+                                   "until": "2026-06-30 23:59:59"})
+            self.assertFalse(out["ok"])
+            self.assertIn("operator", out["reason"])
+
+    def test_assemble_hands_the_via_stamp_to_the_broker(self):
+        # With the CLI stamp the same call gets PAST the spine gate — proven without any
+        # network: the refusal it now earns is the missing-argument one, not the door one.
+        from pacioli.operator import CLI_VIA
+        with tempfile.TemporaryDirectory() as d:
+            broker = assemble(self._env(d), via=CLI_VIA)
+            out = broker.dispatch("sweep_gl_entries", {})
+            self.assertFalse(out["ok"])
+            self.assertNotIn("operator-only", out["reason"])
+            self.assertIn("required", out["reason"])
+
+    def test_assemble_threads_the_transport_seam_to_the_client(self):
+        # The same testing seam ErpnextClient has always had, now reachable through assemble —
+        # what lets the close-path suites drive the governed reroute over fake HTTP routes.
+        from pacioli.operator import CLI_VIA
+
+        def transport(method, url, headers, params=None, body=None):
+            if "Accounts%20Settings" in url:
+                return 200, {"data": {"enable_immutable_ledger": 1}}
+            return 404, None
+
+        with tempfile.TemporaryDirectory() as d:
+            broker = assemble(self._env(d), via=CLI_VIA, transport=transport)
+            out = broker.dispatch("get_accounts_settings",
+                                  {"fields": ["enable_immutable_ledger"]})
+            self.assertTrue(out["ok"], out)
+            self.assertEqual(out["settings"], {"enable_immutable_ledger": 1})
+
 
 class TestMintCli(unittest.TestCase):
     """The human's side of CONSENT: keyless store, high-entropy machine-minted token, printed once."""

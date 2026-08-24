@@ -188,7 +188,7 @@ def _asgi_app(manager, token):
             except Exception:
                 return
             return
-        if token is not None:
+        if token not in (None, ""):
             headers = {k.decode().lower(): v.decode()
                        for k, v in scope.get("headers", [])}
             if not _bearer_ok(headers.get("authorization"), token):
@@ -199,6 +199,73 @@ def _asgi_app(manager, token):
                 return
         await manager.handle_request(scope, receive, send)
     return asgi
+
+
+async def _plain_403(send):
+    """This door's refusal shape: text/plain, like its 401 two functions up."""
+    body = (b"403 refusing: this door was built without a bearer token and is "
+            b"answering on a non-local socket")
+    await send({"type": "http.response.start", "status": 403,
+                "headers": [(b"content-type", b"text/plain"),
+                            (b"content-length", str(len(body)).encode())]})
+    await send({"type": "http.response.body", "body": body})
+
+
+def build_http_asgi(Server, types, SessionManager, broker, served, *,  # noqa: N803 — they ARE classes
+                    token=None, bind="127.0.0.1", allowed_hosts=None):
+    """The HTTP door's ASGI stack, exactly as :func:`serve_http` serves it: the tool surface, the
+    real session manager, the bearer gate, and the shared perimeter, in that order.
+
+    Extracted for the same reason :func:`dispatch_tool` was pulled out of the ``call_tool``
+    closure: it was the one glue path nothing could drive. Every HTTP test in the suite ran
+    against a FakeManager, so the real ``StreamableHTTPSessionManager`` had never been
+    constructed by a test on either mcp major. A test that assembled this stack itself would be
+    measuring a reconstruction; calling this is measuring the door.
+
+    The SDK classes come in as parameters, matching :func:`build_server`, so the lazy import
+    (and the ImportError refusal that depends on it) stays in exactly one place: ``serve_http``.
+    Token RESOLUTION (``env:``/``file:`` references, inline literals refused) stays in
+    ``serve_http`` too: this takes an already-resolved token, or none.
+
+    DEFENSE-IN-DEPTH (security lens 2026-08-17, Major): what does NOT stay in ``serve_http`` is
+    the non-loopback refusal. This function is public API that an embedder or a
+    ``uvicorn --factory`` path can reach directly, bypassing ``serve_http`` entirely, so it must
+    refuse a non-loopback bind with no token ITSELF. :func:`pacioli.a2a.build_app` already
+    carries exactly this guard for exactly this reason (redteam 2026-07-16), and the first
+    version of this function did not: called with ``bind="0.0.0.0", token=None`` it happily
+    returned a fully-open governed door, measured. Two doors had learned the lesson and the
+    third did not inherit it."""
+    from pacioli.webguard import (default_allowed_hosts, guard_asgi,
+                                  refuse_exposed_socket)
+
+    # `in (None, "")`, not `is None`: an empty token is not a token. It slips a `is None` check
+    # and then makes `_bearer_ok` answer False for every request including the "correct" one, so
+    # the door builds and refuses everyone. Failing closed, but as a silent lock nobody asked for
+    # rather than an honest refusal at construction. Every door now agrees on this form:
+    # `pacioli.a2a.build_app` since 2026-08-18, this module's own `_asgi_app` runtime
+    # gate-install and both of the REST door's runtime sites since 2026-08-24.
+    if _bind_requires_auth(bind) and token in (None, ""):
+        raise TransportConfigError(
+            f"bind {bind!r} is not loopback — refusing to build an HTTP door with no bearer "
+            "token; a governed door that admits everyone is the one thing this must never "
+            "construct")
+
+    app = build_server(Server, types, broker, served)
+    manager = SessionManager(app=app, stateless=True)
+    # REQUEST-TIME half of the same refusal, added 2026-08-24. The check above decides on `bind`,
+    # which is a claim an operator typed; this decides on the socket the connection actually landed
+    # on, which is a fact. A direct embedder or a `uvicorn --factory` path can build
+    # loopback-declared and serve anywhere, and the REST door proved that a forged Host then
+    # reaches dispatch unauthenticated. OUTSIDE the perimeter: `guard_asgi` drains a POST body in
+    # full before calling what it wraps, so a refusal from inside would cost the full read deadline.
+    return refuse_exposed_socket(
+        guard_asgi(
+            _asgi_app(manager, token),
+            allowed_hosts=allowed_hosts or default_allowed_hosts(bind),
+            protect=lambda p: True),  # no unauthenticated discovery route — every POST is control
+        token,
+        # text/plain, matching this door's own 401 rather than the perimeter's JSON.
+        reject=_plain_403)
 
 
 def serve(env=None):
@@ -292,15 +359,8 @@ def serve_http(env=None, *, bind="127.0.0.1", port=8791, auth=None, allowed_host
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    app = build_server(Server, types, broker, served)
-
-    from pacioli.webguard import default_allowed_hosts, guard_asgi
-
-    manager = StreamableHTTPSessionManager(app=app, stateless=True)
-    asgi = guard_asgi(
-        _asgi_app(manager, token),
-        allowed_hosts=allowed_hosts or default_allowed_hosts(bind),
-        protect=lambda p: True)  # no unauthenticated discovery route — every POST is control
+    asgi = build_http_asgi(Server, types, StreamableHTTPSessionManager, broker, served,
+                           token=token, bind=bind, allowed_hosts=allowed_hosts)
 
     print(f"pacioli HTTP transport on {bind}:{port} "
           f"({'bearer token required' if token else 'loopback, no token'}); "

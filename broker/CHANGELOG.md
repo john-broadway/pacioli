@@ -6,6 +6,172 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 > References to `docs/plans/…` (and other build-record files: `GO-LIVE.md`, `docs/specs/…`, scout notes, redteam reports) are the workshop's internal run records — the day-books behind
 > each entry. The public tree carries the proofs (`SCOPED-TOKEN-PROOF.md`) without the day-books.
 
+## Unreleased
+
+The version heading is written at release classification. Content, in landing order:
+
+## 0.39.0 - 2026-08-24 - two more doors, and the socket that outranks the bind
+
+MINOR. New capability, nothing removed, no enforcement path changed. Two doors join the spine
+(REST, and the CLI's last direct client), every network door gains a request-time socket refusal,
+and the dependency metadata stops lying in both directions.
+
+The through-line, if you read only one paragraph: **a `bind` string is a claim an operator typed
+and a socket is a fact.** Three doors were deciding on the claim. The REST door learned the
+difference the hard way in 0.38's cycle; this release carries that lesson to the other two, and
+one of them was demonstrably answering unauthenticated requests from a non-local socket.
+
+### The fourth door: REST (2026-08-17)
+- **`pacioli serve --rest`** — the governed VERB set over HTTP: 13 routes covering 163 tools
+  (`{doctype}` is a path parameter), extra `[rest]` = uvicorn + anyio only (no mcp, no web
+  framework). A door admits, it never decides: every route dispatches through the same spine as
+  stdio/HTTP/A2A.
+- **No consent endpoint, by design, pinned by a test**: a consent marker is minted by a
+  DIFFERENT principal than the credential it authorises; a REST mint route would let the
+  broker's own key authorise itself.
+- Hardened across two adversarial lens rounds plus a fix-review round: direct-call refusal
+  decided on `scope["server"]` (the socket, not the bind string — a forged `Host` header never
+  reaches dispatch unauthenticated), GET request bodies bounded in time as well as bytes
+  (unauthenticated slow-read DoS closed), duplicate `Authorization` headers refused,
+  `guard_asgi` wrapped OUTSIDE the perimeter so a refusal is instant rather than after a full
+  body drain, socket-address classification `ipaddress`-based and Unix-socket-aware.
+- The install smoke gets a real-socket REST leg (`scripts/door_socket_check.py` counterpart),
+  and `install_smoke.sh` now runs inside `release.sh`'s gate.
+
+### The fifth reroute: the CLI is a door (2026-08-18)
+- **`close --reconcile`'s three audit reads route through the spine.** They were the package's
+  one remaining direct `ErpnextClient` construction outside dispatch. Three operator tools
+  (`sweep_gl_entries`, `get_accounts_settings`, `get_reposts`) now live in the dispatch table —
+  **absent from every served/advertised surface, and refused by dispatch itself on every agent
+  door**: only a broker assembled with the CLI door's own `via` stamp reaches them (deny-biased;
+  an undeclared broker is refused too). The 265-tool catalog is unchanged — these are reads,
+  and the catalog's sentence ("the full submittable transaction surface") stays true.
+- Close output is byte-identical on the same inputs; the close suites pass unchanged over the
+  rerouted path. An AST guard reds if any module outside `erpnext.py`/`runtime.py` re-adds a
+  direct `ErpnextClient` construction (any static import spelling — plain, aliased, or
+  attribute), guarding against accidental regression.
+- A garbage `PACIOLI_CASCADE_MAX` on `close --reconcile` now refuses cleanly instead of raising
+  a traceback: the reroute assembles the broker (which parses that var), and the close glue's
+  contract is that it never raises.
+- `runtime.assemble` gains `transport=` (the client's existing pure testing seam, now reachable
+  through assembly) and hands the door's `via` stamp to the broker as well as its stores.
+
+### The A2A door: an empty-string token is no token (2026-08-18)
+- **`a2a.build_app` now treats `token=""` as no token, matching the HTTP door's
+  `token in (None, "")`.** `serve_a2a` already refuses an empty resolved token, so this only
+  affects the direct-`build_app` embedder path, where `token=""` previously: built a public
+  door instead of refusing; installed a bearer gate that — because `_bearer_ok` fails closed on
+  an empty token — refused *every* request (a silent doorstop, not an open door); and advertised
+  a `secured` agent card while enforcing nothing real. Now: public+empty refuses to build,
+  loopback+empty serves open (the dev default), and the card is honestly unsecured.
+
+### Four direct imports nobody declared, and the gate that could not see them (2026-08-24)
+- **`[server]` and `[a2a]` now declare the distributions their own modules import directly**, and
+  `[rest]`'s `anyio` gains the major ceiling it shipped without. Four requirements in total:
+  `anyio>=4.5,<5` on `[server]` and `[a2a]`, `starlette>=0.49.1,<2` and `pyjwt>=2.0.0,<3` on
+  `[a2a]`, plus the ceiling on `[rest]`'s existing `anyio`.
+- **Why it mattered.** `server.py` and `a2a.py` import these at runtime, but nothing here declared
+  them, so they arrived only as somebody else's transitive: `mcp` declares `anyio>=4.5` with no
+  ceiling, and `a2a-sdk[http-server]` declares `starlette` with no bound of any kind, not even a
+  floor. A breaking major of either would have broken `serve --http`, `serve --stdio` and
+  `serve --a2a` on every fresh install, exactly the way mcp 2.0.0 broke 0.30.0 through 0.37.0.
+- **The existing bounds gate was structurally blind to this.** `test_dependency_bounds` reads
+  declarations and asks whether each bounds its major; an undeclared dependency has no requirement
+  string for it to read, so all four were invisible to it while it stayed green. New sibling gate
+  `scripts/tests/test_declared_imports.py` asks the other half of the question: every third-party
+  module a shipped module imports must be declared by the extra that gates that module. Once a
+  dependency is declared, the bounds gate polices its ceiling automatically. It also pins the
+  "pure cores and human CLI are stdlib-only" claim, which was prose in `pyproject.toml` and
+  nothing else, and it fails closed on an import it has no mapping for rather than skipping it.
+- **`starlette` is recorded as proven across two majors, measured rather than asserted.** It
+  crossed a real 0.x to 1.x boundary, so a `<2` ceiling claims a major nobody had run.
+  `pacioli[a2a]` was installed ALONE on py3.13 (mcp absent) and the a2a suites ran green at
+  starlette 0.49.1 and again at 1.6.0, with the 0.x leg mutation-proven exercised: hiding the
+  installed `starlette` turns 27 of those 76 red. `scripts/tests/test_dependency_bounds.py` now
+  pins both directions, the way it already did for `mcp`.
+- **Every FLOOR in this block was re-derived from measurement, and three of them were wrong.** A
+  ceiling and a floor are not the same claim. The ceiling is the safety property: an unbounded
+  major installs a breaking release silently. A floor set above the evidence is the opposite
+  failure -- it excludes installs that WORK, and CI never notices, because CI resolves the newest
+  of everything.
+  - `starlette` was `>=0.49.1`, justified by the claim that sse-starlette floors it there anyway.
+    Two independent lenses refuted that from published metadata (only sse-starlette >= 3.0.4
+    requires starlette in core deps). It was then set to `>=0.48`, which read as measurement but
+    was simply whatever one arbitrary `fastapi==0.118.0` pin resolved to. Both silently locked out
+    working installs. Now `>=0.20`: twelve versions from 0.20.4 to 1.6.0 pass on real resolutions.
+  - `anyio` was `>=4.5`, a number inherited from what `mcp` DECLARES. But `[rest]` installs no mcp,
+    so on the one extra where nothing else enforced it, our inherited number was the binding
+    constraint. Now `>=3.4`, measured on `[rest]` alone.
+  - `uvicorn` was `>=0.30` with no evidence behind it. Now `>=0.20`, measured on `[rest]` alone
+    with the real-socket leg -- and, the question that actually mattered, with the exposed-socket
+    guard still refusing a forged Host from a LAN socket, confirming `scope["server"]` is reported
+    correctly that far back. A guard's dependency floor is a security question, not a
+    functionality one.
+  - The rule is now written into `pyproject.toml` and ENFORCED. A floor may only come from a
+    neighbour that already imposes it, a measured RED, or an argued policy floor (`cryptography`
+    >=50 is the last kind and is exempt). `scripts/tests/test_dependency_bounds.py` carries a
+    `MEASURED_FLOORS` table and reds on any floor above it, for every dependency at once.
+  - Lowering anyio's floor made its two-major support an explicit claim rather than an implicit
+    one: the ceiling rule immediately demanded a `SUPPORTED_MAJORS` entry, which is exactly what
+    that table exists to force.
+- Adopter impact: `pacioli[server]` and `pacioli[a2a]` now bound the dependency MAJORS they
+  previously inherited by luck, and no floor excludes a version this project has measured green.
+  `pacioli[a2a]` coinstalls with FastAPI again (verified on 0.118.0 and 0.110.0, which resolve to
+  starlette 0.48.0 and 0.36.3). An unconstrained install is unchanged. No API, tool-surface or
+  enforcement-path change; the catalog stays at 265.
+
+### An empty token is no token, and bind is still not the socket (2026-08-24)
+- **All three network doors now carry the request-time socket refusal.** Only REST had it. The
+  MCP HTTP door and the A2A door each refuse a non-loopback *declaration* at build time, but a
+  `bind` string and an advertised `rpc_url` are claims an operator typed; the socket the
+  connection landed on is a fact. A direct embedder or a `uvicorn --factory` path can build
+  loopback-declared and serve on any interface, and the REST door demonstrated in 2026-08-17 that
+  a forged `Host` header then reaches dispatch unauthenticated. Measured before the fix: the A2A
+  door answered **200** to an unauthenticated POST arriving on a non-local socket, and the HTTP
+  door had no check to answer with at all.
+- **An empty-string token is now no token at every runtime site, not just at build.** The HTTP
+  door's `_asgi_app` installed its bearer gate on `token is not None`, and `_bearer_ok` fails
+  closed on an empty configured token, so an empty token produced a door that refused *everyone*,
+  including a caller holding the right token. A silent lock rather than an honest refusal.
+- **The REST door's two runtime sites disagreed with each other, and that mattered more than
+  either alone.** Its socket refusal fired on `token is None` while its bearer gate installed on
+  `token is not None`, so an empty token skipped the socket check *and* installed a gate that
+  refused everyone. The two narrownesses cancelled into an accidental fail-closed. Widening only
+  the bearer gate, which is how this defect reads if you look at one line, converts that accident
+  into a genuinely open door on a non-local socket. That is measured, not argued: the mutation is
+  pinned by a test that asserts the specific 403 socket refusal rather than merely "a refusal",
+  and it reds at 200 on the half-fix.
+- **One condition, three shapes.** `pacioli.webguard` now owns both `socket_is_local` (moved from
+  `rest.py`) and `refuse_exposed_socket`. The security predicate exists once; only the response
+  envelope is per-door, because each door answers in its own shape: REST its `{"ok": false}` body,
+  the MCP HTTP door text/plain like its own 401, A2A the perimeter's `{"error": ...}`. A predicate
+  copied into three modules is a predicate that differs in two of them within a year.
+- The guard is wrapped OUTSIDE the perimeter on every door. `guard_asgi` drains a POST body in
+  full before calling what it wraps, so a refusal from inside costs the whole 30s read deadline
+  before answering. Order of wrapping is a security property.
+- Unix domain sockets stay local and tokened non-local doors are left to their bearer gate, both
+  pinned by tests. On A2A the refusal covers the agent card and JWKS routes too: those stay
+  readable pre-auth on every correctly configured door, but an untokened door answering on a
+  non-local socket is one whose declared bind lied, and leaking a working capability
+  advertisement to whoever can reach it is worse than answering 403.
+- **Proven on real TCP against a live ERPNext, not only in-process.** A door built with
+  `bind="127.0.0.1"` and served by `uvicorn.run(host="0.0.0.0")`, wired to a real broker: on the
+  loopback socket `GET /v1/prove/verify` returned a genuine governed verdict (receipt chain
+  verified, 18 receipts); on the machine's LAN socket, the same GET carrying a forged
+  `Host: 127.0.0.1` -- which defeats the Host allowlist -- was refused 403 without reaching
+  dispatch. The same driver on the parent commit shows what was closed: the A2A door answered
+  **200 from the JSON-RPC dispatcher**, unauthenticated, and the REST door with `token=""`
+  answered 401 from a bearer gate that refused everyone, one line away from being open.
+- Four adversarial lenses ran against a frozen tree. The gate itself held; every surviving
+  finding was in the tests or in the claims made about them. Fixed here: the shared guard was
+  only ever driven by POST, so a GET on an exposed socket was untested (the REST door has three
+  GET routes and A2A serves its card over GET); `webguard` had no test for the predicate it now
+  owns; A2A lacked the wrap-order pin both siblings had; `socket_is_local`'s docstring called its
+  fail-open branch "the in-process harness case" when a real abstract-namespace UDS reaches it
+  too, and justified UDS by filesystem permissions an abstract UDS does not have; and its
+  `ipv4_mapped` unwrap is dead on every supported CPython, now labelled rather than left looking
+  load-bearing.
+
 ## 0.38.0 - 2026-08-11 - the door runs on mcp 1.x and 2.x from one build
 
 MINOR. New capability, nothing removed, no enforcement path changed. The `mcp` pin widens from

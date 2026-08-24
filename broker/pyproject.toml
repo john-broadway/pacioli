@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pacioli"
-version = "0.38.0"
+version = "0.39.0"
 description = "Governed agent broker for ERPNext (MCP + A2A doors, one spine) — no debit without a credit: PLAN, CONSENT, PROVE, UNDO over the books, on the Pacioli Guard credential floor"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,6 +22,33 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+# HOW A FLOOR IS ALLOWED TO GET ITS NUMBER (written down 2026-08-24, after getting it wrong three
+# times in one night). A ceiling and a floor are not the same claim. The ceiling is the safety
+# property this block exists for: an unbounded major installs a breaking release silently. The
+# floor is the opposite risk -- set it above the evidence and it EXCLUDES INSTALLS THAT WORK, and
+# nothing in CI will ever tell you, because CI resolves the newest of everything.
+#
+# So a floor may only come from one of three places:
+#   1. A NEIGHBOUR ALREADY IMPOSES IT. Then ours costs nothing and matching it is free. (`pyjwt`
+#      >=2.0.0 is a2a-sdk[signing]'s own floor; mcp imposes anyio>=4.5 and uvicorn>=0.31.1 on
+#      `[server]`, which is why the lower numbers below are inert there rather than a widening.)
+#   2. A MEASURED RED. We ran it and it failed. Raise to the first version that passes.
+#   3. A DELIBERATE POLICY FLOOR, argued in a comment. (`cryptography>=50` is an advisory floor.)
+#
+# Nothing else. "It matches what mcp declares" is reason 1 only where mcp is actually installed --
+# `[rest]` carries no mcp, so an anyio floor inherited from mcp's declaration was binding on the
+# one extra that had no mcp to enforce it. And a number produced by one arbitrary adopter pin is
+# that pin's number, not ours: the starlette floor was set from a single `fastapi==0.118.0`
+# resolution and silently locked out every starlette from 0.41 to 0.47, all of which pass.
+#
+# Every floor below is now the bottom of measured evidence, on REAL resolutions (the resolver
+# picking its own transitives, never a forced downgrade), with the door driven for real:
+#   anyio     3.4.0 up  -- `[rest]` ALONE (no mcp), full REST suite green at 3.4/3.6.2/3.7.1/4.x
+#   uvicorn   0.20.0 up -- `[rest]` ALONE, real-socket leg green AND the exposed-socket guard still
+#                          refuses a forged Host from a LAN socket, so `scope["server"]` is
+#                          reported correctly that far back. That was the question worth asking:
+#                          the guard's floor is a SECURITY question, not a functionality one.
+#   starlette 0.20.4 up -- twelve versions to 1.6.0, all green
 # The agent-facing MCP doors (stdio + streamable HTTP). The pure cores + human CLI are stdlib-only.
 #
 # BOTH ENDS OF THE mcp RANGE ARE MEASURED, not guessed. 0.37.1 capped the ceiling and left the
@@ -39,7 +66,24 @@ dependencies = []
 # `uvicorn` is declared HERE and not only on `[a2a]` because `serve_http` imports it directly
 # (`server.py`). It used to arrive only as a transitive of mcp: an undeclared, unbounded,
 # inherited dependency, which is the exact hazard the rest of this block exists to close.
-server = ["mcp>=1.10,<3", "uvicorn>=0.30,<1"]
+# `anyio` is declared for the same reason `uvicorn` is, one line up: `server.py` imports it
+# DIRECTLY (`anyio.to_thread.run_sync`, in the dispatch path) and it arrived only as a transitive
+# of mcp, which declares `anyio>=4.5` with NO ceiling. An anyio 5.0 would therefore have broken
+# this door on every fresh install exactly as mcp 2.0.0 did, and no gate here could have seen it
+# coming, because an undeclared dependency has no requirement string to read. Floor matches mcp's
+# own; ceiling <5 because 4 is anyio's highest published major (4.14.2, read 2026-08-24).
+server = ["mcp>=1.10,<3", "uvicorn>=0.20,<1", "anyio>=3.4,<5"]
+# The REST door (`serve --rest`, docs/plans/2026-08-17-rest-door.md). John, 2026-08-17: "every
+# door governed", surface = the governed VERB set, not the catalog projected into HTTP.
+#   NO framework and no `mcp`. Thirteen routes do not justify a web framework, and a framework is
+#   a dependency plus a security surface; `rest.py` is a plain ASGI app over the shared perimeter.
+#   `anyio` IS DECLARED HERE ON PURPOSE. `uvicorn` does not depend on it — `mcp` does. Every
+#   environment this was developed in had mcp installed, so `anyio.to_thread.run_sync` in the
+#   dispatch path resolved by accident, and `pacioli[rest]` ALONE would have installed a door that
+#   died at the first request. Caught before shipping by the door checklist's "each extra installs
+#   alone", which exists because that exact defect shipped twice before (mcp's ceiling, and
+#   `[a2a]`'s starlette arriving only via `[server]`).
+rest = ["uvicorn>=0.20,<1", "anyio>=3.4,<5"]
 # The A2A door (Agent2Agent JSON-RPC + agent card) — the first non-MCP door
 # (docs/plans/2026-07-16-a2a-door.md). Lazily imported; nothing outside `pacioli serve --a2a`
 # needs it. `a2a-sdk[signing]` (pulls PyJWT) + `cryptography` add opt-in ES256 agent-card
@@ -54,11 +98,46 @@ server = ["mcp>=1.10,<3", "uvicorn>=0.30,<1"]
 #   proximo lesson; proximo in fact caps it at `<51` and guards the floor separately, and the
 #   standing rule is bound the major THEN widen promptly when an advisory lands. Widening on an
 #   advisory is a release we can make in an hour. An unbounded major is a break we cannot see.
+#   The last three are imported DIRECTLY by `a2a.py` and were declared by nobody in this file:
+#   they arrived through `a2a-sdk`'s own extras. That is the undeclared-inherited-dependency hazard
+#   this whole block exists to close, sitting inside the block. Found 2026-08-24 by
+#   `scripts/tests/test_declared_imports.py`, which exists because the bounds gate reads
+#   declarations and so is structurally blind to a dependency nobody declared. Every ceiling below
+#   is the highest published major, read 2026-08-24.
 a2a = [
     "a2a-sdk[signing,http-server]>=1.1,<2",
-    "uvicorn>=0.30,<1",
+    "uvicorn>=0.20,<1",
     "cryptography>=50,<51",   # >=50: PYSEC-2026-3552 fixed in 50.0.0. RAISE this floor when the
-]                             # next advisory lands; never lower it to solve a resolution problem.
+                              # next advisory lands; never lower it to solve a resolution problem.
+    "anyio>=3.4,<5",          # `anyio.to_thread.run_sync`. Floor matches mcp's and `[rest]`'s.
+    "starlette>=0.20,<2",     # `Starlette`, `JSONResponse`, `Route`, used to build routes we hand
+                              # to `a2a-sdk`. THE CEILING IS THE POINT; the floor is not evidence.
+                              #   Ceiling: `a2a-sdk[http-server]` declares `starlette` with no bound
+                              # of any kind, so without `<2` an unknown starlette major installs
+                              # silently and breaks the door at runtime -- not only our three
+                              # imports but the SDK's much larger surface. `<2` turns that into a
+                              # resolution error, which is the whole argument of this block.
+                              #   Floor: there is NO functional floor from our side, measured, not
+                              # assumed. Twelve versions on REAL resolutions (the resolver picking
+                              # its own sse-starlette, not a forced downgrade): 0.20.4, 0.27, 0.32,
+                              # 0.36.3, 0.40, 0.41.3, 0.44, 0.46, 0.47, 0.48, 0.49.1, 1.6.0 -- all
+                              # green, all 80 a2a tests. The symbols we use are a decade stable and
+                              # the real compatibility owner is `a2a-sdk`, which bounds nothing.
+                              #   So 0.20 is not a support claim. It is the lowest version MEASURED
+                              # green, written down because a requirement with no lower bound at all
+                              # is unauditable, and set at the bottom of the evidence rather than at
+                              # a number we happen to prefer.
+                              #   THIS LINE HAS BEEN WRONG TWICE. 0.49.1 first, justified by a false
+                              # claim that sse-starlette floors it there anyway (only >=3.0.4 does).
+                              # Then 0.48, which was worse reasoning dressed as measurement: it was
+                              # simply whatever ONE arbitrary `fastapi==0.118.0` pin resolved to. A
+                              # floor derived from a single adopter pin is that pin's number, not
+                              # ours. Both values silently excluded installs that work.
+    "pyjwt>=2.0.0,<3",        # `from jwt import PyJWK` -> `PyJWK.from_dict`, for ES256 agent-card
+                              # verification. Floor is `a2a-sdk[signing]`'s own, and that exact
+                              # API is measured present in every published 2.x back to 2.0.0.
+                              # Plain `pyjwt`, not `[crypto]`: cryptography is declared above.
+]
 
 [project.urls]
 Homepage = "https://github.com/john-broadway/pacioli"
