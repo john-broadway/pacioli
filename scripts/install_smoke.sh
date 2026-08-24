@@ -161,9 +161,42 @@ else
   printf '  FAIL pacioli[rest] did not install on its own\n' >&2; RC=1
 fi
 
+# THE A2A DOOR, IN ITS OWN VENV WITH ITS EXTRA ALONE. Through 0.37.1 `pacioli[a2a]` alone built
+# an import error instead of a door (starlette arrived only via [server]'s mcp), and that class
+# was invisible to ci.yml because its jobs install `.[server,a2a]` together — THIS leg is what
+# closes it (pypi-smoke runs this script daily, and release.sh gates on it). Until 2026-08-24 it
+# was run BY HAND when someone remembered — the 08-24 letter and a claims lens both named the
+# gap. Manual is not a gate.
+printf '\n== a2a door: a third venv, [a2a] ALONE ==\n'
+uv venv "$SMOKE/avenv" -q || { printf 'smoke: a2a venv create failed\n' >&2; exit 1; }
+APY="$SMOKE/avenv/bin/python"
+if [ "$MODE" = local ]; then
+  ASPEC="${WHEEL}[a2a]"
+else
+  ASPEC="pacioli[a2a]"; [ -n "$PINVER" ] && ASPEC="pacioli[a2a]==$PINVER"
+fi
+if uv pip install -q ${REFRESH:-} --python "$APY" "$ASPEC"; then
+  # mcp MUST be absent here, or the leg is measuring the [server] world again by accident —
+  # the exact carried-not-verified accident that hid the missing starlette for six releases.
+  if "$APY" -c 'import importlib.util,sys; sys.exit(0 if importlib.util.find_spec("mcp") is None else 1)'; then
+    printf '  ok   [a2a] installs alone (no mcp present, so its declared deps really are its own)\n'
+  else
+    printf '  FAIL mcp is present in the [a2a]-only venv; this leg proves nothing about the extra\n'; RC=1
+  fi
+  ASOCK="$(cd "$SMOKE" && "$APY" "$ROOT/scripts/door_socket_check.py" a2a 2>&1)"; ASOCK_RC=$?
+  case "$ASOCK_RC" in
+    0) printf '  ok   the A2A door binds a real socket: %s\n' \
+         "$(printf '%s' "$ASOCK" | awk 'NR>1{printf "; "} {printf "%s", $0}')" ;;
+    2) printf '  FAIL the A2A socket check could not run (UNPROVEN, not a pass): %s\n' "$ASOCK"; RC=1 ;;
+    *) printf '  FAIL the A2A door did not serve over a real socket: %s\n' "$ASOCK"; RC=1 ;;
+  esac
+else
+  printf '  FAIL pacioli[a2a] did not install on its own\n' >&2; RC=1
+fi
+
 printf '\n----------------------------------------\n'
 if [ "$RC" -eq 0 ]; then
-  printf 'install-smoke: PASS — the %s artifact serves on both extras: [server] (MCP stdio door + HTTP door on a real socket) and [rest] ALONE (REST door on a real socket, no mcp present).\n' \
+  printf 'install-smoke: PASS — the %s artifact serves on all three extras: [server] (MCP stdio door + HTTP door on a real socket), [rest] ALONE and [a2a] ALONE (each single-extra door on a real socket, mcp absent from both single-extra venvs).\n' \
     "$([ "$MODE" = local ] && echo 'freshly-built' || echo 'published')"
 else
   printf 'install-smoke: FAIL — see assertions above.\n'

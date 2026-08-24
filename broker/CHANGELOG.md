@@ -10,6 +10,38 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 
 The version heading is written at release classification. Content, in landing order:
 
+## 0.39.1 - 2026-08-24 - the smoke gate stops trusting its own claims
+
+PATCH. **No runtime change**: the only diff inside the installed package is the version string.
+What ships is the prove-it-real rail around the artifact, and the release process itself — both
+of which failed adversarial review in ways worth reading about.
+
+### The [a2a] extra finally has its own gate leg
+- `install_smoke.sh` grows a third venv installing `pacioli[a2a]` ALONE (mcp must be absent —
+  through 0.37.1 this extra alone built an import error instead of a door, hidden because CI
+  installs `.[server,a2a]` together). Until now that leg was run by hand when someone
+  remembered. Manual is not a gate; `release.sh` gates on this script and the daily
+  `pypi-smoke` workflow runs it against the published artifact.
+- `door_socket_check.py` drives the a2a door over real TCP: the agent card over GET (parsed
+  JSON — name, installed-version match, security honestly advertised or honestly absent), and
+  a **real `SendMessage` carrying `{"tool": "prove_verify"}`** that must come back a COMPLETED
+  task with a spine verdict. The wire body and the `A2A-Version` header are built by the
+  installed SDK's own serializer, never this file's guess.
+- Two adversarial lenses broke the first draft of this leg, and both fixes grew teeth rather
+  than softer words. A gutted executor had passed the whole smoke (the probe method answered
+  the same -32601 healthy or dead) — the dead-executor mutant now reds with
+  `TASK_STATE_FAILED` in the refusal. And a bearer gate scoped to POST-only had passed every
+  request the leg sent — the token leg now sends a GET to the RPC path and demands the gate's
+  own 401 (that mutant answers 405 there, and reds).
+
+### The release process, carried both directions
+- Public main now moves only on a PROVEN tree: the curated release commit is minted fresh, so
+  its push used to be CI's first look — 0.39.0 put a red X on public main exactly that way.
+  The recipe preflights the same tree on a throwaway ref before main moves, and branch
+  protection now requires the CI checks themselves.
+- A release needs a descriptive title and real notes (v0.39.0 first shipped as a bare name
+  with a 90-byte body; since retitled), and the recipe now says so where a release follows it.
+
 ## 0.39.0 - 2026-08-24 - two more doors, and the socket that outranks the bind
 
 MINOR. New capability, nothing removed, no enforcement path changed. Two doors join the spine

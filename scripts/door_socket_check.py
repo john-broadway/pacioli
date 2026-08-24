@@ -1,6 +1,6 @@
 # Copyright (c) 2026, John Broadway and contributors
 # License: Apache-2.0
-"""Prove the INSTALLED broker's HTTP door binds a real socket and answers over real TCP.
+"""Prove the INSTALLED broker's network doors bind a real socket and answer over real TCP.
 
 Run by ``scripts/install_smoke.sh`` inside the smoke venv. This is the leg
 ``scripts/door_check.py`` deliberately does not cover.
@@ -13,16 +13,23 @@ is the one kind that can flake, so it belongs on the prove-it-real rail rather t
 suite. This starts the SHIPPED ``pacioli`` console script as a subprocess and talks to it over
 loopback TCP.
 
-**No credential is involved.** ``serve_http`` needs ``PACIOLI_REGISTRY`` to assemble a broker,
-but the store and ERPNext client are lazy closures resolved at call time, so a registry naming an
-unreachable ``https://erp.invalid`` target is enough to boot. Only ``tools/list`` is exercised,
-which never reaches either closure. Nothing is planned, consented or spent, and no ERPNext is
+**No credential is involved.** Every door needs ``PACIOLI_REGISTRY`` to assemble a broker, but
+the store and ERPNext client are lazy closures resolved at call time, so a registry naming an
+unreachable ``https://erp.invalid`` target is enough to boot. Each leg stops short of both
+closures: the MCP legs exercise ``initialize``, the REST leg's ``/v1/reconcile`` renders a spine
+verdict structurally, and the a2a POST is answered ``-32601`` by the JSON-RPC dispatcher before
+the executor is invoked (measured). Nothing is planned, consented or spent, and no ERPNext is
 contacted. The registry written here holds no secret: the credential fields are ``env:`` refs to
 variables that are never set.
 
-Takes the door to check as its one argument, ``mcp`` (default) or ``rest``, because the two ship
-under different extras and "an extra only ever installed alongside another is carried, not
-verified" -- the REST leg must run in a venv that has ``pacioli[rest]`` and nothing else.
+Takes the door to check as its one argument, ``mcp`` (default), ``rest`` or ``a2a``, because the
+doors ship under different extras and "an extra only ever installed alongside another is carried,
+not verified" -- each non-default leg must run in a venv that has exactly its own extra. The a2a
+token leg sends a GET to the RPC PATH and demands the gate's own 401: every socket test in the
+0.39.0 cycle used POST, and a card GET alone proves nothing about the gate (discovery is
+path-exempt from it), so the RPC-path GET is the one request that actually reds on a
+method-scoped bearer gate -- a lens built exactly that mutant to prove which assertion catches
+it, and the first draft of this file carried the card GET as if it were that proof.
 
 Two legs per door, both against a real port:
 
@@ -108,7 +115,7 @@ def _console_script():
 
 
 def _start(env, port, auth=None, door="mcp"):
-    flag = {"mcp": "--http", "rest": "--rest"}[door]
+    flag = {"mcp": "--http", "rest": "--rest", "a2a": "--a2a"}[door]
     argv = [str(_console_script()), "serve", flag,
             "--bind", "127.0.0.1", "--port", str(port)]
     if auth:
@@ -246,8 +253,137 @@ def _rest_leg_refuses_without_bearer(state_dir):
             _stop(proc)
 
 
+# --- the A2A door --------------------------------------------------------------------------
+# Discovery is a GET (/.well-known/agent-card.json, readable pre-auth BY DESIGN -- discovery must
+# work before credentials exist) and the JSON-RPC dispatcher hangs at "/". The dispatch proof is
+# a REAL ``SendMessage`` carrying ``{"tool": "prove_verify", "params": {}}``: it must come back a
+# COMPLETED task with a spine verdict, which only executor -> dispatch_raw -> spine can produce
+# (prove_verify verifies the local receipt chain, so it completes with no bench). The first draft
+# asserted only a JSON-RPC envelope from an unknown method -- a lens gutted the executor entirely
+# and the whole smoke stayed PASS, because ``message/send`` is unrecognized on the shipped config
+# (no v0.3 compat) and answers -32601 healthy or dead. The card is built from the assembled
+# broker, so its version field doubles as an installed-artifact check.
+_A2A_CARD_PATH = "/.well-known/agent-card.json"
+_A2A_RPC_BODY = {"jsonrpc": "2.0", "id": "1", "method": "message/send", "params": {}}
+
+
+def _a2a_send_governed(port, headers):
+    """POST one real SendMessage over TCP; return (verdict_note, problem).
+
+    The wire body is built by the INSTALLED SDK's own serializer (imported here, inside the leg:
+    only the [a2a] venv carries the SDK), so the shape is the SDK's and never this file's guess.
+    """
+    from a2a.helpers.proto_helpers import new_data_message
+    from a2a.types.a2a_pb2 import SendMessageRequest
+    from a2a.utils import constants
+    from google.protobuf.json_format import MessageToDict
+    req = SendMessageRequest(message=new_data_message({"tool": "prove_verify", "params": {}}))
+    body = {"jsonrpc": "2.0", "id": "1", "method": "SendMessage",
+            "params": MessageToDict(req, preserving_proto_field_name=False)}
+    # Without the SDK's version header the dispatcher refuses the call as protocol 0.3 --
+    # measured, VERSION_NOT_SUPPORTED -- so the constant comes from the SDK like the body does.
+    hdrs = dict(headers)
+    hdrs[constants.VERSION_HEADER] = constants.PROTOCOL_VERSION_CURRENT
+    status, text = _post(port, body, hdrs, path="/")
+    if status != 200:
+        return None, f"SendMessage answered {status}: {text[:300]}"
+    if "TASK_STATE_COMPLETED" not in text:
+        return None, (f"the governed call did not COMPLETE (a dead executor fails or stalls "
+                      f"here): {text[:300]}")
+    if '"ok"' not in text:
+        return None, f"the completed task carries no spine verdict: {text[:300]}"
+    return "SendMessage(prove_verify) completed with a spine verdict", None
+
+
+def _get(port, path, headers=None):
+    """One real HTTP GET over TCP. Returns (status, body_text)."""
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
+
+
+def _a2a_leg_serves_over_tcp(state_dir):
+    port = _free_port()
+    proc = _start(_base_env(state_dir), port, door="a2a")
+    try:
+        if not _wait_for_port(port, proc):
+            _out, err = _stop(proc)
+            return None, f"the A2A door never bound {port} (exit={proc.returncode}): {err.strip()[:400]}"
+        status, card = _get(port, _A2A_CARD_PATH)
+        if status != 200:
+            return None, f"the agent card GET answered {status}: {card[:300]}"
+        cardj = json.loads(card)
+        import pacioli
+        if cardj.get("name") != "Pacioli":
+            return None, f"the card names {cardj.get('name')!r}, not Pacioli"
+        if cardj.get("version") != pacioli.__version__:
+            return None, (f"the card version {cardj.get('version')!r} is not the installed "
+                          f"{pacioli.__version__!r}")
+        # An OPEN door must not advertise a security it does not enforce (the card's own tooth).
+        # Parsed keys, not substrings: 265 skills ride in this card and a substring scan of that
+        # much text is a weaker claim than it reads as.
+        if "securityRequirements" in cardj or "securitySchemes" in cardj:
+            return None, "a token-less door advertises security on its card"
+        note, problem = _a2a_send_governed(port, {"Content-Type": "application/json"})
+        if problem:
+            return None, problem
+        return (f"bound :{port}, agent card 200 over GET (version {pacioli.__version__}), "
+                f"{note} over real TCP"), None
+    finally:
+        if proc.poll() is None:
+            _stop(proc)
+
+
+def _a2a_leg_refuses_without_bearer(state_dir):
+    port = _free_port()
+    env = _base_env(state_dir)
+    env["PACIOLI_SOCKET_CHECK_TOKEN"] = _TOKEN
+    proc = _start(env, port, auth="env:PACIOLI_SOCKET_CHECK_TOKEN", door="a2a")
+    try:
+        if not _wait_for_port(port, proc):
+            _out, err = _stop(proc)
+            return None, f"the A2A door never bound {port} (exit={proc.returncode}): {err.strip()[:400]}"
+        # Discovery stays readable pre-auth AND the card now advertises the bearer requirement --
+        # both halves matter: a 401 here means the gate swallowed discovery, a card without
+        # securityRequirements means the door hides the auth it enforces.
+        status, card = _get(port, _A2A_CARD_PATH)
+        if status != 200:
+            return None, f"the agent card must stay readable pre-auth, got {status}"
+        if "securityRequirements" not in json.loads(card):
+            return None, "a token-bearing door does not advertise securityRequirements on its card"
+        missing, _ = _post(port, _A2A_RPC_BODY, {"Content-Type": "application/json"}, path="/")
+        if missing != 401:
+            return None, f"an unauthenticated RPC POST got {missing}, not 401"
+        # A GET to the RPC path must ALSO be the gate's 401 -- not Starlette's 405. The gate is
+        # path-scoped; a method-scoped gate skips straight to the router, whose method check
+        # answers 405, and every other request in this file would still pass. Measured both ways
+        # (a lens built exactly that mutant and this is the one assertion that reds on it).
+        missing_get, _ = _get(port, "/")
+        if missing_get != 401:
+            return None, (f"an unauthenticated GET on the RPC path got {missing_get}, not 401 "
+                          f"(a 405 means the bearer gate is method-scoped)")
+        wrong, _ = _post(port, _A2A_RPC_BODY,
+                         {"Content-Type": "application/json",
+                          "Authorization": "Bearer not-the-token"}, path="/")
+        if wrong != 401:
+            return None, f"a wrong bearer got {wrong}, not 401"
+        _note, problem = _a2a_send_governed(port, {"Content-Type": "application/json",
+                                                   "Authorization": f"Bearer {_TOKEN}"})
+        if problem:
+            return None, f"the correct bearer did not get a governed answer: {problem}"
+        return (f"bound :{port}, card readable pre-auth + advertises auth, "
+                f"no bearer 401 / wrong bearer 401 / correct bearer completed"), None
+    finally:
+        if proc.poll() is None:
+            _stop(proc)
+
+
 _DOORS = {"mcp": (_leg_lists_over_tcp, _leg_refuses_without_bearer),
-          "rest": (_rest_leg_answers_over_tcp, _rest_leg_refuses_without_bearer)}
+          "rest": (_rest_leg_answers_over_tcp, _rest_leg_refuses_without_bearer),
+          "a2a": (_a2a_leg_serves_over_tcp, _a2a_leg_refuses_without_bearer)}
 
 
 def main():

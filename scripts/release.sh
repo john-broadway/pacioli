@@ -157,9 +157,9 @@ fi
 printf '\n----------------------------------------\n'
 if [ "$RC" -eq 0 ]; then
   if [ "$PKG" = broker ]; then
-    PUBLISH_EXTRA=$'  8. mcp-publisher publish            # validates + pushes server.json to the official MCP registry\n  9. (LobeHub) npx -y @lobehub/market-cli plugin update --dir .   # update, NEVER 'publish' — in market-cli >=0.0.40 'publish' means a NEW listing and demands a gitUrl (proximo 0.31.1 ripple hit this)'
+    PUBLISH_EXTRA=$' 10. mcp-publisher publish            # validates + pushes server.json to the official MCP registry\n 11. (LobeHub) npx -y @lobehub/market-cli plugin update --dir .   # update, NEVER 'publish' — in market-cli >=0.0.40 'publish' means a NEW listing and demands a gitUrl (proximo 0.31.1 ripple hit this)'
   else
-    PUBLISH_EXTRA='  8. (guard ships no MCP/LobeHub manifest — PyPI + gh release only)'
+    PUBLISH_EXTRA=' 10. (guard ships no MCP/LobeHub manifest — PyPI + gh release only)'
   fi
   cat <<EOF
 release: $PKG $TAG set, gate GREEN.
@@ -169,20 +169,35 @@ NEXT (Claude does the git; John's go for the public push):
        internal gitea:  git push origin main && git push origin $TAG
        NEVER --tags. On a curated mirror old tags diverge local-vs-remote, so --tags is
        rejected forever and fails a push that already landed.
-  3. publish to github via the curated FF tree (strips .gitea/, refuses leaks):
+  3. build the curated public commit (strips .gitea/, refuses leaks):
        T=\$($PY scripts/release_leak_audit.py build-tree) || exit 1
        M=\$($PY scripts/public_commit_message.py $PKG $V) || exit 1   # the CHANGELOG entry IS the reason
        PUB=\$(printf '%s' "\$M" | git commit-tree "\$T" -p github/main -F -)
-       git push github "\$PUB:main"        # fast-forward, NEVER --force
-  4. tag the PUBLIC line — the CURATED TWIN, never the local tag:
+  4. PROVE the tree BEFORE public main moves. The curated commit is minted fresh, so the
+     push would be CI's FIRST look at it — that is how 0.39.0 put a red X on public main
+     (2026-08-24, coverage floor). Preflight the SAME tree on a throwaway public ref:
+       git push github "\$PUB:refs/heads/preflight-$V"
+       gh workflow run ci.yml -R john-broadway/pacioli --ref preflight-$V   # wait for green
+       echo "\$(git rev-parse "\$PUB^{tree}")  <run url>" >> "\$(git rev-parse --git-dir)/proven-trees"
+       git push github ":refs/heads/preflight-$V"
+     The box pre-push guard (stage 0b, guard.requireProvenTree) refuses an unproven tree on
+     public main. Re-running commit-tree mints a NEW commit but the SAME tree — the tree is
+     the identity the record keys on.
+  5. git push github "\$PUB:main"        # fast-forward, NEVER --force
+  6. tag the PUBLIC line — the CURATED TWIN, never the local tag:
        git push github "\$PUB:refs/tags/$TAG"
        The local tag points at the INTERNAL commit; its history is the internal line, not the
        curated one. Pushing it publishes every internal commit. That is not hypothetical: it is
        how v0.24.0 exposed 592 commits (2026-08-09), and the pre-push guard caught the same
        mistake again during the 0.39.0 publish (2026-08-24).
-  5. gh release create $TAG --target "\$PUB"   # --target, or the release retags the wrong commit
-  6. approve the gated PyPI publish job    (John's click — tokenless OIDC, "pypi" environment)
-  7. verify what actually PUBLISHED, do not assume:  scripts/install_smoke.sh --published $V
+  7. gh release create $TAG --target "\$PUB" --title "$TAG: <the one-line reason>" --notes-file <notes>
+       A bare version number is not a title, and 90 bytes is not a body — v0.39.0 shipped that
+       way while every release before it carried real notes (the defect John flagged on proximo
+       the same day: "released 38 with no doc or desc"). Title = "$TAG: <reason>", no em dash.
+       End the notes with a "## Where to read more" block linking README.md / SECURITY.md /
+       $CL / the package README, plus the pip install line.
+  8. approve the gated PyPI publish job    (John's click — tokenless OIDC, "pypi" environment)
+  9. verify what actually PUBLISHED, do not assume:  scripts/install_smoke.sh --published $V
        (release-pypi.yml runs this itself now; this is the by-hand form)
 $PUBLISH_EXTRA
 release.sh never pushes.
