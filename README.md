@@ -15,6 +15,12 @@ the clerk has. He balanced books for merchants who couldn't watch every clerk. T
 them for owners who can't watch every agent. Same problem, five centuries apart. Same fix.
 
 <div align="center">
+  <strong>See it before you read the rest: <a href="docs/demo/">the demo</a>.</strong> One command on a
+  bare <code>pip install pacioli pacioli-guard</code> shows the floor deciding, and a sealed receipt
+  that will not be quietly rewritten. Every verdict is the shipped code; nothing is staged.
+</div>
+
+<div align="center">
   <img src="assets/plates/tavola-1-pacioli-portrait.jpg" width="560" alt="Portrait of Luca Pacioli, attributed to Jacopo de' Barbari, 1495"/>
   <br/><em>Tavola I — The friar at his slate, attributed to Jacopo de' Barbari, 1495. The glass
   rhombicuboctahedron hangs at his left; the Summa sits under the dodecahedron at his right.
