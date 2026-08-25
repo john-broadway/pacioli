@@ -141,15 +141,37 @@ jobs:
   #
   # `!cancelled()` rather than a bare `if`: a bare condition would let a skipped `needs` skip this
   # too, and a run that verified nothing must never read as green.
+  # Broker (v*) tags only: guard is a Frappe bench app, not a plain-venv install, and the
+  # version parse below would hand the smoke a literal "guard-v0.14.0" -- a guard release
+  # would have gone red here on its own (latent since this job landed, found 2026-08-24).
   verify-pypi:
     needs: publish-pypi
-    if: ${{ !cancelled() && github.event_name == 'release' && needs.publish-pypi.result == 'success' }}
+    if: ${{ !cancelled() && github.event_name == 'release' && needs.publish-pypi.result == 'success' && startsWith(github.ref_name, 'v') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Wait for PyPI to actually serve the version (index propagation)
+        # This job runs seconds after publish, and PyPI's index lags its own upload: 0.39.1's
+        # verify leg went red with "no version of pacioli==0.39.1" while the version was
+        # genuinely live minutes later ("an unsatisfiable resolve seconds after a release is a
+        # lie; retry it"). Proximo's verify job has carried this exact retry since 2026-08-20;
+        # the 08-24 port took the job and left the retry -- the one-repo-coincidence shape,
+        # bitten within hours. The probe uses the SAME resolver channel the smoke uses (uv
+        # against the simple index), not the JSON API, because the two propagate separately.
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME#v}"
+          uv venv /tmp/probe-venv -q
+          for i in $(seq 1 20); do
+            if uv pip install -q --refresh --no-deps --python /tmp/probe-venv/bin/python "pacioli==$V"; then
+              echo "PyPI serves pacioli $V (attempt $i)"; exit 0
+            fi
+            echo "pacioli==$V not resolvable yet (attempt $i/20) -- waiting 30s"; sleep 30
+          done
+          echo "::error::pacioli==$V never became installable from PyPI"; exit 1
       - name: Smoke the PUBLISHED artifact, resolved from PyPI
         run: |
           V="${GITHUB_REF_NAME#v}"

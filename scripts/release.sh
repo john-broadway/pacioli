@@ -177,7 +177,8 @@ NEXT (Claude does the git; John's go for the public push):
      push would be CI's FIRST look at it — that is how 0.39.0 put a red X on public main
      (2026-08-24, coverage floor). Preflight the SAME tree on a throwaway public ref:
        git push github "\$PUB:refs/heads/preflight-$V"
-       gh workflow run ci.yml -R john-broadway/pacioli --ref preflight-$V   # wait for green
+       gh workflow run ci.yml -R john-broadway/pacioli --ref preflight-$V       # the job that reds
+       gh workflow run codeql.yml -R john-broadway/pacioli --ref preflight-$V   # scorecard can't dispatch
        echo "\$(git rev-parse "\$PUB^{tree}")  <run url>" >> "\$(git rev-parse --git-dir)/proven-trees"
        git push github ":refs/heads/preflight-$V"
      The box pre-push guard (stage 0b, guard.requireProvenTree) refuses an unproven tree on
