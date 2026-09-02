@@ -3,6 +3,17 @@
 Least-privilege API capability scoping for Frappe/ERPNext. Honest pre-1.0 semver.
 Distribution name `pacioli-guard`; Frappe app / import module `pacioli_guard`.
 
+## 0.15.0 - 2026-09-02 - the floor rises to python 3.12
+
+MINOR. **One compatibility change, one build bound, no behaviour change.** Inside
+`pacioli_guard/` the only diffs are the version string and one test comment.
+
+- `requires-python >= 3.12` (was `>= 3.10`). A site on 3.10 or 3.11 stays on 0.14.0; on 3.12
+  and 3.13 nothing that worked stops working, and the public CI matrix tests exactly those two.
+- `[build-system] requires = ["setuptools>=77.0,<85"]`: the upper bound is new. An sdist build
+  is adopter-facing too, and that line had drifted seven majors past its floor unnoticed.
+  `uv.lock` re-locked for the new floor.
+
 ## 0.14.0 — 2026-08-11 — the posture report inverted the widest grant, and the gate receipt counted half the gate
 
 MINOR. Two behaviour changes an operator can observe, one deny that got stricter, and a large

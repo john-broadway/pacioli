@@ -10,6 +10,47 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 
 The version heading is written at release classification. Content, in landing order:
 
+## 0.40.0 - 2026-09-02 - the floor rises to python 3.12
+
+MINOR. **One compatibility change and no behaviour change.** `requires-python` is `>=3.12`
+(was `>=3.11`). An adopter on 3.11 stays on 0.39.1; on 3.12 and 3.13 nothing that worked
+stops working. Inside `pacioli/` the only diffs are the version string and one comment. What
+else ships is the rail around the artifact, and the first proof of the floor a stranger can run.
+
+### The floor
+- `requires-python >= 3.12` for the broker; the guard moves the same day (its own 0.15.0
+  entry, `>= 3.12` from `>= 3.10`). The public CI matrix mirrors the declared support and
+  tests exactly 3.12 and 3.13. A matrix that tests a version the metadata does not claim is a
+  claim the metadata is not making.
+- The four required checks named for 3.10 and 3.11 retire from the public branch protection
+  with this release (16 to 12). A required check the tree's own workflows no longer produce
+  would hold main forever, so it is retired before the release lane runs, never lifted around.
+
+### The demo, first release to carry it
+- `scripts/demo/the_floor.py` and `docs/demo/`: `pip install pacioli pacioli-guard`, no
+  ERPNext, no network. The floor decides the same submit call two ways on one key (unscoped,
+  allowed; floor-scoped, refused), then shows the scoped seat is not a blanket no: a granted
+  read on it still passes. The record seals three receipts, then catches a tampered row at its
+  index, and a truncated tail once the head is pinned off the books. Every decision and every
+  seal is shipped code, no mock. On the public tree since 2026-08-25 and linked from the README.
+
+### The release rails, most of them fixed on their own stumble
+- `verify-pypi` waits for the index before judging the artifact: 0.39.1's verify leg went red
+  on "no version of pacioli[server]==0.39.1" while the version was live minutes later. It now runs
+  only for broker (`v*`) tags; on a `guard-v*` release it had handed the smoke a literal
+  `guard-v0.14.0`.
+- `codeql.yml` takes `workflow_dispatch`, so it can be run beside `ci.yml` on a staged sha.
+- The public commit subject carries the reason. The last six releases, guard 0.14.0 + broker
+  0.37.0 through 0.39.1, shipped it bare ("release: broker X.Y.Z") with the reason only in the
+  body, and the subject is the only text GitHub shows beside files and in the commit list. It is read from the changelog
+  heading's own title; a heading with no title, or a subject past 72 characters, refuses at
+  release time. A release that ships both halves names both versions in one subject.
+- The release recipe follows the lane branch protection can live with: the curated sha is
+  staged on a branch, a pull request attaches the required checks to that exact sha, main
+  fast-forwards on their strength, the staging branch is deleted. Protection is never lifted.
+- `github/codeql-action` pinned to v4.37.9 by commit sha (dependabot #8, folded on the
+  internal line first; a curated mirror cannot merge a bot's pull request).
+
 ## 0.39.1 - 2026-08-24 - the smoke gate stops trusting its own claims
 
 PATCH. **No runtime change**: the only diff inside the installed package is the version string.

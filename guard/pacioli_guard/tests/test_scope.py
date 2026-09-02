@@ -2016,8 +2016,9 @@ class TestOmittedDocTypeControllersStayStubs(unittest.TestCase):
         # Read the omit list itself, not the raw file. The first version of this assertion did
         # `assertNotIn("pacioli_consent_marker", pyproject)` and failed on the COMMENT that says
         # the marker is deliberately not omitted — the same too-wide-assertion class this
-        # campaign is about. `tomllib` is 3.11+ and guard supports 3.10, so comments are
-        # stripped by hand rather than parsed.
+        # campaign is about. Comments are stripped by hand rather than parsed: `tomllib` was
+        # out of reach while the floor was 3.10 (it is 3.12 since 0.15.0), and the one-line
+        # strip needs nothing from a parser, so it stayed.
         pyproject = (pathlib.Path(__file__).resolve().parent.parent.parent
                      / "pyproject.toml").read_text()
         code_only = "\n".join(line.split("#", 1)[0] for line in pyproject.splitlines())

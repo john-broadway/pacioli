@@ -20,10 +20,15 @@ V="${2:-}"
 case "$PKG" in broker|guard) : ;; *) usage; exit 2 ;; esac
 [ -n "$V" ] || { usage; exit 2; }
 
+# The version must LOOK like a version before anything else — the negated class
+# ([!0-9.a-z-]) passes any all-lowercase word straight through to version_tools
+# (proximo measured it with "broker", 2026-09-01: four files got the word as a version).
+printf '%s' "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([a-z0-9.-]*)?$' \
+  || { printf 'release: refusing "%s" — not an X.Y.Z version.\n' "$V" >&2; exit 1; }
 # Honest semver: pre-1.0 stays 0.x; a major>=1 must be intentional.
 case "$V" in
   0.*) : ;;
-  [1-9]*|*[!0-9.a-z-]*)
+  *)
     if [ "${PACIOLI_RELEASE_FORCE_MAJOR:-}" != "1" ]; then
       printf 'release: refusing "%s" — pre-1.0 discipline keeps it 0.x; set PACIOLI_RELEASE_FORCE_MAJOR=1 to override.\n' "$V" >&2
       exit 1
@@ -70,6 +75,20 @@ if [ "$PKG" = broker ]; then
       || printf 'release: NOTE — lhm.plugin.json regenerated for %s; commit it with the release.\n' "$V"
   else
     printf 'release: broker/.venv missing — cannot regenerate lhm.plugin.json (run: cd broker && uv venv && uv pip install -e ".[server,a2a]").\n' >&2
+    RC=1
+  fi
+fi
+
+# The guard's uv.lock records the package itself and is GENERATED: re-lock after a set so the
+# published lock never carries the previous version (it shipped stale through eight releases).
+# A resulting diff is expected release output; the hard gate is `version_tools.py check` above.
+if [ "$PKG" = guard ]; then
+  if command -v uv >/dev/null 2>&1; then
+    ( cd guard && uv lock >/dev/null 2>&1 ) || { printf 'release: uv lock failed in guard/\n' >&2; RC=1; }
+    git diff --quiet guard/uv.lock \
+      || printf 'release: NOTE — guard/uv.lock re-locked for %s; commit it with the release.\n' "$V"
+  else
+    printf 'release: uv not found — cannot re-lock guard/uv.lock (version_tools check will refuse a stale one).\n' >&2
     RC=1
   fi
 fi
@@ -164,7 +183,7 @@ if [ "$RC" -eq 0 ]; then
   cat <<EOF
 release: $PKG $TAG set, gate GREEN.
 NEXT (Claude does the git; John's go for the public push):
-  1. write the "## $V" $CL entry (human prose) — it becomes the PUBLIC commit body in step 3
+  1. write the "## $V" $CL entry (human prose): it becomes the PUBLIC commit body in step 3
   2. commit, then: git tag $TAG
        internal gitea:  git push origin main && git push origin $TAG
        NEVER --tags. On a curated mirror old tags diverge local-vs-remote, so --tags is
@@ -172,38 +191,58 @@ NEXT (Claude does the git; John's go for the public push):
   3. build the curated public commit (strips .gitea/, refuses leaks):
        T=\$($PY scripts/release_leak_audit.py build-tree) || exit 1
        M=\$($PY scripts/public_commit_message.py $PKG $V) || exit 1   # the CHANGELOG entry IS the reason
+       (both halves in ONE release: add --with <other> A.B.C: one commit, both tags on it,
+        steps 6-7 once per package on the SAME \$PUB; the 2026-08-11 shape)
        PUB=\$(printf '%s' "\$M" | git commit-tree "\$T" -p github/main -F -)
-  4. PROVE the tree BEFORE public main moves. The curated commit is minted fresh, so the
-     push would be CI's FIRST look at it — that is how 0.39.0 put a red X on public main
-     (2026-08-24, coverage floor). Preflight the SAME tree on a throwaway public ref:
-       git push github "\$PUB:refs/heads/preflight-$V"
-       gh workflow run ci.yml -R john-broadway/pacioli --ref preflight-$V       # the job that reds
-       gh workflow run codeql.yml -R john-broadway/pacioli --ref preflight-$V   # scorecard can't dispatch
-       echo "\$(git rev-parse "\$PUB^{tree}")  <run url>" >> "\$(git rev-parse --git-dir)/proven-trees"
-       git push github ":refs/heads/preflight-$V"
-     The box pre-push guard (stage 0b, guard.requireProvenTree) refuses an unproven tree on
-     public main. Re-running commit-tree mints a NEW commit but the SAME tree — the tree is
-     the identity the record keys on.
-  5. git push github "\$PUB:main"        # fast-forward, NEVER --force
-  6. tag the PUBLIC line — the CURATED TWIN, never the local tag:
+  4. C-LANE (deployment rail 10c, ruled 2026-08-31; proven on proximo v0.39.0: pacioli's
+     next release is its first run through it): required status checks STAY on public
+     main: never lift protection, there is no admin lane. The curated commit is minted
+     fresh, so the required checks have never seen its sha: that is how 0.39.0 put a red
+     X on public main (2026-08-24). A PR carries the checks onto that
+     exact sha, then main fast-forwards on their strength:
+       git push github "\$PUB:refs/heads/staging-$TAG"
+       gh pr create -R john-broadway/pacioli --base main --head staging-$TAG \\
+         --title "release lane: green $TAG on its own sha" \\
+         --body "C-lane staging PR: greens the curated sha; main FFs onto it; never merged via the button."
+     Every required context attaches via ci.yml's pull_request trigger: but read the LIVE
+     set (gh api repos/john-broadway/pacioli/branches/main/protection/required_status_checks)
+     and wait until every one concludes success on \$PUB. A required context the staged
+     sha's own workflows do not produce will wait FOREVER. So BEFORE the PR, diff the live
+     required set against what \$PUB's own ci.yml produces (git show \$PUB:.github/workflows/ci.yml);
+     any required name the staged tree cannot produce must be retired from main's protection
+     first: John's hand, evidenced from the staged PUBLIC tree, never the internal one, by a
+     staged script with a --check rehearsal. 0.40.0/0.15.0 is the first release to meet this:
+     601b9ce dropped both matrices to 3.12/3.13, so broker-test (3.11, 1)/(3.11, 2) and
+     guard-test (3.10)/(3.11) retire, 16 -> 12, before its PR.
+     A red is the finding: fix on canon, re-mint, start over. All green: record the tree
+     (the box pre-push guard, stage 0b guard.requireProvenTree, refuses public main
+     without it; re-running commit-tree mints a NEW commit but the SAME tree, and the tree
+     is the identity the record keys on):
+       echo "\$(git rev-parse "\$PUB^{tree}")  <PR url>" >> "\$(git rev-parse --git-dir)/proven-trees"
+  5. git push github "\$PUB:main"        # direct FF on the sha's own green checks, NEVER --force
+     Read the FF back before believing it (the API, not a local ref):
+       gh api repos/john-broadway/pacioli/git/ref/heads/main --jq .object.sha   # must answer \$PUB
+     then DELETE the staging ref (off-main-ref law; the PR auto-closes as merged):
+       git push github ":refs/heads/staging-$TAG"
+  6. tag the PUBLIC line: the CURATED TWIN, never the local tag:
        git push github "\$PUB:refs/tags/$TAG"
        The local tag points at the INTERNAL commit; its history is the internal line, not the
        curated one. Pushing it publishes every internal commit. That is not hypothetical: it is
        how v0.24.0 exposed 592 commits (2026-08-09), and the pre-push guard caught the same
        mistake again during the 0.39.0 publish (2026-08-24).
   7. gh release create $TAG --target "\$PUB" --title "$TAG: <the one-line reason>" --notes-file <notes>
-       A bare version number is not a title, and 90 bytes is not a body — v0.39.0 shipped that
+       A bare version number is not a title, and 90 bytes is not a body: v0.39.0 shipped that
        way while every release before it carried real notes (the defect John flagged on proximo
        the same day: "released 38 with no doc or desc"). Title = "$TAG: <reason>", no em dash.
        End the notes with a "## Where to read more" block linking README.md / SECURITY.md /
        $CL / the package README, plus the pip install line.
-  8. approve the gated PyPI publish job    (John's click — tokenless OIDC, "pypi" environment)
+  8. approve the gated PyPI publish job    (John's click: tokenless OIDC, "pypi" environment)
   9. verify what actually PUBLISHED, do not assume:  scripts/install_smoke.sh --published $V
        (release-pypi.yml runs this itself now; this is the by-hand form)
 $PUBLISH_EXTRA
 release.sh never pushes.
 EOF
 else
-  printf 'release: GATE NOT GREEN — fix findings above before tagging.\n'
+  printf 'release: GATE NOT GREEN: fix findings above before tagging.\n'
 fi
 exit "$RC"

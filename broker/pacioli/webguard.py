@@ -131,7 +131,8 @@ def socket_is_local(server):
     except ValueError:
         return False                     # unclassifiable: treat as exposed
     # The `ipv4_mapped` unwrap is DEAD as written, measured 2026-08-24 on CPython 3.11/3.12/3.13/
-    # 3.14 (every version `requires-python = ">=3.11"` claims): `IPv6Address.is_loopback` already
+    # 3.14 (every version the floor then claimed, `>=3.11`; it is `>=3.12` since 0.40.0):
+    # `IPv6Address.is_loopback` already
     # unwraps a mapped address itself, so `ip.is_loopback` alone answers True for
     # `::ffff:127.0.0.1`. A mutation lens proved the shape-table row cannot tell the two apart.
     # Kept, not deleted, and labelled -- the same call the REST door made about `_read_body`'s

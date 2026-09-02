@@ -9,10 +9,10 @@ build-backend = "setuptools.build_meta"
 # 2026-07-02, pre-any-install: a generic app_name squats the bench's flat app namespace and the
 # env's top-level import namespace on exactly the customer benches this app exists to protect.
 name = "pacioli-guard"
-version = "0.14.0"
+version = "0.15.0"
 description = "Deny-by-default credential governance for Frappe/ERPNext — the counting-house door (credential-layer, no core fork)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [{ name = "John Broadway" }]
 keywords = ["frappe", "erpnext", "api-security", "least-privilege", "credential-scoping"]

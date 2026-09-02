@@ -19,7 +19,7 @@ Consumed by:
   - .github/workflows, .gitea/workflows  (python scripts/version_tools.py check)
   - scripts/release.sh                   (set on release, release-check at cut)
 
-Stdlib only — tomllib ships on the project's Python floor (>=3.11).
+Stdlib only — tomllib ships on the project's Python floor (>=3.12 since 0.40.0/0.15.0).
 """
 from __future__ import annotations
 
@@ -44,6 +44,11 @@ class Package:
     # JSON manifests where only the FIRST "version" field is the package version
     # (the rest belong to nested tool schemas and must be left alone).
     json_first: tuple[str, ...] = field(default_factory=tuple)
+    # A uv lock file that records the package ITSELF (the `editable = "."` entry). It is
+    # generated, so `set` never writes it; `check` refuses a stale one, and release.sh
+    # re-locks after a set. Through 0.14.0 guard's lock shipped `0.6.0` for eight releases
+    # and `0.14.0` into the 0.15.0 cut before anything looked (claims lens, 2026-09-02).
+    lock: str | None = None
 
 
 PACKAGES: dict[str, Package] = {
@@ -60,6 +65,7 @@ PACKAGES: dict[str, Package] = {
         pyproject="guard/pyproject.toml",
         init="guard/pacioli_guard/__init__.py",
         changelog="guard/CHANGELOG.md",
+        lock="guard/uv.lock",
     ),
 }
 
@@ -119,6 +125,26 @@ def read_changelog_headings(root: Path, package: str) -> list[str]:
     return [h.strip() for h in _HEADING_RE.findall(text)]
 
 
+def tag_to_version(tag: str) -> str:
+    """The bare version behind a tag as it is typed: v0.40.0 (broker), guard-v0.15.0 (guard),
+    or already bare. The usage line invited the tag form, but only a leading "v" was stripped,
+    so the guard tag compared 'guard-v0.15.0' against '0.15.0' and reported drift that was not
+    there (hit by hand 2026-09-02; release.sh itself passes the bare version)."""
+    return tag.removeprefix("guard-").removeprefix("v")
+
+
+def read_lock_self_version(root: Path, rel: str) -> str | None:
+    """The version a uv lock records for the package itself (its `editable = "."` entry).
+    None when the lock file is absent or carries no such entry."""
+    p = root / rel
+    if not p.exists():
+        return None
+    for pkg in tomllib.loads(p.read_text(encoding="utf-8")).get("package", []):
+        if (pkg.get("source") or {}).get("editable") == ".":
+            return pkg.get("version")
+    return None
+
+
 def top_released_changelog_version(root: Path, package: str) -> str | None:
     headings = read_changelog_headings(root, package)
     return headings[0] if headings else None
@@ -139,6 +165,13 @@ def _check_package(root: Path, package: str) -> list[str]:
         v = read_json_top_version(root, rel)
         if v != py:
             problems.append(f"[{package}] {rel} top-level version {v!r} != pyproject version {py!r}")
+    if pkg.lock:
+        lv = read_lock_self_version(root, pkg.lock)
+        if lv is not None and lv != py:
+            problems.append(
+                f"[{package}] {pkg.lock} records the package at {lv!r} != pyproject version "
+                f"{py!r} (run `uv lock` in {Path(pkg.lock).parent})"
+            )
     if py not in set(read_changelog_headings(root, package)):
         problems.append(
             f"[{package}] CHANGELOG has no '## {py}' heading for version {py!r} "
@@ -203,8 +236,7 @@ def _main(argv: list[str]) -> int:
         print(f"version consistent: {versions}")
         return 0
     if len(argv) == 3 and argv[0] == "release-check":
-        package, tag = argv[1], argv[2]
-        tag = tag[1:] if tag.startswith("v") else tag
+        package, tag = argv[1], tag_to_version(argv[2])
         problems = check_release(REPO_ROOT, package, tag)
         if problems:
             print("release drift:")
@@ -218,7 +250,7 @@ def _main(argv: list[str]) -> int:
         print(f"set {argv[1]} version -> {argv[2]}")
         return 0
     print(
-        "usage: version_tools.py [check | release-check <package> vX.Y.Z | set <package> X.Y.Z]\n"
+        "usage: version_tools.py [check | release-check <package> [guard-]vX.Y.Z | set <package> X.Y.Z]\n"
         f"       packages: {', '.join(PACKAGES)}",
         file=sys.stderr,
     )

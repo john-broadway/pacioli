@@ -155,7 +155,7 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - name: Wait for PyPI to actually serve the version (index propagation)
         # This job runs seconds after publish, and PyPI's index lags its own upload: 0.39.1's
-        # verify leg went red with "no version of pacioli==0.39.1" while the version was
+        # verify leg went red with "no version of pacioli[server]==0.39.1" while the version was
         # genuinely live minutes later ("an unsatisfiable resolve seconds after a release is a
         # lie; retry it"). Proximo's verify job has carried this exact retry since 2026-08-20;
         # the 08-24 port took the job and left the retry -- the one-repo-coincidence shape,

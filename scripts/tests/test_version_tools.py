@@ -89,6 +89,42 @@ def _sandbox(tmp_path: Path, broker_v: str = "0.30.1", guard_v: str = "0.6.2",
     return tmp_path
 
 
+def _guard_lock(v: str, self_entry: bool = True) -> str:
+    """A uv lock the way uv writes the package's own entry: name, version, `editable = "."`."""
+    head = 'version = 1\nrequires-python = ">=3.12"\n\n'
+    third = '[[package]]\nname = "somedep"\nversion = "1.2.3"\nsource = { registry = "https://pypi.org/simple" }\n'
+    own = f'[[package]]\nname = "pacioli-guard"\nversion = "{v}"\nsource = {{ editable = "." }}\n\n'
+    return head + (own if self_entry else "") + third
+
+
+def test_tag_to_version_strips_both_tag_shapes_and_leaves_bare_alone():
+    assert version_tools.tag_to_version("guard-v0.15.0") == "0.15.0"
+    assert version_tools.tag_to_version("v0.40.0") == "0.40.0"
+    assert version_tools.tag_to_version("0.40.0") == "0.40.0"
+
+
+def test_flags_a_guard_lock_that_records_the_previous_version(tmp_path):
+    """The lock is generated and `set` never writes it, so it is the one manifest that can
+    ship stale silently: guard's did, at 0.6.0, for eight releases."""
+    root = _sandbox(tmp_path)
+    (root / "guard" / "uv.lock").write_text(_guard_lock("0.6.1"), encoding="utf-8")
+    problems = version_tools.check_consistency(root)
+    assert len(problems) == 1 and "guard/uv.lock" in problems[0] and "0.6.1" in problems[0]
+    assert "uv lock" in problems[0], "the finding must say how to fix it"
+
+
+def test_a_guard_lock_at_the_right_version_is_quiet(tmp_path):
+    root = _sandbox(tmp_path)
+    (root / "guard" / "uv.lock").write_text(_guard_lock("0.6.2"), encoding="utf-8")
+    assert version_tools.check_consistency(root) == []
+
+
+def test_a_guard_lock_without_a_self_entry_is_ignored(tmp_path):
+    root = _sandbox(tmp_path)
+    (root / "guard" / "uv.lock").write_text(_guard_lock("0.0.0", self_entry=False), encoding="utf-8")
+    assert version_tools.check_consistency(root) == []
+
+
 # --------------------------------------------------------------------------
 # check_consistency — the clean case + each drift it must catch.
 # --------------------------------------------------------------------------

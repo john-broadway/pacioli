@@ -7,8 +7,9 @@ on:
     branches: [main]
   schedule:
     - cron: "27 3 * * 1"   # weekly, Monday 03:27 UTC
-  # Dispatchable so the release preflight can prove CodeQL on the curated tree BEFORE public
-  # main moves, alongside ci.yml (proximo's codeql has this; scorecard structurally cannot).
+  # Dispatchable so a release lane can prove CodeQL on the curated tree BEFORE public main
+  # moves (the C-lane staging PR triggers it via pull_request; dispatch covers any other
+  # ref), alongside ci.yml (proximo's codeql has this; scorecard structurally cannot).
   workflow_dispatch:
 
 permissions:
@@ -23,11 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: python
           config-file: ./.github/codeql/codeql-config.yml   # scan the shipped packages only
       - name: Autobuild
-        uses: github/codeql-action/autobuild@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
+        uses: github/codeql-action/autobuild@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
       - name: Analyze
-        uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9

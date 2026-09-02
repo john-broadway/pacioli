@@ -1,6 +1,6 @@
 name: CI
 
-# THE DUALITY: this GitHub CI covers the backward-compat range — python 3.10–3.13, the "lower
+# THE DUALITY: this GitHub CI covers the backward-compat range — python 3.12–3.13, the "lower
 # models" — while the latest python (3.14, the version the live deployment runs) is covered
 # upstream before publish. Older here, latest upstream: no version is tested twice, and neither
 # side runs the whole matrix. GitHub-native checks (CodeQL, Scorecard, the OIDC PyPI publish)
@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.12", "3.13"]
         # EXPLICIT, not whatever the resolver picks. mcp 2.0.0 landed 2026-07-28 and CI resolved it
         # silently for fourteen days while the door could not start on it, because nothing pinned
         # the axis and no test built a real Server.
@@ -57,7 +57,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

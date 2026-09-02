@@ -20,7 +20,7 @@ puts a floor under it.
 
 | Beat | On screen | What it proves | Code that decides |
 |---|---|---|---|
-| **1 · the floor decides** | same submit call: `ALLOW` unscoped → `REFUSE` floor-scoped → `ALLOW` a granted read | authorization the credential can't talk past, deny-by-default | `pacioli_guard.scope.is_permitted` / `classify` |
+| **1 · the floor decides** | same submit call, two answers on one key: `ALLOW` unscoped → `REFUSE` floor-scoped; then a granted read on that scoped seat: `ALLOW` | authorization the credential can't talk past, deny-by-default | `pacioli_guard.scope.is_permitted` / `classify` |
 | **2 · the record** | three receipts seal into a keyed chain, `verify` passes | every governed act gets a sealed, chained receipt | `pacioli.prove.append` / `verify_chain` |
 | **3 · rewrite the past** | edit one field → `REFUSE`, named at the exact receipt | the seal is over the contents; tamper is caught | `pacioli.prove.verify_chain` |
 | **4 · erase the tail** | drop the last receipt → a naive check passes, the off-box head catches the wipe | a book that doesn't balance confesses | `verify_chain(expected_head=...)` |

@@ -1,8 +1,8 @@
 version = 1
 revision = 3
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 
 [[package]]
 name = "pacioli-guard"
-version = "0.14.0"
+version = "0.15.0"
 source = { editable = "." }
