@@ -3,6 +3,27 @@
 Least-privilege API capability scoping for Frappe/ERPNext. Honest pre-1.0 semver.
 Distribution name `pacioli-guard`; Frappe app / import module `pacioli_guard`.
 
+## 0.16.0 - 2026-09-08 - the floor reports the seat's own roles
+
+MINOR. **One new read-only endpoint, on the safe list, nothing else changes.** frappe 16.33.0
+(version-16, 2026-09-01) removed the whitelisted `User.get_roles` that `pacioli doctor` used to
+read a seat's roles; on a fresh v16 the doctor could not certify any seat and refused every
+install. Found by the first real customer build on 2026-09-08.
+
+- `pacioli_guard.api.my_roles`: reports `frappe.session.user`'s roles (sorted, stripped,
+  blanks dropped) and nothing about anyone else. It takes **no arguments** (a `uid` in the query
+  is never read), by the same rule as `consent_status`. That retires the residual the old
+  `User.get_roles` grant carried (that function honoured `?uid=` with no permission check) on
+  every seat whose scope drops that grant; the road's list drops it from this release on, an
+  existing seat keeps it until its scope is re-applied.
+- On `SAFE_METHODS`, so a plain methods grant `pacioli_guard.api.my_roles` admits the bare
+  route. The list grants nothing by itself: without the row the call is still refused
+  (deny-unknown), exactly like `consent_status`. The road's `deploy/scope-methods.list` carries
+  the row from this release on.
+- Tests pin: session user only, sorted/stripped, a parameterless signature, grantable by config
+  and still refused ungranted.
+
+
 ## 0.15.0 - 2026-09-02 - the floor rises to python 3.12
 
 MINOR. **One compatibility change, one build bound, no behaviour change.** Inside

@@ -334,7 +334,13 @@ def build_public_tree(
         all_paths = [p for p in _git(["ls-tree", "-r", "--name-only", "-z", ref], root).split("\0") if p]
         kept, stripped = partition_paths(all_paths, deny)
         if stripped:
-            _git(["rm", "--cached", "--quiet", "--ignore-unmatch", "--", *stripped], root, env=env)
+            # --force: this is an ISOLATED temp index, but `git rm --cached` still applies its
+            # worktree safety check — it refuses an index entry that matches neither the worktree
+            # file nor HEAD, which is EVERY denied file that changed after `ref`. Every prior run
+            # had ref == HEAD, so the check never fired; the 0.40.0 finish ran build-tree at the tag
+            # three days after the cut and git answered "staged content different from both the
+            # file and the HEAD" (2026-09-05). Forcing here touches nothing but the temp index.
+            _git(["rm", "--cached", "--force", "--quiet", "--ignore-unmatch", "--", *stripped], root, env=env)
         tree = _git(["write-tree"], root, env=env).strip()
         # POST-CONDITION. `git rm --ignore-unmatch` exits 0 when it removes NOTHING, and nothing
         # between that call and `write-tree` asserted the result. The SHA printed here is piped

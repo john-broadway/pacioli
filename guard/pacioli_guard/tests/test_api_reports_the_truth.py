@@ -141,3 +141,24 @@ class TestTheGateReceiptCountsEveryEnforcingHandler(_ApiHarness):
             raise RuntimeError("no site context")
         self._set(api.frappe, "get_hooks", boom)
         self.assertFalse(api._gate_registered())
+
+
+class TestMyRolesReportsOnlyTheCaller(_ApiHarness):
+    """0.16.0: the floor answers the seat's own roles. Pinned: session user only, sorted, stripped,
+    blanks and non-strings dropped, and a signature with NO parameters — the property that makes
+    it un-pointable at another credential (the `uid` residual the old User.get_roles grant had)."""
+
+    def test_reports_the_session_users_roles_sorted_and_stripped(self):
+        asked = []
+        self._set(api.frappe, "session", types.SimpleNamespace(user="seat@books.example"))
+        self._set(api.frappe, "get_roles",
+                  lambda u: asked.append(u) or ["Pacioli Seat", " Accounts User ", "All", "", 7])
+        out = api.my_roles()
+        self.assertEqual(asked, ["seat@books.example"])
+        self.assertEqual(out["user"], "seat@books.example")
+        self.assertEqual(out["roles"], ["Accounts User", "All", "Pacioli Seat"])
+        self.assertEqual(out["guard_version"], api.__version__)
+
+    def test_takes_no_arguments_so_it_cannot_be_pointed_at_another_user(self):
+        import inspect
+        self.assertEqual(list(inspect.signature(api.my_roles).parameters), [])

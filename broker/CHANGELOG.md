@@ -10,6 +10,71 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 
 The version heading is written at release classification. Content, in landing order:
 
+## 0.40.1 - 2026-09-08 - doctor reads roles from the floor
+
+PATCH. **One behaviour fix in `doctor`, found by the first real customer build.** frappe
+`version-16` moved to 16.33.0 on 2026-09-01 and removed the whitelisted
+`frappe.core.doctype.user.user.get_roles`. The doctor's roles probe (and the belt-exemptions
+probe, which reads the same list) reached it through the v2 doctype route `User/get_roles`;
+on a fresh v16 that answers HTTP 417, the seat's roles cannot be read, least-privilege cannot be
+certified, and the doctor refuses every install, fail-closed. The lab (16.25) and the 07-17 live
+books (16.27) still have the function, which is why no rehearsal saw it.
+
+- Both probes now share one reader with two sources, in order: **`pacioli_guard.api.my_roles`**
+  (pacioli-guard >= 0.16.0: the floor reports the calling seat's own roles, argument-free, so a
+  `uid` cannot point it at another user) and, when the floor is older or the seat lacks that
+  grant, frappe's `User/get_roles` as before. The finding carries BOTH answers (`my_roles: HTTP n;
+  User/get_roles: HTTP m`), so a floor that was upgraded but not granted is named as such, and the
+  16.33 shape (417 naming `get_roles`) says its cure out loud: upgrade the guard and grant
+  `pacioli_guard.api.my_roles`, or on an older frappe grant `User.get_roles`.
+- `deploy/scope-methods.list` grants the new method and no longer grants `User.get_roles` (the
+  `?uid=` enumeration residual leaves with it on every seat built from the road; an existing seat
+  keeps its old grant until its scope is re-applied). govern.sh skips a stage whose mark exists,
+  so an existing install re-applies the scope by removing `/root/.pacioli-deploy-marks/g4-scope`
+  and re-running govern with the new list; the guard wheel moves the same way (`g1-guard`).
+- Tests: the floor answers first with one call; an older floor falls back with two; a
+  spine-voiding role from the floor still fails; the exact 16.33 shape names the upgrade; a 417
+  of another shape gets no hint. Nothing else in the broker changes.
+
+### The road (`deploy/`), folded on the same customer build
+
+Not part of the `pacioli` wheel: the deploy road is published in this tree and run by hand on a
+fresh host. Three adversarial rounds on the 2026-09-07 build changed it, and one finding is a
+disclosure for anyone who built a host from the road as published since 2026-07-17:
+
+- **`provision.sh` wrote the DB root and Administrator passwords into a step file at mode 644,
+  under a home it makes `o+x` for nginx, so `www-data` or any local account on that host could
+  read both.** Its header claimed root-only 600. The step files and `.frappe_env` are now 600,
+  frappe-owned. On a host built before this release: `chmod 600 /home/frappe/s*_*.sh
+  /home/frappe/.frappe_env`, then rotate both passwords. Not a defect in either package, and
+  nothing a network caller could reach; recorded in SECURITY.md all the same.
+- Every stage body now runs as plain python, exit-coded. `bench console` is IPython: it swallows
+  a failure and exits 0, so a stage could mark itself done having created nothing, and it journals
+  every input line, passwords included, to `logs/ipython.log` and the IPython history under that
+  same home. `provision.sh`'s time-zone step moved the same way, with a positive readback.
+- The first-custom-row trap applies to the seat's read doctypes too (Company, GL Entry, Accounts
+  Settings, Workflow, ...): g3 inserted the seat's read row bare, frappe dropped each doctype's
+  standard permission set, and every human role lost those doctypes. Invisible while every human
+  on every build was Administrator. g3 now materializes the standard rows first and reads back
+  that a human role still reads each. A host built before this release carries the latent, and
+  govern skips a stage whose mark exists, so it never re-runs g3 on its own: either run
+  `reset_perms` on each of the seat's read doctypes and re-insert the seat's read row, or remove
+  `/root/.pacioli-deploy-marks/g3-seat` and rerun govern, which also regenerates the seat's
+  secret, so carry it to the broker again.
+- Two stages the road never had. `g2b` creates the fiscal year from `FISCAL_YEAR_START` (a
+  wizard-less install ships none, no voucher posts without one, and the 07-17 live build made it
+  by hand), on the site's date rather than the container's clock. `g6` creates desk logins from
+  `DESK_USERS`: passwords generated on-target into a 600 file, never echoed, each login proven by
+  `check_password` and a read of Company. Two humans need the approver role or self-approval OFF
+  strands every human-drafted invoice; g6 warns below two.
+- A "set it and rerun" branch (g6, perimeter p2) no longer marks its stage done, so the rerun it
+  promises actually runs.
+
+Also in the tree since 0.40.0: `ruff.toml` targets py312 (both floors are 3.12; its comment still
+said 3.10/3.11), `release_leak_audit.py build-tree` works at a non-HEAD ref, the CI actions are
+pinned at codeql-action v4.38.0 and setup-uv v10.1.0, and the README opens with a badge row built
+the same way as proximo's.
+
 ## 0.40.0 - 2026-09-02 - the floor rises to python 3.12
 
 MINOR. **One compatibility change and no behaviour change.** `requires-python` is `>=3.12`

@@ -3,7 +3,7 @@
 # real errors + F (pyflakes: undefined names, unused imports). High signal, low noise, so the
 # existing code lands green; tighten (isort/pyupgrade/bugbear, E501) in a later pass once CI is on.
 line-length = 100
-target-version = "py310"   # guard's floor (broker is 3.11+); py310 keeps the lint baseline safe
+target-version = "py312"   # both floors are 3.12 since broker 0.40.0 / guard 0.15.0 (requires-python >=3.12 in each pyproject)
 
 extend-exclude = [
     ".venv",

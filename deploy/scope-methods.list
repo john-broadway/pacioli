@@ -1,5 +1,5 @@
 # Guard /api/method allowlist — dumped VERBATIM from the proven live install 2026-07-17
-# (dump-live-scope.sh; seat pacioli@example.lan, 10 rows). Note the shape: generic endpoints
+# (dump-live-scope.sh; seat pacioli@example.lan, 10 rows then; rows added since carry their date). Note the shape: generic endpoints
 # (frappe.client.submit/cancel, run_doc_method, apply_workflow) carry the doctype-specific
 # governance at the BROKER layer; the one dotted <DocType>.submit row is the URL-path vector.
 frappe.auth.get_logged_user
@@ -10,9 +10,11 @@ frappe.client.cancel
 frappe.desk.form.linked_with.get_submitted_linked_docs
 frappe.model.workflow.apply_workflow
 run_doc_method
-User.get_roles
+# User.get_roles — DROPPED 2026-09-08 (0.40.1/0.16.0): frappe 16.33 removed it and it honoured ?uid= with no permission check; the seat reads its own roles via pacioli_guard.api.my_roles below
 # doctor probe_consent — the floor answering whether THIS credential is
 # consent-gated. No arguments, reports only the caller, leaks nothing across
 # seats. Without this grant doctor cannot tell an operator the bypass is open.
 pacioli_guard.api.consent_status
+# guard >= 0.16.0: the seat reads its OWN roles from the floor (frappe 16.33 removed User.get_roles)
+pacioli_guard.api.my_roles
 Journal Entry.submit

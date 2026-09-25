@@ -385,6 +385,12 @@ SAFE_METHODS = frozenset({
     # this app just closed would otherwise keep hiding. Refusing it by name would leave the
     # diagnostic ungrantable in practice, since a bare method grant is (correctly) not enough.
     "pacioli_guard.api.consent_status",                                     # read-only self-report (doctor)
+    # 0.16.0 (2026-09-08): the seat's OWN role list, by the same rule — no arguments (a `uid`
+    # is never read), session user only, read-only. frappe 16.33.0 removed User.get_roles, the
+    # reader the doctor used through the v2 doctype route; without this the doctor cannot certify
+    # any seat on a current v16 and refuses every install (found on the first real customer build).
+    # Like every entry here it grants nothing by itself: the seat's scope still names it.
+    "pacioli_guard.api.my_roles",                                           # read-only self-report of roles (doctor)
 })
 
 # The 2-hop laundering vector no classifier can resolve: a tool/container DocType whose whitelisted

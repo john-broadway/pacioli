@@ -22,7 +22,27 @@ skip(){ [ -f "$MARKS/$1" ] && { echo "### STAGE $1 already done — skip"; retur
 
 BENCH=/home/frappe/frappe-bench
 SITE="$ERP_SITE"
-console(){ su - frappe -c "cd $BENCH && bench --site $SITE console"; }
+# ---- the stage runner: plain python, EXIT-CODED. `bench console` is IPython: it swallows
+# SystemExit/ValueError with a printed traceback and exits 0 at EOF, so a stage could mark itself
+# done having created nothing (lens, 2026-09-07), and it journals EVERY input line — passwords
+# included — to logs/ipython.log and ~/.ipython/history.sqlite, world-readable under the o+x home.
+# Here any exception is a non-zero exit and nothing is journaled. The body arrives on stdin; bash
+# expands $VARS before python sees it, so secrets stay OUT of the body (g6 reads its password from
+# a 600 file). cwd must be the bench's sites/ dir — frappe resolves the site relative to it.
+console(){
+  local f rc=0; f=$(mktemp "$STAGEDIR/stage-XXXXXX.py") || return 1
+  cat >"$f"; chown frappe:frappe "$f"; chmod 600 "$f"
+  su - frappe -c "cd $BENCH/sites && exec $BENCH/env/bin/python - <<'RUN'
+import frappe
+frappe.init('$SITE'); frappe.connect(); frappe.set_user('Administrator')
+try:
+    exec(compile(open('$f', encoding='utf-8').read(), 'stage', 'exec'), {'frappe': frappe, '__name__': '__stage__'})
+    frappe.db.commit()
+finally:
+    frappe.destroy()
+RUN" || rc=$?
+  rm -f "$f"; return $rc
+}
 
 # lists -> frappe-readable staging (console runs as frappe; /root is closed to it)
 STAGEDIR=/home/frappe/.pacioli-deploy; mkdir -p "$STAGEDIR"
@@ -62,10 +82,51 @@ if not frappe.db.exists("Company", "$COMPANY_NAME"):
 frappe.db.commit()
 gd = frappe.get_doc("Global Defaults"); gd.default_company = "$COMPANY_NAME"; gd.save(); frappe.db.commit()
 n = frappe.db.count("Account", {"company": "$COMPANY_NAME"})
+if n == 0 or frappe.db.get_single_value("Global Defaults", "default_company") != "$COMPANY_NAME":
+    raise SystemExit("XX company not bootstrapped: accounts=%s" % n)
 print("COMPANY_READY", "$COMPANY_NAME", "| accounts", n, "| default", frappe.db.get_single_value("Global Defaults", "default_company"))
 PY
   echo "ok COMPANY_BOOTSTRAPPED"
   done_mark g2-company
+fi
+
+# ---- g2b: the fiscal year (no voucher can post without one; the 07-17 live build created it by
+# hand and this road never did — a wizard-less install ships ZERO Fiscal Years). Data-driven from
+# FISCAL_YEAR_START=MM-DD in deploy.env (01-01 = calendar year, the US small-company default).
+# Creates the year that holds today AND the next one, idempotent by name. Getting the start wrong
+# is a migration once the first voucher exists — set it before, not after.
+if ! skip g2b-fiscal-year; then mark g2b-fiscal-year
+  case "${FISCAL_YEAR_START:-}" in
+    [0-1][0-9]-[0-3][0-9]) : ;;
+    *) echo "XX FISCAL_YEAR_START must be MM-DD (deploy.env); got '${FISCAL_YEAR_START:-}'"; exit 2 ;;
+  esac
+  # the pattern admits 02-30 and 13-01; a calendar must agree (2001 = non-leap, so 02-29 refuses too)
+  date -d "2001-$FISCAL_YEAR_START" >/dev/null 2>&1 || { echo "XX FISCAL_YEAR_START '$FISCAL_YEAR_START' is not a calendar date"; exit 2; }
+  console <<PY
+import datetime as _dt
+from frappe.utils import getdate, today as _site_today
+mm, dd = (int(x) for x in "$FISCAL_YEAR_START".split("-"))
+today = getdate(_site_today())   # the SITE's date (System Settings time_zone), not the CT's UTC clock
+start = _dt.date(today.year, mm, dd)
+if start > today:
+    start = _dt.date(today.year - 1, mm, dd)
+made = []
+for _ in range(2):
+    end = _dt.date(start.year + 1, mm, dd) - _dt.timedelta(days=1)
+    name = str(start.year) if (mm, dd) == (1, 1) else "%d-%d" % (start.year, end.year)
+    if not frappe.db.exists("Fiscal Year", name):
+        frappe.get_doc({"doctype": "Fiscal Year", "year": name,
+                        "year_start_date": start, "year_end_date": end}).insert()
+        made.append(name)
+    start = end + _dt.timedelta(days=1)
+frappe.db.commit()
+rows = frappe.get_all("Fiscal Year", fields=["name", "year_start_date", "year_end_date"], order_by="year_start_date")
+if len(rows) < 2 or not any(r.year_start_date <= today <= r.year_end_date for r in rows):
+    raise SystemExit("XX fiscal years not in place: %r" % [r.name for r in rows])
+print("FISCAL_YEARS", [(r.name, str(r.year_start_date), str(r.year_end_date)) for r in rows], "| created", made)
+PY
+  echo "ok FISCAL_YEAR_READY (start $FISCAL_YEAR_START; current + next)"
+  done_mark g2b-fiscal-year
 fi
 
 # ---- g3: the tight seat (user + dedicated read-role + api keys; NO manager roles) ----
@@ -75,11 +136,24 @@ user = "$SEAT_USER"
 read_doctypes = [l.strip() for l in open("$STAGEDIR/seat-read-doctypes.list")]
 if not frappe.db.exists("Role", "Pacioli Seat"):
     frappe.get_doc({"doctype": "Role", "role_name": "Pacioli Seat", "desk_access": 0}).insert()
+from frappe.permissions import setup_custom_perms
 for dt in read_doctypes:
+    # THE FIRST-CUSTOM-ROW TRAP applies HERE too (lens 2026-09-07; g3b below documents it): the
+    # moment one Custom DocPerm row exists for Company / GL Entry / Accounts Settings / Workflow,
+    # frappe drops that doctype's ENTIRE standard permission set — every human role's read on the
+    # ledger and the company, gone. Invisible on every prior build because every human was
+    # Administrator. deploy/bench/mint-broker-seat.py has done this since 07-26; this road had not.
+    if not frappe.db.exists("Custom DocPerm", {"parent": dt}):
+        setup_custom_perms(dt)
     if not frappe.db.exists("Custom DocPerm", {"parent": dt, "role": "Pacioli Seat"}):
         frappe.get_doc({"doctype": "Custom DocPerm", "parent": dt, "parenttype": "DocType",
                         "parentfield": "permissions", "role": "Pacioli Seat", "read": 1,
                         "permlevel": 0}).insert()
+frappe.db.commit()
+for dt in read_doctypes:
+    frappe.clear_cache(doctype=dt)
+    if not any(p.role != "Pacioli Seat" and p.read for p in frappe.get_meta(dt, cached=False).permissions):
+        raise SystemExit("XX first-custom-row trap fired on %s: no human role reads it any more. Way out (plain python, as frappe): from frappe.permissions import reset_perms; reset_perms(%r); frappe.db.commit() -- then rerun this stage" % (dt, dt))
 if not frappe.db.exists("User", user):
     frappe.get_doc({"doctype": "User", "email": user, "first_name": "Pacioli",
                     "last_name": "Seat", "user_type": "System User",
@@ -217,6 +291,73 @@ print("WORKFLOW_ACTIVE", w.name, "| states", len(w.states), "| self-approval on 
 PY
   echo "ok WORKFLOW_BOOTSTRAPPED (self-approval OFF on Approve)"
   done_mark g5-workflow
+fi
+
+# ---- g6: desk logins (humans). The seat is an API credential, never a login; people who need the
+# desk are declared as data: DESK_USERS="login|First|Last|Role1,Role2;login2|..." in deploy.env.
+# Passwords are GENERATED here, land root-only 600 in /root/erp-desk-logins.env, and cross to the
+# stage as a frappe-owned 600 file that is deleted after — never in the stage body (a traceback
+# would print it), never journaled (the runner is plain python). Welcome mail is OFF — the login
+# id is an id, not a mailbox. Each login is PROVEN: the stored password authenticates, and the
+# human can read Company (and report on GL Entry when they hold the approver role). With the SoD workflow above, a company needs TWO humans holding
+# $WORKFLOW_APPROVER_ROLE or nothing a person drafts can ever be approved (self-approval is OFF).
+if ! skip g6-desk-users; then mark g6-desk-users
+  rm -f "$STAGEDIR/.pw"   # a stage killed mid-loop can leave one behind
+  if [ -z "${DESK_USERS:-}" ]; then
+    echo "!! DESK_USERS empty — no human logins created (Administrator only). Set it and rerun to add them."
+    # deliberately NOT marked done: the rerun the message promises must actually run
+  else
+    LOGINS=/root/erp-desk-logins.env
+    [ -f "$LOGINS" ] || { umask 077; : >"$LOGINS"; chmod 600 "$LOGINS"; umask 022; }
+    IFS=';' read -ra _users <<<"$DESK_USERS"
+    for spec in "${_users[@]}"; do
+      IFS='|' read -r login first last roles <<<"$spec"
+      [ -n "$login" ] && [ -n "$first" ] && [ -n "$roles" ] || { echo "XX DESK_USERS entry malformed: '$spec' (login|First|Last|Role1,Role2)"; exit 2; }
+      if grep -q "^$login=" "$LOGINS"; then
+        pw=$(grep "^$login=" "$LOGINS" | head -1 | cut -d= -f2-)
+      else
+        pw=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-20)
+        printf '%s=%s\n' "$login" "$pw" >>"$LOGINS"
+      fi
+      (umask 077; printf '%s' "$pw" >"$STAGEDIR/.pw"); chown frappe:frappe "$STAGEDIR/.pw"; chmod 600 "$STAGEDIR/.pw"
+      console <<PY || { rm -f "$STAGEDIR/.pw"; echo "XX desk user $login did not land"; exit 1; }
+from frappe.utils.password import update_password, check_password
+login, first, last = "$login", "$first", "$last"
+roles = [r.strip() for r in "$roles".split(",") if r.strip()]
+for r in roles:
+    if not frappe.db.exists("Role", r):
+        raise SystemExit("XX unknown role %r for %s" % (r, login))
+if not frappe.db.exists("User", login):
+    frappe.get_doc({"doctype": "User", "email": login, "first_name": first, "last_name": last,
+                    "user_type": "System User", "send_welcome_email": 0, "enabled": 1}).insert()
+u = frappe.get_doc("User", login)
+have = {r.role for r in u.roles}
+for r in roles:
+    if r not in have:
+        u.append("roles", {"role": r})
+u.save()
+pw = open("$STAGEDIR/.pw").read()
+update_password(login, pw)
+frappe.db.commit()
+check_password(login, pw)   # raises AuthenticationError unless the stored password authenticates
+u.reload()
+for dt in ("Company", "Fiscal Year"):
+    if not frappe.has_permission(dt, "read", user=login):
+        raise SystemExit("XX %s cannot read %s — the first-custom-row trap (g3) or a missing role" % (login, dt))
+if "Accounts Manager" in roles and not frappe.has_permission("GL Entry", "report", user=login):
+    raise SystemExit("XX %s holds Accounts Manager but cannot run ledger reports" % login)
+print("DESK_USER_READY", login, "| roles", sorted(r.role for r in u.roles), "| login proven | password: /root/erp-desk-logins.env (600), never printed")
+PY
+      rm -f "$STAGEDIR/.pw"
+    done
+    approvers=0
+    for spec in "${_users[@]}"; do IFS='|' read -r _ _ _ roles <<<"$spec"; roles=${roles//, /,}; case ",$roles," in *",$WORKFLOW_APPROVER_ROLE,"*) approvers=$((approvers+1));; esac; done
+    if [ "$approvers" -lt 2 ]; then
+      echo "!! only $approvers desk login(s) hold $WORKFLOW_APPROVER_ROLE — a HUMAN-drafted invoice can never be approved by someone other than its author (self-approval is OFF); seat-drafted invoices need one. Add a second approver or accept Administrator as the break-glass."
+    fi
+    echo "ok DESK_USERS_CREATED (passwords: /root/erp-desk-logins.env, root-only; hand them over out of band; approvers=$approvers)"
+    done_mark g6-desk-users
+  fi
 fi
 
 echo "### GOVERN_DONE $(date -u) — next: perimeter.sh, then instruments.sh on the broker host"

@@ -416,9 +416,12 @@ class TestNullAndBlankFiltering(unittest.TestCase):
 
 
 class TestRolesProbeGrantContract(unittest.TestCase):
-    """Locks the cross-package contract the broker's ``doctor.probe_roles`` depends on: the
-    seat's-own-roles read (``GET /api/v2/method/User/get_roles``) is admissible with a CONFIG-ONLY
-    ``User.get_roles`` methods-grant and NO guard code change. If a future guard change breaks the
+    """Locks the cross-package contract the broker's ``doctor.probe_roles`` depends on. Since
+    guard 0.16.0 the reader of record is ``pacioli_guard.api.my_roles`` (a SAFE_METHOD, one
+    config row; see the last test); the v2 route below is the FALLBACK for an older floor on a
+    frappe that still ships ``User.get_roles`` (16.33.0 removed it). The fallback's contract is
+    kept: the seat's-own-roles read (``GET /api/v2/method/User/get_roles``) is admissible with a
+    CONFIG-ONLY ``User.get_roles`` methods-grant and NO guard code change. If a future guard change breaks the
     v2 two-segment resolution or the deny-unknown gate, this test fails LOUD next to the probe's
     remedy text rather than silently 403-ing every doctor run. (Characterization/regression lock —
     the guard already behaves this way; nothing here changes guard code.)"""
@@ -446,6 +449,19 @@ class TestRolesProbeGrantContract(unittest.TestCase):
         scope = ApiScope.from_dict({"methods": [bare], "allow_resource": False})
         self.assertNotIn(bare, SAFE_METHODS)
         self.assertFalse(is_permitted(scope, "method", bare, method_resolved=False))
+
+    def test_my_roles_is_grantable_by_config_and_still_deny_unknown(self):
+        # 0.16.0: frappe 16.33 removed User.get_roles, so the floor answers the seat's own roles
+        # itself. It is a SAFE_METHOD by the consent_status rule (no arguments, session user only,
+        # read-only), which makes a plain methods grant SUFFICIENT for the bare route — one config
+        # row, no User-doctype exposure. The list grants nothing by itself: without the row the
+        # call is still refused (deny-unknown), exactly like consent_status.
+        name = "pacioli_guard.api.my_roles"
+        self.assertIn(name, SAFE_METHODS)
+        granted = ApiScope.from_dict({"methods": [name], "allow_resource": False})
+        self.assertTrue(is_permitted(granted, "method", name, method_resolved=False))
+        ungranted = ApiScope.from_dict({"methods": [], "allow_resource": False})
+        self.assertFalse(is_permitted(ungranted, "method", name, method_resolved=False))
 
 
 if __name__ == "__main__":

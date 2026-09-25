@@ -185,13 +185,28 @@ bench use __SITE__
 echo "__SITE__" > sites/currentsite.txt   # CLI default (NOT consulted for HTTP in v16)
 bench set-config -g developer_mode 0 || true
 bench --site __SITE__ enable-scheduler
-echo "import frappe; frappe.db.set_single_value('System Settings','time_zone','__TZ__'); frappe.db.commit(); print('TZ_SET', frappe.db.get_single_value('System Settings','time_zone'))" | bench --site __SITE__ console
+# exit-coded, plain python (never bench console: IPython swallows a failure and exits 0). The
+# positive readback is the gate: an empty or wrong zone fails this stage, not a later census.
+( cd sites && ../env/bin/python - <<'TZPY'
+import frappe
+frappe.init('__SITE__'); frappe.connect()
+frappe.db.set_single_value('System Settings', 'time_zone', '__TZ__'); frappe.db.commit()
+got = frappe.db.get_single_value('System Settings', 'time_zone')
+print('TZ_SET', got)
+if got != '__TZ__':
+    raise SystemExit('XX TZ readback %r != %r' % (got, '__TZ__'))
+frappe.destroy()
+TZPY
+)
 $HOME/frappe-bench/env/bin/pip show gunicorn >/dev/null || $HOME/frappe-bench/env/bin/pip install gunicorn
 S7
 
   sed -i "s/__SITE__/$SITE/g; s|__TZ__|$SITE_TZ|g; s/__BRANCH__/$FRAPPE_BRANCH/g" \
     /home/frappe/s4_init.sh /home/frappe/s5_site.sh /home/frappe/s6_erpnext.sh /home/frappe/s7_configure.sh
   chown -R frappe:frappe /home/frappe
+  # s5_site.sh carries DB_ROOT_PW and ADMIN_PW substituted in; the home is o+x for nginx, so a
+  # 644 step file is readable by www-data or any local account (lens 3, latent since July).
+  chmod 600 /home/frappe/s[1-7]_*.sh /home/frappe/.frappe_env
   done_mark write-steps
 fi
 

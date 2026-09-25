@@ -168,3 +168,25 @@ def consent_status():
             "require_consent": bool(value), "gate_registered": registered,
             "consent_enforced": bool(value) and registered,
             "resource_posture": _resource_posture(user)}
+
+
+@frappe.whitelist()
+def my_roles():
+    """Report THIS credential's roles. Never anyone else's.
+
+    Added 0.16.0 (2026-09-08). frappe 16.33.0 (version-16, 2026-09-01) removed the whitelisted
+    ``frappe.core.doctype.user.user.get_roles`` that `pacioli doctor`'s roles probe read through
+    the v2 ``User/get_roles`` route, so on a fresh v16 the doctor could no longer read a seat's
+    roles, could not certify it least-privilege, and refused every install — found by the first
+    real customer build. The floor now answers the question itself, by the same rule as
+    :func:`consent_status`: **no arguments** (a ``uid`` in the query is never read, so a
+    credential cannot enumerate another's roles — the residual the old grant carried), reports
+    on ``frappe.session.user`` only, read-only. On ``SAFE_METHODS``, so a plain methods grant
+    ``pacioli_guard.api.my_roles`` admits it (one config row; deny-unknown still holds — the
+    list makes the grant possible, it grants nothing by itself). Sorted, stripped, blanks
+    dropped; frappe's auto-roles (All / Guest / Desk User) are included, the doctor ignores them.
+    """
+    user = frappe.session.user
+    roles = frappe.get_roles(user)
+    return {"guard_version": __version__, "user": user,
+            "roles": sorted({r.strip() for r in roles if isinstance(r, str) and r.strip()})}

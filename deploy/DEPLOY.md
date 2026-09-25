@@ -25,20 +25,33 @@ Two hosts (one is allowed but not the posture this road paves):
 1. **`provision.sh`** *(target)* — deps → bench → site → ERPNext → TZ (positive readback) →
    **gunicorn + systemd unit split from birth** (the dev server never serves). Secrets are
    generated on-target, root-only 600, never echoed. Ends: API 200 by name AND by IP.
-2. **`govern.sh`** *(target)* — guard installed **before any credential exists** → company
-   (with the wizard-less fixture) → the tight seat (dedicated read-role, api keys, **no
+2. **`govern.sh`** *(target)* — every stage body runs as **plain python, exit-coded** (never
+   `bench console`: IPython swallows exceptions and exits 0, so a stage could mark itself done
+   having created nothing, and it journals every input line — lens 2026-09-07; provision's TZ
+   step got the same treatment) — guard
+   installed **before any credential exists** → company
+   (with the wizard-less fixture) → **the fiscal year** (`FISCAL_YEAR_START`; a wizard-less
+   install ships none and no voucher can post without one — the 07-17 live build made it by
+   hand, the road now makes it by data) → the tight seat (dedicated read-role, api keys, **no
    manager roles**) → **the governed-row + transitive Frappe grants (g3b, see the trap
    below)** → deny-by-default scope from the data lists **with the per-doctype
    `.submit`/`.cancel` method patterns GENERATED from `scope-doctypes.list`** (the guard
    resolves every item-URL `run_method` call to `<DocType>.<verb>` — a hand-kept methods
    file went stale twice on the lab; generated-from-data cannot) → the SoD workflow
    (masters first, self-approval OFF). The seat's secret lands frappe-owned 600; **carry
-   it to the broker host, don't paste it anywhere.**
+   it to the broker host, don't paste it anywhere.** Last, **desk logins** (`DESK_USERS`):
+   humans are data too; passwords generated on-target into `/root/erp-desk-logins.env` (600),
+   never echoed. Two humans should hold the approver role — g6 warns below two — or
+   self-approval-OFF strands every human-drafted invoice (Administrator is the break-glass).
 
    **⚠️ THE FIRST-CUSTOM-ROW TRAP (live-caught 2026-07-21, lab CT 31340):** the moment ONE
    `Custom DocPerm` row exists for a doctype, frappe drops that doctype's ENTIRE standard
    permission set — every role's access to it now comes from custom rows alone. The interim
-   state on the lab 403'd 37 of 38 doctypes INCLUDING previously-working ones. g3b therefore
+   state on the lab 403'd 37 of 38 doctypes INCLUDING previously-working ones. **The seat's 8
+   READ doctypes (Company, GL Entry, Accounts Settings, Workflow, …) are subject to it too**:
+   until 2026-09-07 g3 inserted the seat's read row bare, so every HUMAN role lost those
+   doctypes — invisible while every human was Administrator (the 07-17 live build carries this
+   latent). g3 now materializes first and reads back that a human role still reads each. g3b therefore
    (a) materializes the standard rows as custom via `setup_custom_perms()` BEFORE inserting
    any seat row, and (b) runs only after g3 has already granted the role to the seat — never
    create the rows for a role the seat doesn't hold yet. If you hand-edit permissions later,

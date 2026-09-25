@@ -110,7 +110,7 @@ nothing. `SECURITY.md` has the detail.
 POST /api/resource/SI/<name>?run_method=submit → 200  (granted "Sales Invoice.submit" — resolved)
 POST /api/resource/JE/<name>?run_method=submit → 403  (doctype not granted)
 GET  /api/method/<any-bare-rpc>                → 403  (deny-unknown: bare names denied unless
-                                                       granted AND on the 4-entry SAFE_METHODS)
+                                                       granted AND on the 5-entry SAFE_METHODS)
 POST /api/resource/<DocType>                   → 403  (raw-CRUD bypass closed, unless allow_resource)
 # unscoped credential → unchanged behaviour
 ```
@@ -212,7 +212,7 @@ the `Bulk Update` hard-deny below). Whack-a-mole on method names does not conver
 inverts the posture**: a `methods` grant on a method call is honored ONLY when the call is
 **doctype-RESOLVED** — the route itself carried the doctype (item-URL `?run_method`, v2
 path-carried doc-method, v2 two-segment controller method, or a body-doctype rewrite above) — OR
-the bare name is one of exactly **four curated `SAFE_METHODS`** (exact names, no globs, each
+the bare name is one of exactly **five curated `SAFE_METHODS`** (exact names, no globs, each
 read-only with no docstatus/data mutation):
 
 - `frappe.auth.get_logged_user` — identity probe (`pacioli doctor`)
@@ -243,6 +243,12 @@ read-only with no docstatus/data mutation):
   `bench --site <site> clear-cache`, in that order, and re-check. `after_insert` is deliberately not
   required — `hooks.py` records that it decides and refuses nothing, and a receipt stricter than the
   gate is its own kind of lie.
+
+- `pacioli_guard.api.my_roles` — the seat's OWN roles, added 0.16.0 for `pacioli doctor` after frappe
+  16.33.0 removed `User.get_roles`. Same admission test as `consent_status`: no arguments (a `uid`
+  in the query is never read), `frappe.session.user` only, read-only, sorted and stripped. On this
+  list so that one config row (`methods` → `pacioli_guard.api.my_roles`) admits it; it grants
+  nothing by itself.
 
   🔴 **0.14.0 also fixed the resource posture, which inverted the widest grant.** A grant with
   `allow_resource` and `allow_all_doctypes` both on reported `denies_all` — the narrowest of the
@@ -472,7 +478,7 @@ through the guard entirely").
 - A `methods` entry is enforced **deny-unknown as of 0.6.0**: it fires only on a doctype-RESOLVED
   call (item-URL `run_method`, v2 path/two-segment doc-methods, or a body-doctype rewrite — the
   submit/cancel/apply_workflow RPCs and every `run_doc_method` inner method resolve from the
-  request body per 0.5.0–0.6.0) or on an exact `SAFE_METHODS` name (four read-only utilities).
+  request body per 0.5.0–0.6.0) or on an exact `SAFE_METHODS` name (five read-only utilities).
   A bare/unresolved generic RPC — a draft `save`/`insert`, `set_value`, `bulk_delete`, any
   unrecognised name — is **denied even if granted** (see "Deny-unknown" above; live-proven
   2026-07-06: a *granted* bare `frappe.model.workflow.apply_workflow` and a *granted*

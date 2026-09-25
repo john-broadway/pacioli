@@ -2,6 +2,10 @@
   <img src="assets/marks/titlepage.svg" width="880" alt="SVMMA DE GOVERNATIONE — Particularis de Computis et Scripturis, for the governance of agents upon the books. Nulla in libro sine contraria — no debit without a credit. Venetiis MCDXCIV, in the workshop of John Broadway, MMXXVI."/>
 </div>
 
+<p align="center">
+  <a href="https://github.com/john-broadway/pacioli/actions/workflows/ci.yml"><img src="https://github.com/john-broadway/pacioli/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/john-broadway/pacioli/actions/workflows/codeql.yml"><img src="https://github.com/john-broadway/pacioli/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a> <a href="https://github.com/john-broadway/pacioli/releases"><img src="https://img.shields.io/github/v/release/john-broadway/pacioli" alt="Release"></a> <a href="https://pypi.org/project/pacioli/"><img src="https://img.shields.io/pypi/v/pacioli?label=pypi%20pacioli" alt="PyPI pacioli"></a> <a href="https://pypi.org/project/pacioli-guard/"><img src="https://img.shields.io/pypi/v/pacioli-guard?label=pypi%20pacioli-guard" alt="PyPI pacioli-guard"></a> <a href="broker/pyproject.toml"><img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+"></a> <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License Apache-2.0"></a> <a href="https://scorecard.dev/viewer/?uri=github.com/john-broadway/pacioli"><img src="https://api.scorecard.dev/projects/github.com/john-broadway/pacioli/badge" alt="OpenSSF Scorecard"></a>
+</p>
+
 **Least-privilege governance for ERPNext, and a governed agent front door built on top of it — MCP and A2A, one spine behind both. A door admits; it never decides.**
 
 In 1494, in Venice, Luca Pacioli printed the *Summa de arithmetica* — and inside it, the

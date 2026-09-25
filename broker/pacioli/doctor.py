@@ -60,9 +60,11 @@ PROBE_METHOD = "frappe.auth.get_logged_user"
 # permission-bypass one. OVER-BROAD roles (Accounts Manager) grant more than the broker uses (it
 # never deletes, never closes a period) but cannot administer the governance → a WARN, not a
 # refusal. The frappe-auto roles are appended to every authenticated user and carry no privilege →
-# ignored. The v2 route is deliberate: the bare dotted `frappe.core.doctype.user.user.get_roles`
-# is guard-blocked (not a SAFE_METHOD), but `/api/v2/method/User/get_roles` is doctype-resolved, so
-# a plain `User.get_roles` methods-grant admits it with NO guard code change (guard scope.py).
+# ignored. History: until 0.40.1 the reader was frappe's own `User.get_roles` through the v2
+# doctype-resolved route (the bare dotted `frappe.core.doctype.user.user.get_roles` is guard-blocked,
+# not a SAFE_METHOD; the v2 route was admitted by a plain `User.get_roles` grant with no guard code
+# change). frappe 16.33.0 removed that function; the reader of record is now the guard's own
+# `pacioli_guard.api.my_roles` (see ROLES_PROBE_PATH below), the v2 route is the fallback.
 #
 # KNOWN RESIDUALS (documented, not silently swept — house style):
 #  * name-based, not permission-based. The refusal matches role NAMES (_SPINE_VOIDING_ROLES); a
@@ -71,11 +73,21 @@ PROBE_METHOD = "frappe.auth.get_logged_user"
 #    pre-existing System-Manager access (chicken-and-egg — unreachable from the tight seat), so
 #    this is config-drift risk, not a seat-reachable bypass. A permission-based check (read each
 #    role's DocPerm rows) is a larger read surface + grant — its own increment.
-#  * the `User.get_roles` grant is broader than "read own roles": frappe's get_roles honors a
-#    `?uid=<user>` param with no permission check, so the grant also lets the credential enumerate
-#    ANY user's roles (read-only, no mutation — recon, not escalation). doctor never sends `uid`.
-#    Ignoring `uid` bench-side is a guard code change — a separate hardening increment.
-ROLES_PROBE_PATH = "/api/v2/method/User/get_roles"
+#  * (retired 0.40.1 for seats on the new reader) the `User.get_roles` grant was broader than
+#    "read own roles": frappe's get_roles honoured a `?uid=<user>` param with no permission check,
+#    so that grant let the credential enumerate ANY user's roles (read-only recon). `my_roles`
+#    takes no arguments, and the road no longer grants `User.get_roles`; a seat that still holds
+#    the old grant keeps the residual until its scope is re-applied.
+# 0.40.1 (2026-09-08): two readers, tried in order. frappe 16.33.0 (version-16 since 2026-09-01)
+# REMOVED the whitelisted `frappe.core.doctype.user.user.get_roles` behind the v2 route below, so on
+# a fresh v16 the doctor could not read any seat's roles and refused every install (the first real
+# customer build found it). pacioli-guard >= 0.16.0 answers the seat's OWN roles itself
+# (`pacioli_guard.api.my_roles`: on the guard's SAFE_METHODS list, so a plain methods grant admits
+# it — one config row, no User-doctype exposure — and argument-free, which retires the `uid`
+# enumeration residual noted above). The v2 route stays as the fallback for an older floor on an
+# older frappe.
+ROLES_PROBE_PATH = "/api/method/pacioli_guard.api.my_roles"
+ROLES_PROBE_FALLBACK_PATH = "/api/v2/method/User/get_roles"
 # probe_consent: the floor answering a question about the CALLER, added 2026-07-25 after the
 # bench proved that a correctly-scoped credential still posts without consent. The endpoint takes
 # no arguments and reports only `frappe.session.user`, so this leaks nothing across seats.
@@ -555,13 +567,71 @@ def probe_repost_read(target, env, read_file, transport):
                           "Accounting Ledger to enable it")]
 
 
+def _clean_roles(raw):
+    # strip + drop blanks/non-strings (defense-in-depth, matching the guard's own .strip()
+    # discipline): a whitespace-padded "System Manager " cannot evade the exact-name match, and a
+    # blank-only list falls through to the deny-biased empty-list FAIL.
+    return [s for s in (r.strip() for r in raw if isinstance(r, str)) if s]
+
+
+def _read_seat_roles(target, env, read_file, transport, who):
+    """Read the seat's OWN role list, deny-biased. ``(roles, None)`` or ``(None, finding)``.
+
+    Reader 1: the floor's ``pacioli_guard.api.my_roles`` (guard >= 0.16.0; needs the
+    ``pacioli_guard.api.my_roles`` methods grant — it is a SAFE_METHOD, so that grant is enough)
+    — argument-free, so it cannot be pointed at another user. Reader 2: frappe's own
+    ``User/get_roles`` over the v2 doctype route (needs the ``User.get_roles`` grant) — the only
+    reader before 0.16.0, and gone from frappe 16.33.0. An older floor, or a seat without the new
+    grant, refuses reader 1 with 403, and an older frappe answers 404/417 for it, so ANY non-shape
+    answer from reader 1 falls through to reader 2; only reader 2's answer is classified, and the
+    frappe-16.33 shape names its cure.
+    """
+    try:
+        key = _resolve_ref(target.api_key, "api_key", env, read_file)
+        secret = _resolve_ref(target.api_secret, "api_secret", env, read_file)
+    except RegistryError:
+        return None, _finding(FAIL, f"{who} skipped — credential does not resolve (above)")
+    auth = {"Authorization": f"token {key}:{secret}"}
+    try:
+        floor_status, payload = transport("GET", target.base_url + ROLES_PROBE_PATH, auth)
+    except Exception as exc:  # noqa: BLE001 — a probe failure must never traceback out of doctor
+        return None, _finding(FAIL, f"{who}: bench unreachable: {exc}")
+    message = payload.get("message") if isinstance(payload, dict) else None
+    if floor_status == 200 and isinstance(message, dict) and isinstance(message.get("roles"), list):
+        return _clean_roles(message["roles"]), None
+    try:
+        status, payload = transport("GET", target.base_url + ROLES_PROBE_FALLBACK_PATH, auth)
+    except Exception as exc:  # noqa: BLE001
+        return None, _finding(FAIL, f"{who}: bench unreachable: {exc}")
+    # both answers travel in the finding: a floor that was upgraded but never granted (403 from
+    # my_roles) reads differently from a floor that predates 0.16.0, and the operator who already
+    # upgraded must not be told to upgrade again (lens, 2026-09-08)
+    both = f"my_roles: HTTP {floor_status}; User/get_roles: HTTP {status}"
+    cure = ("upgrade pacioli-guard to >= 0.16.0 and grant the method "
+            "'pacioli_guard.api.my_roles' (API Key Scope → methods; deploy/scope-methods.list), "
+            "or on frappe < 16.33 grant 'User.get_roles'")
+    if status == 403:
+        return None, _finding(FAIL, f"{who} ({both}): the credential cannot read its own roles — "
+                                    f"{cure}; doctor cannot certify this seat is least-privilege "
+                                    "without it")
+    if status == 200 and isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        return _clean_roles(payload["data"]), None
+    hint = ""
+    if status == 417 and "get_roles" in str(payload):
+        hint = f" — this frappe (>= 16.33.0) no longer ships User.get_roles; {cure}"
+    return None, _finding(FAIL, f"{who}: unexpected response ({both}){hint} — a seat whose "
+                                "roles cannot be read cannot be certified least-privilege "
+                                "(deny-biased)")
+
+
 def probe_roles(target, env, read_file, transport):
     """The tight-role seat: read the seat's OWN roles and refuse a spine-voiding one.
 
-    Reads the seat's role list via the v2 doctype-resolved method route
-    (:data:`ROLES_PROBE_PATH`) — which routes to frappe's whitelisted
-    ``frappe.core.doctype.user.user.get_roles`` (raw "Has Role" query, no ``has_permission``
-    check, so a tight non-superuser seat can read its own roles). A seat carrying a
+    Reads the seat's role list through :func:`_read_seat_roles`: the floor's own
+    ``pacioli_guard.api.my_roles`` (:data:`ROLES_PROBE_PATH`, guard >= 0.16.0) first, frappe's
+    ``User/get_roles`` over the v2 doctype route (:data:`ROLES_PROBE_FALLBACK_PATH`, gone from
+    frappe 16.33.0) as the fallback — either way a tight non-superuser seat reads only its own
+    roles. A seat carrying a
     **spine-voiding** role (:data:`_SPINE_VOIDING_ROLES` — System Manager or the literal
     Administrator role) is a **FAIL**: over frappe's own REST surface that role can write Custom
     DocPerm rows (grant itself any permission), mint API keys, and — with server scripts enabled —
@@ -571,36 +641,16 @@ def probe_roles(target, env, read_file, transport):
 
     **Deny-biased, the required-read inversion** (:func:`probe_payment_ledger_read`, NOT
     :func:`probe_bench`): a 403, an unparseable body, or an empty role list is a **FAIL** — a seat
-    whose roles cannot be audited cannot be certified least-privilege. A **403 specifically** means
-    the credential lacks the ``User.get_roles`` methods-grant (the one new, config-only grant this
-    probe needs). A clean seat passes with the role list echoed for eyeball review; an
+    whose roles cannot be audited cannot be certified least-privilege. A **403 from both readers**
+    means the credential lacks the grant (``pacioli_guard.api.my_roles`` on a >= 0.16.0 floor, or
+    ``User.get_roles`` on an older frappe) — config-only either way; the finding names both
+    answers. A clean seat passes with the role list echoed for eyeball review; an
     **over-broad** role (:data:`_OVER_BROAD_ROLES` — e.g. Accounts Manager, which also grants
     delete and period-closing the broker never uses) adds a **WARN** but is not a refusal. Returns
     one finding (the verdict), plus a second WARN when a clean seat is nonetheless over-broad."""
-    try:
-        key = _resolve_ref(target.api_key, "api_key", env, read_file)
-        secret = _resolve_ref(target.api_secret, "api_secret", env, read_file)
-    except RegistryError:
-        return [_finding(FAIL, "roles probe skipped — credential does not resolve (above)")]
-    url = f"{target.base_url}{ROLES_PROBE_PATH}"
-    try:
-        status, payload = transport("GET", url, {"Authorization": f"token {key}:{secret}"})
-    except Exception as exc:  # noqa: BLE001 — a probe failure must never traceback out of doctor
-        return [_finding(FAIL, f"roles probe: bench unreachable: {exc}")]
-    if status == 403:
-        return [_finding(FAIL, "roles probe (403): the credential cannot read its own roles — "
-                              "grant the method 'User.get_roles' (API Key Scope → methods); "
-                              "doctor cannot certify this seat is least-privilege without it")]
-    if status != 200 or not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-        return [_finding(FAIL, f"roles probe: unexpected response (HTTP {status}) — a seat whose "
-                              "roles cannot be read cannot be certified least-privilege "
-                              "(deny-biased)")]
-    # strip + drop blanks (defense-in-depth, matching the guard's own .strip() discipline): a
-    # whitespace-padded "System Manager " cannot evade the exact-name match below, and a blank-only
-    # list falls through to the deny-biased empty-list FAIL. Case is deliberately NOT folded — a
-    # differently-cased role is a DIFFERENT frappe role that does not carry the powers, so folding
-    # would false-positive on a harmless custom role.
-    roles = [s for s in (r.strip() for r in payload["data"] if isinstance(r, str)) if s]
+    roles, failure = _read_seat_roles(target, env, read_file, transport, "roles probe")
+    if failure:
+        return [failure]
     if not roles:
         return [_finding(FAIL, "roles probe: the seat reports no roles — anomalous (an "
                               "authenticated seat always carries at least All/Guest); cannot "
@@ -729,7 +779,8 @@ def probe_belt_exemptions(target, env, read_file, transport):
     prevention (a write after doctor ran is invisible until the next run; recorded residual).
 
     Reads ride EXISTING grants only (Company read · Accounts Settings read · Accounting Period
-    read · ``User.get_roles``): the seat's own roles (same v2 route as :func:`probe_roles`), the
+    read · the roles grant): the seat's own roles (the same reader as :func:`probe_roles` —
+    :func:`_read_seat_roles`, guard ``my_roles`` first, frappe ``User/get_roles`` as fallback), the
     pinned company's full doc (or every company on an unpinned target), the Accounts Settings
     Single, and every Accounting Period's full doc (the same LIST → item-GET two-step
     ``get_period_locks`` uses). **Version-safe by construction (the F-C1 lesson):** every field is
@@ -753,22 +804,13 @@ def probe_belt_exemptions(target, env, read_file, transport):
                               "(above)")]
     auth = {"Authorization": f"token {key}:{secret}"}
 
-    # 1. The seat's own roles (the cross-ref side). Same call shape as probe_roles; kept
-    # self-contained so this probe stands alone in any future probe reordering.
-    try:
-        status, payload = transport("GET", f"{target.base_url}{ROLES_PROBE_PATH}", auth)
-    except Exception as exc:  # noqa: BLE001 — a probe failure must never traceback out of doctor
-        return [_finding(FAIL, f"belt-exemptions probe: bench unreachable: {exc}")]
-    if status == 403:
-        return [_finding(FAIL, "belt-exemptions probe (403): the credential cannot read its own "
-                              "roles — grant the method 'User.get_roles' (API Key Scope → "
-                              "methods); the exemption cross-reference needs the seat's role "
-                              "list")]
-    if status != 200 or not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-        return [_finding(FAIL, f"belt-exemptions probe: unexpected roles response (HTTP {status}) "
-                              "— cannot cross-reference exemptions against an unreadable seat "
-                              "(deny-biased)")]
-    seat_roles = {s for s in (r.strip() for r in payload["data"] if isinstance(r, str)) if s}
+    # 1. The seat's own roles (the cross-ref side): the same reader probe_roles uses (guard
+    # my_roles first, frappe's get_roles as the fallback), so both probes agree on what a seat is.
+    seat_roles_list, failure = _read_seat_roles(target, env, read_file, transport,
+                                                "belt-exemptions probe")
+    if failure:
+        return [failure]
+    seat_roles = set(seat_roles_list)
 
     def _get(url, params=None):
         """(status, payload) — a raising transport degrades to (None, exc); ``_http`` renders

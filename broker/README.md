@@ -415,7 +415,7 @@ the calls it needs:
 - the `show_accounting_ledger_preview` method (PLAN's dry-run),
 - the `frappe.desk.form.linked_with.get_submitted_linked_docs` method (UNDO's blast-radius read),
 - the submit and cancel methods on Sales Invoice (`run_method=submit` / `run_method=cancel`),
-- the `User.get_roles` method (doctor's least-privilege self-check — see the BREAKING note below).
+- the `pacioli_guard.api.my_roles` method (doctor's least-privilege self-check — pacioli-guard >= 0.16.0; see the note below. On frappe older than 16.33 with an older guard, `User.get_roles` did this job).
 
 > **Using the Purchase Invoice tools too?** They need the same shape of grant, on Purchase
 > Invoice: read access to the Purchase Invoice DocType, and its submit/cancel methods. See
@@ -482,21 +482,24 @@ the calls it needs:
 > (`probe_payment_ledger_read`) and prints the remedy (a 403 there is a FAIL, the same deliberate
 > inversion as the Company/Workflow-read probes above).
 
-> **⚠️ UPGRADE — the tight-role seat check needs the `User.get_roles` method (doctor only).**
-> `pacioli doctor` now runs a **roles probe** (`probe_roles`): it reads the broker seat's own roles
+> **⚠️ UPGRADE — the tight-role seat check needs the `pacioli_guard.api.my_roles` method (doctor only).**
+> Since 0.40.1 / pacioli-guard 0.16.0 the seat reads its own roles from the guard's own
+> endpoint. frappe 16.33.0 (2026-09-01) removed `User.get_roles`, the function the probe read
+> through until then; on such a bench the doctor's finding names both answers and the cure.
+> `pacioli doctor` runs a **roles probe** (`probe_roles`): it reads the broker seat's own roles
 > and **refuses an install whose seat carries `System Manager`** (or the literal Administrator) —
 > that role can administer the governance away (write Custom DocPerm rows, mint API keys, run
 > arbitrary code via the System Console), so it voids the least-privilege spine even though frappe
 > grants it no runtime permission-bypass (only the literal `Administrator` *username* gets that).
 > An `Accounts Manager` seat draws a WARN (over-broad, not spine-voiding). This adds one grant —
-> the method `User.get_roles` — to the credential's `pacioli_guard` scope; without it the probe
-> reports a 403 FAIL with the remedy (deny-biased: an un-auditable seat cannot be certified
-> least-privilege). It is a **doctor** grant only — the governed runtime does not call it, so
-> existing governed writes are unaffected. Add it via API Key Scope → `methods` → `User.get_roles`.
-> Honest caveat: frappe's `get_roles` honors a `?uid=<user>` param with no permission check, so
-> this grant also lets the credential read *any* user's roles (read-only recon, not escalation);
-> doctor itself never sends `uid`. Ignoring `uid` bench-side would be a `pacioli_guard` change — a
-> separate hardening increment.
+> the method `pacioli_guard.api.my_roles` — to the credential's `pacioli_guard` scope; without it
+> the probe reports a 403 FAIL with the remedy (deny-biased: an un-auditable seat cannot be
+> certified least-privilege). It is a **doctor** grant only — the governed runtime does not call
+> it, so existing governed writes are unaffected. Add it via API Key Scope → `methods` →
+> `pacioli_guard.api.my_roles`. The endpoint takes no arguments and reports only on the calling
+> session, so unlike the old `User.get_roles` (which honoured `?uid=<user>` with no permission
+> check) it cannot read another user's roles. A seat that still carries the old `User.get_roles`
+> grant keeps that residual until the grant is removed.
 
 > **⚠️ UPGRADE / NEW GRANT — governed reconciliation (F-R2) needs `Payment Reconciliation.reconcile`.**
 > The new `plan_reconcile` → marker → `reconcile` tools settle a payment against invoices through
@@ -675,7 +678,7 @@ Operator checks, any time:
   superuser broker credential voids the trust spine). The **roles probe** extends that same rule
   from the username to the *role*: a seat carrying **System Manager** is a FAIL (it can administer
   the governance away — Custom DocPerm writes, API-key minting, System Console code exec), an
-  `Accounts Manager` seat draws a WARN, and a 403 (missing the `User.get_roles` grant) is itself a
+  `Accounts Manager` seat draws a WARN, and a 403 (missing the `pacioli_guard.api.my_roles` grant) is itself a
   FAIL — an un-auditable seat cannot be certified least-privilege. The **belt-exemptions probe**
   watches the three stock fields that silently disable ERPNext's own frozen/closed-period belts
   for a role (`Accounting Period.exempted_role` — which has **no anti-Administrator carve-out** —

@@ -273,9 +273,13 @@ class TestProbeCompanyRead(unittest.TestCase):
 
 
 class TestProbeRoles(unittest.TestCase):
-    """The over-privilege probe (the tight-role seat). Reads the seat's OWN roles via the v2
-    doctype-resolved method route (``/api/v2/method/User/get_roles`` — guard-grantable by config
-    without a guard code change, unlike the bare dotted method) and refuses a spine-voiding seat.
+    """The over-privilege probe (the tight-role seat). Reads the seat's OWN roles through
+    ``_read_seat_roles``: the guard's ``pacioli_guard.api.my_roles`` first (0.40.1; frappe 16.33
+    removed ``User.get_roles``), then the v2 doctype-resolved ``/api/v2/method/User/get_roles``
+    as the fallback for an older floor — and refuses a spine-voiding seat. The single-response
+    ``_transport_returning`` fixtures answer BOTH readers with the same canned reply, so a
+    ``{"data": [...]}`` fixture exercises the fallback and a ``{"message": {"roles": [...]}}``
+    fixture the floor.
 
     Extends :func:`probe_bench`'s "Administrator is a failure" doctrine from the literal *username*
     to the administrative *role*: a seat carrying **System Manager** can administer DocPerms,
@@ -369,10 +373,119 @@ class TestProbeRoles(unittest.TestCase):
                 self.assertNotIn("supersecret", msg)
 
     def test_probe_hits_the_v2_get_roles_url(self):
+        # an older floor (no my_roles) answers the first call off-shape; the reader falls back to
+        # frappe's own get_roles — the LAST call is the v2 route
         transport = _transport_returning(200, {"data": ["Accounts User", "All"]})
         probe_roles(self.target, self.env, lambda p: "", transport)
         _, url, _ = transport.called
         self.assertIn("/api/v2/method/User/get_roles", url)
+
+    # --- 0.40.1: the floor answers first (frappe 16.33 removed User.get_roles) -------------
+
+    def test_the_floor_answers_first_and_no_fallback_is_needed(self):
+        calls = []
+
+        def transport(method, url, headers, params=None, body=None):
+            calls.append(url)
+            return 200, {"message": {"guard_version": "0.16.0", "user": "seat",
+                                     "roles": ["Accounts User", "Pacioli Seat", "All"]}}
+        findings = probe_roles(self.target, self.env, lambda p: "", transport)
+        self.assertEqual(findings[0][0], OK)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("/api/method/pacioli_guard.api.my_roles", calls[0])
+
+    def test_an_older_floor_falls_back_to_frappes_get_roles(self):
+        routes = {"/api/method/pacioli_guard.api.my_roles": (403, {"exc_type": "PermissionError"}),
+                  "/api/v2/method/User/get_roles": (200, {"data": ["Accounts User", "All"]})}
+        transport = _routing_transport(routes)
+        findings = probe_roles(self.target, self.env, lambda p: "", transport)
+        self.assertEqual(findings[0][0], OK)
+        urls = [u for _, u in transport.calls]
+        self.assertEqual(len(urls), 2)
+        self.assertTrue(urls[-1].endswith("/api/v2/method/User/get_roles"))
+
+    def test_a_spine_voiding_role_from_the_floor_still_fails(self):
+        transport = _transport_returning(
+            200, {"message": {"roles": ["Accounts User", "System Manager", "All"]}})
+        findings = probe_roles(self.target, self.env, lambda p: "", transport)
+        self.assertEqual(findings[0][0], FAIL)
+        self.assertIn("System Manager", findings[0][1])
+
+    def test_frappe_16_33_without_the_new_floor_names_the_upgrade(self):
+        # the exact shape the first real customer build got (2026-09-08): guard 0.15.0 refuses the
+        # unknown bare method, frappe 16.33.0 answers 417 for the removed get_roles
+        shape = {"errors": [{"type": "ValidationError", "exception":
+                             "AttributeError: module 'frappe.core.doctype.user.user' has no "
+                             "attribute 'get_roles'. Did you mean: 'get_all_roles'?"}]}
+        routes = {"/api/method/pacioli_guard.api.my_roles": (403, {"exc_type": "PermissionError"}),
+                  "/api/v2/method/User/get_roles": (417, shape)}
+        findings = probe_roles(self.target, self.env, lambda p: "", _routing_transport(routes))
+        self.assertEqual(findings[0][0], FAIL)
+        self.assertIn("0.16.0", findings[0][1])
+        self.assertIn("16.33", findings[0][1])
+
+    # --- the lens's mutations (2026-09-08): the shapes no earlier test pinned ---------------
+
+    def test_floor_roles_as_a_string_falls_back_instead_of_iterating_characters(self):
+        routes = {"/api/method/pacioli_guard.api.my_roles": (200, {"message": {"roles": "Accounts User"}}),
+                  "/api/v2/method/User/get_roles": (404, None)}
+        transport = _routing_transport(routes)
+        findings = probe_roles(self.target, self.env, lambda p: "", transport)
+        self.assertEqual(findings[0][0], FAIL)
+        self.assertEqual(len(transport.calls), 2)          # fell back; never read "A","c","c"...
+
+    def test_floor_message_without_roles_falls_back_not_tracebacks(self):
+        routes = {"/api/method/pacioli_guard.api.my_roles": (200, {"message": {"guard_version": "0.16.0"}}),
+                  "/api/v2/method/User/get_roles": (200, {"data": ["Accounts User", "All"]})}
+        transport = _routing_transport(routes)
+        findings = probe_roles(self.target, self.env, lambda p: "", transport)
+        self.assertEqual(findings[0][0], OK)
+        self.assertEqual(len(transport.calls), 2)
+
+    def test_floor_non_string_roles_is_the_deny_biased_empty_seat(self):
+        transport = _transport_returning(200, {"message": {"roles": [7, None, ""]}})
+        findings = probe_roles(self.target, self.env, lambda p: "", transport)
+        self.assertEqual(findings[0][0], FAIL)
+        self.assertIn("no roles", findings[0][1])
+
+    def test_floor_transport_exception_is_unreachable_and_never_tries_the_fallback(self):
+        calls = []
+
+        def transport(method, url, headers, params=None, body=None):
+            calls.append(url)
+            raise OSError("no route to host")
+        findings = probe_roles(self.target, self.env, lambda p: "", transport)
+        self.assertEqual(findings[0][0], FAIL)
+        self.assertIn("unreachable", findings[0][1])
+        self.assertEqual(len(calls), 1)
+
+    def test_the_finding_carries_both_readers_answers(self):
+        # an upgraded-but-ungranted floor (403 from my_roles) on frappe 16.33: the operator must
+        # see the 403, not only the 417, or they are told to upgrade a guard they already upgraded
+        shape = {"errors": [{"type": "ValidationError", "exception": "no attribute 'get_roles'"}]}
+        routes = {"/api/method/pacioli_guard.api.my_roles": (403, {"exc_type": "PermissionError"}),
+                  "/api/v2/method/User/get_roles": (417, shape)}
+        findings = probe_roles(self.target, self.env, lambda p: "", _routing_transport(routes))
+        self.assertEqual(findings[0][0], FAIL)
+        self.assertIn("my_roles: HTTP 403", findings[0][1])
+        self.assertIn("User/get_roles: HTTP 417", findings[0][1])
+        routes["/api/method/pacioli_guard.api.my_roles"] = (500, {"exc_type": "InternalError"})
+        findings = probe_roles(self.target, self.env, lambda p: "", _routing_transport(routes))
+        self.assertIn("my_roles: HTTP 500", findings[0][1])
+
+    def test_fallback_payload_that_is_a_bare_string_does_not_traceback(self):
+        routes = {"/api/method/pacioli_guard.api.my_roles": (403, {}),
+                  "/api/v2/method/User/get_roles": (417, "<html>get_roles</html>")}
+        findings = probe_roles(self.target, self.env, lambda p: "", _routing_transport(routes))
+        self.assertEqual(findings[0][0], FAIL)
+
+    def test_a_417_that_is_not_the_16_33_shape_gets_no_upgrade_hint(self):
+        routes = {"/api/method/pacioli_guard.api.my_roles": (403, {}),
+                  "/api/v2/method/User/get_roles": (417, {"errors": [{"type": "ValidationError",
+                                                                      "exception": "something else"}]})}
+        findings = probe_roles(self.target, self.env, lambda p: "", _routing_transport(routes))
+        self.assertEqual(findings[0][0], FAIL)
+        self.assertNotIn("16.33", findings[0][1])
 
 
 def _param_routing_transport(routes):
@@ -501,6 +614,21 @@ class TestProbeBeltExemptions(unittest.TestCase):
             ap_list=(200, {"data": [{"name": "AP1"}]}),
             ap_docs={"AP1": {"name": "AP1", "exempted_role": ""}}))
         self.assertEqual([level for level, _ in findings], [OK])
+
+    def test_belt_reads_roles_from_the_floor_first(self):
+        # the same reader as probe_roles: with the floor answering, the v2 route is never asked
+        routes = {"/api/method/pacioli_guard.api.my_roles": (
+                      200, {"message": {"roles": ["Accounts User", "All"]}}),
+                  "/api/resource/Company/Example%20Co": (
+                      200, {"data": {"name": "Example Co", "role_allowed_for_frozen_entries": "Accounts User"}}),
+                  "/api/resource/Accounts%20Settings": (200, {"data": {}}),
+                  "/api/resource/Accounting%20Period": (200, {"data": []})}
+        transport = _param_routing_transport(routes)
+        findings = probe_belt_exemptions(self.target, self.env, lambda p: "", transport)
+        urls = [u for _, u, _ in transport.calls]
+        self.assertEqual(findings[0][0], FAIL, findings)         # the seat holds the frozen-entries exemption
+        self.assertTrue(urls[0].endswith("/api/method/pacioli_guard.api.my_roles"))
+        self.assertFalse(any(u.endswith("/api/v2/method/User/get_roles") for u in urls))
 
     def test_roles_403_fails_with_the_grant_remedy(self):
         findings, _ = self._probe(self._routes(roles=(403, {})))

@@ -59,6 +59,7 @@ fi
 if ! skip p2-contain; then mark p2-contain
   if [ -z "${BROKER_HOST_IP:-}" ]; then
     echo "!! BROKER_HOST_IP empty — skipping contain (perimeter is nginx-only). Set it and rerun to contain."
+    # deliberately NOT marked done: the rerun the message promises must actually run (lens 3)
   else
     apt-get install -y nftables >/dev/null
     {
@@ -95,8 +96,8 @@ if ! skip p2-contain; then mark p2-contain
     done
     [ -n "$okfw" ] || { echo "XX ruleset readback empty after 5s"; exit 1; }
     echo "ok CONTAIN_LIVE — UNDO: systemctl disable --now nftables && nft flush ruleset"
+    done_mark p2-contain
   fi
-  done_mark p2-contain
 fi
 
 echo "### PERIMETER_DONE $(date -u) — point your TLS proxy at this host:80 for $SITE; broker stays by-IP :8000"
