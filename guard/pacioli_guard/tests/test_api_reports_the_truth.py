@@ -106,7 +106,7 @@ class TestTheGateReceiptCountsEveryEnforcingHandler(_ApiHarness):
         self._set(api.frappe, "get_hooks", lambda name: {"*": events})
         return api._gate_registered()
 
-    def _all_four(self):
+    def _all_denying(self):
         from pacioli_guard import hooks
         return {event: handler for event, handler in hooks.doc_events["*"].items()
                 if event != "after_insert"}
@@ -115,7 +115,7 @@ class TestTheGateReceiptCountsEveryEnforcingHandler(_ApiHarness):
         """Derived from hooks.py, so it cannot be satisfied by editing one list to match a
         hardcoded copy of the other. `after_insert` is excluded because hooks.py's own comment
         says it decides nothing and refuses nothing."""
-        self.assertEqual(dict(api.CONSENT_HANDLERS), self._all_four())
+        self.assertEqual(dict(api.CONSENT_HANDLERS), self._all_denying())
 
     def test_a_site_missing_the_PREVIEW_handlers_is_not_reported_as_registered(self):
         """THE DEFECT, and it is the stale-hooks-cache shape one release later: a cache from
@@ -124,16 +124,24 @@ class TestTheGateReceiptCountsEveryEnforcingHandler(_ApiHarness):
                       "before_cancel": "pacioli_guard.act.before_cancel"}
         self.assertFalse(self._registered(pre_0_13_0))
 
+    def test_a_site_missing_the_DELETE_handler_is_not_reported_as_registered(self):
+        """The same shape one release later again: a hooks cache from before 0.17.0 carries the
+        four handlers and not `on_trash`. Unlike a skipped migrate, a skipped clear-cache here
+        fails OPEN (deletes simply are not gated), so this receipt is the operator's only signal."""
+        pre_0_17_0 = self._all_denying()
+        pre_0_17_0.pop("on_trash")
+        self.assertFalse(self._registered(pre_0_17_0))
+
     def test_a_fully_registered_site_is_reported_as_registered(self):
-        self.assertTrue(self._registered(self._all_four()))
+        self.assertTrue(self._registered(self._all_denying()))
 
     def test_a_site_missing_before_submit_is_still_not_registered(self):
-        events = self._all_four()
+        events = self._all_denying()
         events.pop("before_submit")
         self.assertFalse(self._registered(events))
 
     def test_a_handler_registered_under_the_wrong_name_does_not_count(self):
-        events = {event: "some.other.app.handler" for event in self._all_four()}
+        events = {event: "some.other.app.handler" for event in self._all_denying()}
         self.assertFalse(self._registered(events))
 
     def test_it_stays_deny_biased_when_it_cannot_look(self):

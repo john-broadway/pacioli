@@ -64,6 +64,7 @@ from pacioli_guard.scope import MINT_ROUTE_HINT, consent_verdict
 
 SUBMIT = "submit"
 CANCEL = "cancel"
+DELETE = "delete"   # 0.17.0 — see :func:`on_trash`
 
 # Frame names frappe uses when it writes ONE document, and the module they must belong to.
 # KNOWLEDGE-PINNED against frappe 16 `model/document.py`: `insert` (:431) and `_save` (:552) each own
@@ -122,7 +123,8 @@ def _writing_document(frame):
 #
 # (2) is the load-bearing one and it does not depend on frappe's caching behaviour staying put.
 #
-# Its VALUE is the act consent was established for (``SUBMIT`` / ``CANCEL``), not a bare True. A
+# Its VALUE is the act consent was established for (``SUBMIT`` / ``CANCEL`` / ``DELETE``), not a
+# bare True. A
 # bare True was the 0.9.6 shape and it is what let a submit marker license a cancel: the ride
 # decision could see THAT an enclosing act was governed but not WHICH act, so it could not refuse
 # the crossing. See :func:`_may_ride`.
@@ -474,9 +476,35 @@ def _may_ride(doc, action, enclosing_act):
     It stays open because it is load-bearing for UNDO and cannot be narrowed without a signal that a
     cascaded cancel is a consequence OF THE ENCLOSING DOCUMENT specifically. frappe's link tables are
     the candidate and have not been walked, so nothing about them is asserted here.
+
+    **DELETE (0.17.0) — rides a governed CANCEL, or a document the act itself created.** Both halves
+    of the question above apply, so both signals do. ERPNext's cancel path deletes what the posting
+    created: ``buying_controller.on_cancel`` (``:1021``) deletes the Asset and Asset Movement a
+    Purchase Receipt made, ``stock_entry.on_cancel`` (``:611``) the linked receive-at-warehouse
+    entry, ``accounts/utils.delete_exchange_gain_loss_journal`` the gain/loss journal. Those are UNDO
+    undoing its own consequences and they ride, with the same stated residual as a cascaded cancel.
+    A delete nested under a governed SUBMIT rides only if the act created the document (a scratch
+    document made and unmade inside the act); a pre-existing one the caller could have named falls
+    through to its own marker check, as a cancel under a submit does.
+
+    **What a delete cannot ride: an enclosing DELETE.** No delete frame is recognised (a delete holds
+    no ``frappe.model.document`` write frame, and this cut adds no new recogniser — every new piece
+    of trust in this file has had its own failure direction argued first), AND frappe runs the
+    document's own ``on_trash`` BEFORE any app handler (``model/document.py:1627``), so a parent's
+    cascaded deletes — ``accounts_controller.on_trash`` (``:490``) deleting an invoice's Serial and
+    Batch Bundles, ``pick_list.on_trash`` (``:394``), ``item.on_trash`` (``:626``) deleting variants
+    — reach this gate before the parent has established anything. Each falls through to its own
+    marker check: fail-closed, named in the refusal, and presentable, since one header carries one
+    marker per document. Two save-time deletes carry the same cost and are named in the changelog:
+    ``accounts_controller.validate`` (``:254`` -> ``remove_bundle_for_non_stock_invoices``) and
+    ``stock_reconciliation.get_bundle_for_specific_serial_batch`` (``:345``) delete a bundle through
+    the lifecycle while a DRAFT is being saved, so a gated seat's draft save of such a document needs
+    a delete marker for that bundle.
     """
     if action == CANCEL:
         return enclosing_act == CANCEL
+    if action == DELETE and enclosing_act == CANCEL:
+        return True
     return _flag_get(doc, _CREATED_IN_ACT) or _flag_get(doc, "in_insert")
 
 
@@ -527,6 +555,21 @@ def _presented_consent():
         return frappe.get_request_header(CONSENT_HEADER)
     except Exception:  # noqa: BLE001 — no request context is an absent token, not an error
         return None
+
+
+# What walks around the gate, PER ACT, for the refusal text. The submit/cancel pair is
+# `run_before_save_methods` returning early on `flags.ignore_validate` (frappe `model/document.py
+# :1399-1400`) before `before_submit`/`before_cancel` fire; the delete path never consults that flag.
+# Its hole is `delete_doc(..., ignore_on_trash=True)` (`model/delete_doc.py:164`; frappe's installer is
+# its only caller in frappe 16) and, as for every act, a write that skips the lifecycle. A refusal is
+# the one message an operator is certain to read; it must describe the hole in THIS gate.
+_RESIDUAL = {
+    SUBMIT: ("a write that sets `flags.ignore_validate`, or one that skips the document lifecycle "
+             "entirely (raw SQL, `db_update`/`db_set` field writes)"),
+    DELETE: ("a delete that sets `ignore_on_trash` (frappe's own installer), or one that skips the "
+             "document lifecycle entirely (raw SQL, `frappe.db.delete`)"),
+}
+_RESIDUAL[CANCEL] = _RESIDUAL[SUBMIT]
 
 
 def _require_consent(doc, action):
@@ -603,9 +646,7 @@ def _require_consent(doc, action):
             f"Refused for {doctype} {docname}. The marker is presented in the {CONSENT_HEADER} "
             f"header. This gate runs at the document layer, so it covers paths an api-key check "
             f"cannot see (OAuth Bearer, desk sessions, background jobs, the scheduler, server "
-            f"scripts, the bench console). It does NOT see a write that sets "
-            f"`flags.ignore_validate`, or one that skips the document lifecycle entirely "
-            f"(raw SQL, `db_update`/`db_set` field writes). {MINT_ROUTE_HINT}.",
+            f"scripts, the bench console). It does NOT see {_RESIDUAL[action]}. {MINT_ROUTE_HINT}.",
         )
         return
     # The spend IS the single-use check — see `_claim_consent`. Losing it denies, and it fails
@@ -717,6 +758,40 @@ def before_cancel(doc, method=None):
     binding independently (:func:`_may_ride`), because riding never reaches ``consent_verdict`` at
     all and a submit marker was licensing cascaded cancels through it."""
     _require_consent(doc, CANCEL)
+
+
+def on_trash(doc, method=None):
+    """The DELETE gate (0.17.0): as :func:`before_submit`, for erasing a document.
+
+    **Why.** The lab, 2026-10-04 (the frappectl walk, row 36): a consent-gated seat deleted a draft
+    Sales Invoice over an OAuth bearer and nothing refused it. The gate's documented scope was
+    docstatus 1 and 2, so nothing it said was false, but a seat that must ask a human before it posts
+    could still erase a draft the human never saw. Erasing a document is not the posting and it is not
+    the reversal either: it is a third act, with its own marker, so a submit or cancel marker never
+    spends here (``consent_verdict``'s act binding). A CANCELLED document reaches this gate too (frappe
+    refuses only docstatus 1 in ``check_permission_and_not_submitted``); on the lab a cancelled Sales
+    Invoice was then held by frappe's own ``LinkExistsError`` for a human and the gated seat alike
+    (2026-10-05, rows R10/R14), and ``accounts_controller.on_trash`` (``:499-513``) deletes a
+    cancelled document's PLE/GLE/SLE rows by raw query only once that link check has let it through.
+    This gate runs BEFORE that check (``delete_doc.py:165`` vs ``:170``), so a gated seat is refused
+    for consent first; and a marker spent on a delete frappe then refuses is rolled back with the
+    transaction (measured: ``burned`` read 0 afterwards).
+
+    **Where frappe fires it, verified in frappe 16 source.** ``delete_doc`` runs
+    ``check_permission_and_not_submitted`` (so docstatus 1 never arrives) and then
+    ``doc.run_method("on_trash")`` (``model/delete_doc.py:164-165``), composed with ``doc_events``
+    by ``Document.hook`` like every other event this app gates. Every lifecycle delete passes it:
+    REST v1 ``DELETE /api/resource``, v2 ``DELETE /api/v2/document`` (``api/v2.py:290``),
+    ``frappe.client.delete``, the desk's ``reportview.delete_items`` (which rolls back a refused
+    item and continues, ``:690-694``), ``Document.delete``, a background job, the bench console. The
+    refusal aborts the delete before ``delete_from_table`` runs, and the request's own rollback
+    (``app.py``) discards whatever the document's own ``on_trash`` did first.
+
+    **Ordering, stated because it decides the cost.** frappe runs the document's OWN ``on_trash``
+    before any app's handler (``model/document.py:1627``), so a parent's cascaded deletes reach this
+    gate before the parent does and are judged on their own — see :func:`_may_ride`.
+    """
+    _require_consent(doc, DELETE)
 
 
 def after_insert(doc, method=None):

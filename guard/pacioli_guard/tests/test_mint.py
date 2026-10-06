@@ -293,8 +293,14 @@ class TestMintRefusals(MintBase):
         self.assertIn("does not exist", result["reason"].lower())
         self.assertEqual(self.fake.docs, [], "nothing may be inserted on a refusal")
 
-    def test_it_refuses_an_unknown_act(self):
+    def test_it_mints_a_delete_marker(self):
+        # 0.17.0: the delete gate needs a marker a human can make; a gate with no mint is a wall.
         result = self.mint_one(ref_action="delete")
+        self.assertTrue(result["ok"], result.get("reason"))
+        self.assertEqual(self.fake.docs[-1].fields["ref_action"], "delete")
+
+    def test_it_refuses_an_unknown_act(self):
+        result = self.mint_one(ref_action="discard")
         self.assertFalse(result["ok"])
         self.assertEqual(self.fake.docs, [])
 
@@ -304,7 +310,7 @@ class TestMintRefusals(MintBase):
         self.assertEqual(self.fake.docs, [])
 
     def test_a_refusal_never_commits(self):
-        self.mint_one(ref_action="delete")
+        self.mint_one(ref_action="discard")
         self.assertFalse(self.fake.db.committed)
 
 

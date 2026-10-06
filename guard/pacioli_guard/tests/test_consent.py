@@ -745,11 +745,18 @@ class TestPlanConsentMarker(unittest.TestCase):
         self.assertTrue(ok)
         self.assertNotIn("minted_by", row)
 
+    def test_delete_is_an_act_since_0_17_0(self):
+        # The lab (2026-10-04, row 36) showed a gated seat deleting a draft with nothing asked.
+        # `on_trash` is gated from 0.17.0, so a delete marker is one the floor can spend.
+        ok, reason, row = self.plan(ref_action="delete")
+        self.assertTrue(ok, reason)
+        self.assertEqual(row["ref_action"], "delete")
+
     def test_an_unknown_act_is_refused(self):
-        # The gate only ever asks about submit/cancel, and the DocType's Select allows only those.
-        # A marker for "delete" would be a row nothing can spend, sitting in the books looking like
-        # consent.
-        for bad in ("delete", "amend", "SUBMIT", "", None):
+        # The gate asks about submit/cancel/delete, and the DocType's Select allows only those.
+        # A marker for "discard" would be a row nothing can spend, sitting in the books looking
+        # like consent (the README says why discard is not folded into cancel).
+        for bad in ("discard", "amend", "SUBMIT", "", None):
             ok, reason, row = self.plan(ref_action=bad)
             self.assertFalse(ok, f"{bad!r} must be refused")
             self.assertIsNone(row)

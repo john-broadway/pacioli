@@ -347,12 +347,13 @@ class TestBackwardCompatibilityAndRegistration(unittest.TestCase):
         # preview's own cascade was refused and PLAN could not complete. They REFUSE, so they are
         # gates three and four, not recorders — but they refuse only a preview and they do not spend
         # the marker. `after_insert` remains the one non-gate: it reads no grant and refuses nothing.
+        # Gate five, 0.17.0: `on_trash` — the lab showed a gated seat erasing a draft (row 36).
         from pacioli_guard import hooks
 
         self.assertEqual(
             set(hooks.doc_events["*"]),
             {"before_submit", "before_cancel", "after_insert",
-             "before_gl_preview", "before_sl_preview"})
+             "before_gl_preview", "before_sl_preview", "on_trash"})
         for event in ("before_submit", "before_cancel", "after_insert",
                       "before_gl_preview", "before_sl_preview"):
             self.assertEqual(hooks.doc_events["*"][event], f"pacioli_guard.act.{event}")
@@ -1683,3 +1684,182 @@ class TestAStampThatCannotBeRecordedBreaksCLOSED(unittest.TestCase):
         d = self._unstampable()
         self.assertFalse(act._flag_get(d, act._CONSENT_ESTABLISHED))
         self.assertIsNone(act._flag_value(d, act._CONSENT_ESTABLISHED))
+
+
+class TestTheDeleteGate(unittest.TestCase):
+    """0.17.0. Found on the lab on 2026-10-04 (the frappectl walk, row 36), not by any test here: a
+    consent-gated seat deleted a draft Sales Invoice over an OAuth bearer and nothing refused it. The
+    gate's documented scope was docstatus 1 and 2, so the claim was not false, but a seat that must
+    ask a human before it posts could still erase a draft, and no human saw it. (The first draft of
+    this docstring also claimed a cancelled invoice's GL rows could go with it; on the lab frappe's
+    own ``LinkExistsError`` held a cancelled Sales Invoice for human and gated seat alike, so that
+    sentence was cut. The gate still runs before that check and refuses the gated seat first.)
+
+    Verified against frappe 16 source: ``delete_doc`` runs ``check_permission_and_not_submitted``
+    (so a docstatus 1 document never reaches this gate) and then ``doc.run_method("on_trash")``
+    (``model/delete_doc.py:164-165``). ``Document.hook`` composes ``doc_events`` around ``on_trash``
+    exactly as it does around ``before_submit``, with ONE ordering fact that matters below: the
+    document's OWN ``on_trash`` runs before any app's handler (``model/document.py:1627``), so a
+    parent's cascaded deletes reach this gate before the parent does.
+    """
+
+    def test_hooks_registers_the_delete_gate(self):
+        from pacioli_guard import hooks
+        self.assertEqual(hooks.doc_events["*"]["on_trash"], "pacioli_guard.act.on_trash")
+
+    def test_a_gated_seat_deleting_a_draft_with_no_marker_is_refused(self):
+        fake = wire(headers={}, markers=marker(action="delete"))
+        with self.assertRaises(FakePermissionError):
+            act.on_trash(FakeDoc(in_insert=False), "on_trash")
+        self.assertIn("consent to delete", fake.thrown[0].lower())
+
+    def test_row_36_an_oauth_bearer_delete_is_refused(self):
+        # The lab finding, as a test: no api-key header, so the transport gate never fires.
+        fake = wire(headers={"Authorization": "Bearer some-oauth-token"},
+                    markers=marker(action="delete"))
+        with self.assertRaises(FakePermissionError):
+            act.on_trash(FakeDoc(in_insert=False), "on_trash")
+        self.assertIn("consent", fake.thrown[0].lower())
+
+    def test_a_submit_marker_does_not_spend_on_a_delete(self):
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(action="submit"))
+        with self.assertRaises(FakePermissionError):
+            act.on_trash(FakeDoc(in_insert=False), "on_trash")
+        self.assertIn("authorises submit, not delete", fake.thrown[0])
+
+    def test_a_cancel_marker_does_not_spend_on_a_delete(self):
+        # Consent to reverse a posting is not consent to erase the document that recorded it.
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(action="cancel"))
+        with self.assertRaises(FakePermissionError):
+            act.on_trash(FakeDoc(in_insert=False), "on_trash")
+        self.assertIn("authorises cancel, not delete", fake.thrown[0])
+
+    def test_a_delete_marker_spends_on_a_delete_and_is_burned(self):
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(action="delete"))
+        act.on_trash(FakeDoc(in_insert=False), "on_trash")
+        self.assertIsNone(fake.thrown)
+        self.assertTrue(all(row["burned"] for row in fake.db.markers.values()))
+
+    def test_a_replayed_delete_marker_is_refused(self):
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(action="delete"))
+        act.on_trash(FakeDoc(in_insert=False), "on_trash")
+        fake.thrown = None
+        with self.assertRaises(FakePermissionError):
+            act.on_trash(FakeDoc(in_insert=False), "on_trash")
+
+    def test_a_delete_with_no_request_context_is_refused(self):
+        # bench console / background job: no header can exist, so a gated seat is refused.
+        fake = wire(markers=marker(action="delete"))
+
+        def no_request(key, default=None):
+            raise RuntimeError("no request in this context")
+
+        fake.get_request_header = no_request
+        with self.assertRaises(FakePermissionError):
+            act.on_trash(FakeDoc(in_insert=False), "on_trash")
+
+    def test_an_ungated_seat_is_untouched(self):
+        # The `"*"` handler runs on every delete on the site; a site that never opted in sees nothing.
+        fake = wire(gated=False, headers={}, markers={})
+        act.on_trash(FakeDoc(in_insert=False), "on_trash")
+        self.assertIsNone(fake.thrown)
+
+    def test_the_refusal_names_the_delete_residual_not_the_submit_one(self):
+        # The submit/cancel refusal says the gate cannot see `flags.ignore_validate`; that flag is
+        # not on the delete path at all. What walks around THIS gate is `ignore_on_trash` (frappe's
+        # installer is its only caller in frappe 16) and raw `frappe.db.delete`. The first message an
+        # operator reads must not describe a different gate's hole.
+        fake = wire(headers={}, markers={})
+        with self.assertRaises(FakePermissionError):
+            act.on_trash(FakeDoc(in_insert=False), "on_trash")
+        self.assertIn("ignore_on_trash", fake.thrown[0])
+        self.assertNotIn("ignore_validate", fake.thrown[0])
+
+    # ---- the ride: what a consented act's own consequences may delete
+
+    def test_a_cascaded_delete_under_a_governed_CANCEL_rides(self):
+        # erpnext `buying_controller.on_cancel` (:1021) deletes the Asset and Asset Movement a
+        # Purchase Receipt created; `stock_entry.on_cancel` (:611) deletes the linked entry;
+        # `accounts/utils.delete_exchange_gain_loss_journal` runs from the cancel path. All are the
+        # framework undoing its own consequences, and UNDO must keep working.
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN},
+                    markers=marker(doctype="Purchase Receipt", docname="PR-1", action="cancel"))
+        pr = FakeDoc(doctype="Purchase Receipt", name="PR-1", in_insert=False)
+
+        def cascade():
+            asset = FakeDoc(doctype="Asset", name="ACC-ASS-0001", in_insert=False)
+            act.on_trash(asset, "on_trash")
+
+        _save(pr, lambda: (act.before_cancel(pr, "before_cancel"), cascade()))
+        self.assertIsNone(fake.thrown)
+
+    def test_a_pre_existing_document_deleted_under_a_governed_SUBMIT_does_not_ride(self):
+        # The same discipline as cancel-under-submit (0.10.0): a submit marker licenses the
+        # posting, not the erasure of a document the caller could have named.
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(action="submit"))
+        si = FakeDoc(in_insert=False)
+
+        def cascade():
+            other = FakeDoc(doctype="Serial and Batch Bundle", name="SABB-EXISTING", in_insert=False)
+            act.on_trash(other, "on_trash")
+
+        with self.assertRaises(FakePermissionError):
+            _save(si, lambda: (act.before_submit(si, "before_submit"), cascade()))
+        self.assertIn("SABB-EXISTING", fake.thrown[0])
+
+    def test_a_document_the_act_created_and_then_deleted_rides(self):
+        # A scratch document the act made and unmade: no human could have named it.
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(action="submit"))
+        si = FakeDoc(in_insert=False)
+
+        def cascade():
+            scratch = FakeDoc(doctype="Serial and Batch Bundle", name="SABB-NEW", in_insert=False)
+            insert(scratch, act.after_insert, scratch, "after_insert")
+            act.on_trash(scratch, "on_trash")
+
+        _save(si, lambda: (act.before_submit(si, "before_submit"), cascade()))
+        self.assertIsNone(fake.thrown)
+
+    def test_a_delete_under_an_UNGOVERNED_outer_write_is_still_refused(self):
+        # A draft save of a non-submittable document is never gated; a delete nested under it
+        # must not read as a consequence of a consented act, because there is none.
+        fake = wire(headers={}, markers={})
+        outer = FakeDoc(doctype="Subscription", name="SUB-1", in_insert=False)
+
+        def cascade():
+            act.on_trash(FakeDoc(name="SI-OTHER", in_insert=False), "on_trash")
+
+        with self.assertRaises(FakePermissionError):
+            _save(outer, cascade)
+        self.assertIn("SI-OTHER", fake.thrown[0])
+
+    def test_a_parents_own_on_trash_cascade_is_judged_before_the_parent(self):
+        # frappe runs the document's OWN `on_trash` before this handler, and
+        # `accounts_controller.on_trash` (:490) deletes the invoice's Serial and Batch Bundles
+        # through the lifecycle, so the bundle reaches this gate first, with no enclosing governed
+        # act on the stack (a delete holds no write frame). It falls through to its own marker
+        # check. Fail-closed, and the cost is presentable: one marker per document, in one header.
+        parent = FakeDoc(in_insert=False)
+        child = FakeDoc(doctype="Serial and Batch Bundle", name="SABB-1", in_insert=False)
+        fake = wire(headers={act.CONSENT_HEADER: TOKEN}, markers=marker(action="delete"))
+        with self.assertRaises(FakePermissionError):
+            act.on_trash(child, "on_trash")
+        self.assertIn("SABB-1", fake.thrown[0])
+
+        markers = marker(action="delete", token="token-for-the-invoice")
+        markers.update(marker(doctype="Serial and Batch Bundle", docname="SABB-1", action="delete",
+                              token="token-for-the-bundle"))
+        fake = wire(headers={act.CONSENT_HEADER: "token-for-the-invoice token-for-the-bundle"},
+                    markers=markers)
+        act.on_trash(child, "on_trash")
+        act.on_trash(parent, "on_trash")
+        self.assertIsNone(fake.thrown)
+        self.assertTrue(all(row["burned"] for row in fake.db.markers.values()))
+
+    def test_may_ride_is_pinned_on_the_delete_cells(self):
+        # (DELETE, enclosing DELETE) is deliberately absent: no delete frame is recognised, so
+        # `_enclosing_governed_act` cannot produce it, and asserting it would pin the double.
+        self.assertTrue(act._may_ride(FakeDoc(in_insert=False), act.DELETE, act.CANCEL))
+        self.assertTrue(act._may_ride(FakeDoc(in_insert=True), act.DELETE, act.CANCEL))
+        self.assertFalse(act._may_ride(FakeDoc(in_insert=False), act.DELETE, act.SUBMIT))
+        self.assertTrue(act._may_ride(FakeDoc(in_insert=True), act.DELETE, act.SUBMIT))

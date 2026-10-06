@@ -41,11 +41,22 @@ untouched. "Which credential is this" only exists at authentication time, so thi
 here, which also means it governs api-key requests and not OAuth `Bearer`, desk sessions, or
 background jobs.
 
-**`doc_events` `before_submit` / `before_cancel` — was this act consented?** Consent is a property
-of a document, so it is checked on the document. Every path that **posts to the ledger** through the
-ORM passes it, including the ones the credential hook never sees. It is inert for anyone without a
-grant that sets `require_consent`, so installing this app does not change a site that has not opted
-in.
+**`doc_events` `before_submit` / `before_cancel` / `on_trash` — was this act consented?** Consent is
+a property of a document, so it is checked on the document. Every path that **posts to the ledger**
+through the ORM passes it, including the ones the credential hook never sees. It is inert for anyone
+without a grant that sets `require_consent`, so installing this app does not change a site that has
+not opted in.
+
+**`on_trash` is the delete gate** (0.17.0). Three acts, three markers: `submit` posts, `cancel`
+reverses, `delete` erases the document. A marker for one act never spends on another. frappe fires
+`on_trash` from `delete_doc` after its own permission check and before its link check and the row
+removal, so REST v1/v2 `DELETE`, `frappe.client.delete`, the desk's bulk delete, `Document.delete`,
+background jobs and the console all pass it, and a gated seat is refused for consent before frappe's
+own `LinkExistsError` gets a word. Driven on the lab on 2026-10-05, before and after. A delete rides a governed
+cancel (UNDO deletes what the posting created) or a document the act itself made; nothing rides an
+enclosing delete, because frappe runs a document's own `on_trash` before any app's handler, so a
+parent's cascaded deletes are judged first, each on its own marker — one header carries several.
+The changelog names the ERPNext paths that cost a marker, two of them at draft save time.
 
 **`doc_events` `before_gl_preview` / `before_sl_preview` — was this REHEARSAL consented?** (0.13.0.)
 ERPNext previews a ledger by performing the posting and rolling the transaction back
@@ -85,11 +96,18 @@ adds a field and two `doc_events` keys. Skip the migrate and **every** governed 
 the cache clear and previews stay refused. Both fail closed, and both look like the upgrade did
 nothing. `SECURITY.md` has the detail.
 
+🔴 **Upgrading to 0.17.0: the same two steps, and skipping BOTH now fails OPEN.** An in-place pip
+upgrade plus a worker restart leaves frappe's cached hook registry as it was, so `on_trash` is not
+in it and deletes stay ungated, exactly as before the upgrade. `bench migrate` clears that cache
+itself; `bench clear-cache` is the explicit step. `consent_status.gate_registered` reports `false` on
+such a site; read it after the upgrade.
+
 **What walks around both hooks, stated rather than discovered:**
 
-1. Writes that skip the document lifecycle entirely: raw SQL, and `db_update`-style field writes,
-   which ERPNext core does itself when reposting. No Frappe extension point observes those, so no
-   gate built on Frappe extension points can claim them.
+1. Writes that skip the document lifecycle entirely: raw SQL, `db_update`-style field writes,
+   which ERPNext core does itself when reposting, and raw `frappe.db.delete`. No Frappe extension
+   point observes those, so no gate built on Frappe extension points can claim them. On the delete
+   path add `delete_doc(..., ignore_on_trash=True)`, whose only caller in frappe 16 is the installer.
 2. An actor who can break the *grant read* itself. The consent handler is registered on
    `doc_events["*"]`, so it runs on every document on the site; if reading the grant raises, it
    returns rather than throwing, because a `"*"` handler that crashes takes the whole site down

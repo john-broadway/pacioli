@@ -47,6 +47,11 @@ CONSENT_HANDLERS = {
     "before_cancel": "pacioli_guard.act.before_cancel",
     "before_gl_preview": "pacioli_guard.act.before_gl_preview",
     "before_sl_preview": "pacioli_guard.act.before_sl_preview",
+    # 0.17.0. Load-bearing in a way the four above are not: an in-place pip upgrade + restart with
+    # neither `migrate` nor `clear-cache`, on a bench whose redis outlives the restart, leaves
+    # `on_trash` out of the cached registry and deletes UNGATED — fail-OPEN, where a skipped migrate
+    # alone refuses to mint the act. `gate_registered: false` is the operator's only receipt.
+    "on_trash": "pacioli_guard.act.on_trash",
 }
 
 

@@ -49,9 +49,18 @@ They present differently, so knowing which you are looking at saves the debuggin
   preserves the hook entries already cached without picking up new ones. Confirm with
   `get_hooks("doc_events")["*"]["before_gl_preview"]`, which must not be empty.
 
-`consent_status.gate_registered` checks `before_submit` and `before_cancel` only, so it reports true
-while the preview hooks are still missing. That is not a false statement, and it will not warn you
-about this either.
+`consent_status.gate_registered` counts every denying handler — the two preview hooks since 0.14.0
+and `on_trash` since 0.17.0 — so a site whose cache predates the upgrade reports `false`. (Until
+0.14.0 it checked `before_submit` and `before_cancel` only, and this file kept saying so after that
+stopped being true.)
+
+For **0.17.0** the same two steps apply and the failure shape inverts: an in-place pip upgrade with
+NEITHER step leaves `on_trash` out of frappe's cached hook registry (`get_hooks` reads redis's
+`app_hooks`, which a worker restart does not rebuild) and **deletes stay ungated — fail open**, the
+only upgrade failure in this app that does not refuse. `bench migrate` clears that cache itself and
+also syncs the `delete` act into the marker's Select; skipped on its own, minting a `delete` marker
+is refused by frappe's Select validation, fail closed. Read `gate_registered` after the upgrade; it
+is the receipt.
 
 ## Reporting a vulnerability
 
@@ -75,8 +84,9 @@ later. Coverage is a **composition of two enforcement points at two altitudes**,
   tokens, desk/cookie sessions, background jobs, the scheduler, server scripts, or the bench
   console. "Which credential is this" only exists at authentication time, which is why that gate can
   only live there.
-- **Consent** runs at `doc_events` on `before_submit` and `before_cancel`, and since 0.13.0 on
-  `before_gl_preview` and `before_sl_preview` as well. It is a property of an act on a document, so it
+- **Consent** runs at `doc_events` on `before_submit` and `before_cancel`, since 0.13.0 on
+  `before_gl_preview` and `before_sl_preview`, and since 0.17.0 on `on_trash` (a gated seat's delete
+  needs its own `delete` marker; a submit or cancel marker never spends on it). It is a property of an act on a document, so it
   is enforced on the document, and it therefore covers paths the credential hook cannot see. The two
   preview handlers gate a rehearsal rather than a posting: ERPNext previews a ledger by performing it
   and rolling back, so previewing a submit needs the same marker as the submit and does not spend it.

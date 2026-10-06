@@ -44,5 +44,19 @@ doc_events = {
         # lifecycle events above (`model/document.py:1252`). Added 0.13.0.
         "before_gl_preview": "pacioli_guard.act.before_gl_preview",
         "before_sl_preview": "pacioli_guard.act.before_sl_preview",
+        # The DELETE gate (0.17.0). frappe's `delete_doc` runs `check_permission_and_not_submitted`
+        # (so a docstatus 1 document never reaches it) and then `doc.run_method("on_trash")`
+        # (`model/delete_doc.py:164-165`), composed through `Document.hook` like every event above,
+        # so it covers every lifecycle delete: REST v1 DELETE, v2 DELETE, `frappe.client.delete`,
+        # the desk's `reportview.delete_items`, `Document.delete`, a background job, the console.
+        # Two facts the comment must carry: (1) frappe runs the document's OWN `on_trash` BEFORE
+        # any app's handler (`model/document.py:1627`), so a parent's cascaded deletes are judged
+        # before the parent is; (2) an in-place pip upgrade + worker restart with NEITHER `bench
+        # migrate` nor `bench clear-cache`, on a bench whose redis outlives the restart, leaves this
+        # key out of frappe's cached registry and deletes ungated — fail-OPEN, unlike every other
+        # upgrade failure this app has (migrate clears that cache itself, frappe/migrate.py:88).
+        # `api.py`'s `gate_registered` counts it for that reason. Not seen: `ignore_on_trash=True` (frappe's
+        # installer is its only caller) and raw `frappe.db.delete` / SQL.
+        "on_trash": "pacioli_guard.act.on_trash",
     }
 }

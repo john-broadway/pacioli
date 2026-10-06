@@ -1165,12 +1165,14 @@ def consent_token_hash(token):
     return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
 
 
-# The acts a marker can authorise. The gate only ever asks about these two, and the DocType's own
-# Select allows only these two, so a row naming anything else is a marker nothing can ever spend —
-# consent-shaped clutter in the books. Amend is deliberately absent: creating a corrected draft
-# posts nothing and needs no marker (the broker's `amend_*` tools say so); submitting that draft is
-# the irreversible step and takes its own submit marker.
-CONSENT_ACTS = ("submit", "cancel")
+# The acts a marker can authorise. The gate only ever asks about these three, and the DocType's
+# own Select allows only these three, so a row naming anything else is a marker nothing can ever
+# spend — consent-shaped clutter in the books. Amend is deliberately absent: creating a corrected
+# draft posts nothing and needs no marker (the broker's `amend_*` tools say so); submitting that
+# draft is the irreversible step and takes its own submit marker. Delete joined in 0.17.0 after the
+# lab showed a gated seat erasing a draft with nothing asked (2026-10-04): a delete posts nothing,
+# but it erases a document, and for a cancelled one the ledger rows that recorded its reversal.
+CONSENT_ACTS = ("submit", "cancel", "delete")
 
 # A consent grant is meant to be SHORT-LIVED. Same range the broker CLI's `--ttl` enforces, for the
 # same reason: an unbounded TTL is a standing permission wearing a marker's clothes.
@@ -1456,7 +1458,8 @@ def consent_verdict(presented, doctype, docname, action, record, now, principal)
     marker_action = _consent_field(record, "action")
     if not action or not marker_action:
         return False, ("the act being authorised could not be determined — consent binds to a "
-                       "named act (submit or cancel), and an unreadable act binds to nothing")
+                       "named act (submit, cancel or delete), and an unreadable act binds to "
+                       "nothing")
     if str(marker_action).strip().lower() != str(action).strip().lower():
         return False, (f"this consent marker authorises {str(marker_action).strip().lower()}, "
                        f"not {str(action).strip().lower()} — consent for one act is not consent "

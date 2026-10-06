@@ -45,11 +45,13 @@ class PacioliConsentMarker(Document):
         with a published residual rather than a claim of totality. Reaching either still requires
         ``System Manager`` or shell, both already above this app's threat model.
 
-        ⚠️ **Not covered here at all: DELETE.** This guard runs on save. A marker can still be
-        deleted outright by a principal holding delete permission, which **erases** the record of a
-        consent that was granted and spent rather than altering it — and an erased grant is worse
-        than an edited one, because nothing remains to disagree with. Guarding it is a policy
-        choice, not a bug fix (an operator with a legitimate reason to remove records needs a
+        ⚠️ **DELETE is not this guard's.** This guard runs on save. Since 0.17.0 the ``"*"``
+        ``on_trash`` gate (``act.py``) covers a consent-GATED seat deleting a marker like any other
+        document: it needs a ``delete`` marker for the marker, minted by another hand. An UNGATED
+        principal holding delete permission can still delete one outright, which **erases** the
+        record of a consent that was granted and spent rather than altering it — and an erased grant
+        is worse than an edited one, because nothing remains to disagree with. Guarding that is a
+        policy choice, not a bug fix (an operator with a legitimate reason to remove records needs a
         route), so it is named here rather than closed quietly.
         """
         violations = immutable_marker_violations(self.get_doc_before_save(), self)

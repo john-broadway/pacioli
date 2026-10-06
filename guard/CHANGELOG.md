@@ -1,7 +1,60 @@
-# Changelog — Pacioli Guard
+# Changelog: Pacioli Guard
 
 Least-privilege API capability scoping for Frappe/ERPNext. Honest pre-1.0 semver.
 Distribution name `pacioli-guard`; Frappe app / import module `pacioli_guard`.
+
+## 0.17.0 - 2026-10-05 - the floor sees a delete
+
+MINOR. **One new gate, one new act, and an upgrade step that fails OPEN if skipped.**
+
+- `doc_events["*"]["on_trash"]` -> `pacioli_guard.act.on_trash`. For a consent-gated seat,
+  deleting a document now needs a `delete` marker, minted by a different hand, bound to that
+  document, single-use. Found on the lab on 2026-10-04 (the frappectl walk, row 36): a gated seat
+  deleted a draft Sales Invoice over an OAuth bearer and nothing refused it. The documented scope
+  was docstatus 1 and 2, so nothing said was false; but a seat that must ask before it posts could
+  erase a draft, and no human saw it. frappe fires `on_trash` from `delete_doc` after its own
+  permission check and before its link check and the row removal (`model/delete_doc.py:164-171`),
+  so the gate sees REST v1 and v2 `DELETE`, `frappe.client.delete`, the desk's bulk delete,
+  `Document.delete`, background jobs and the console, and it answers before frappe's
+  `LinkExistsError` does. **Driven on the lab 2026-10-05** (three passes, before and after, 0
+  fixture rows): on 0.16.0 the gated seat deleted a draft through all seven non-api-key doors, a
+  submit marker in the header notwithstanding; on 0.17.0 six of them refused with the consent
+  reason and the seventh, the desk's bulk delete, held the document and reported only a count (that
+  door swallows the reason by design; the same door deleted for an ungated human). A `delete`
+  marker spent and the draft went, a `submit` marker was refused by act, and a marker spent on a
+  delete that frappe then refused (a cancelled invoice, held by its own link rule for a human too)
+  read `burned=0` after the rollback.
+- **What rides.** A delete nested under a governed CANCEL (ERPNext's cancel path deletes the Asset,
+  Asset Movement, linked Stock Entry and gain/loss journal a posting created), and a document the
+  act itself created. A pre-existing document deleted under a governed SUBMIT does not ride, same
+  as a cancel under a submit. **Nothing rides an enclosing DELETE:** frappe runs the document's own
+  `on_trash` before any app's handler, so a parent's cascaded deletes are judged before the parent
+  is, each on its own marker. Named costs, one marker per document in one header:
+  `accounts_controller.on_trash` (`:490`, Serial and Batch Bundles of an invoice),
+  `pick_list.on_trash` (`:394`), `item.on_trash` (`:626`, variants), and two **save-time** deletes
+  that make a gated seat's draft save of such a document a gated act:
+  `accounts_controller.validate` (`:254` -> `remove_bundle_for_non_stock_invoices`) and
+  `stock_reconciliation.get_bundle_for_specific_serial_batch` (`:345`). All fail closed.
+- `CONSENT_ACTS` and the `Pacioli Consent Marker.ref_action` Select gain `delete`;
+  `mint_consent_marker(..., ref_action="delete")` mints one. `discard` remains outside, by design
+  (see the README).
+- The refusal text names the residual of the gate that refused: for a delete that is
+  `ignore_on_trash` (frappe's installer is its only caller in frappe 16) and raw
+  `frappe.db.delete`; `flags.ignore_validate` is not on the delete path.
+- `consent_status.gate_registered` requires `on_trash` too; `SECURITY.md` had said it checked two
+  handlers, which stopped being true at 0.14.0.
+- 🔴 **Upgrade: `bench migrate` AND `bench clear-cache`, and this time the hole is fail-OPEN.**
+  Migrate syncs the Select; skipped, minting a delete marker is refused by frappe's own Select
+  validation, fail closed. The hook registry is the other half: frappe serves `doc_events` from
+  redis's `app_hooks` (`frappe/__init__.py:1006`), which a worker restart does not rebuild, so **an
+  in-place `pip install` + restart with neither step leaves `on_trash` out of the registry and
+  deletes ungated, exactly as before the upgrade**, the first upgrade failure this app has that does
+  not refuse. `bench migrate` itself calls `frappe.clear_cache()` first (`frappe/migrate.py:88`), so
+  either step closes it; run both, in that order, as documented since 0.13.0. The lab could not
+  show the stale shape: there a bare pip install + restart already registered the gate, because its
+  bench unit restarts redis with the workers. The estate has shown it, on 2026-09-02, when a
+  recreated `backend` ran new code against an old `redis-cache`. `consent_status.gate_registered: false` is the receipt;
+  read it after every upgrade.
 
 ## 0.16.0 - 2026-09-08 - the floor reports the seat's own roles
 
