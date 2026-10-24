@@ -25,7 +25,7 @@ jobs:
       pkgdir: ${{ steps.pick.outputs.pkgdir }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -126,7 +126,7 @@ jobs:
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1 (1.14.2)
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1 (1.14.2)
 
   # Publishing is not proving. Until 2026-08-24 this workflow published and stopped, so the first
   # thing that ever touched the PUBLISHED artifact was an adopter -- or a human running the smoke
@@ -152,7 +152,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
       - name: Wait for PyPI to actually serve the version (index propagation)
         # This job runs seconds after publish, and PyPI's index lags its own upload: 0.39.1's
         # verify leg went red with "no version of pacioli[server]==0.39.1" while the version was
