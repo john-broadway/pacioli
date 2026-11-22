@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The A2A door (docs/plans/2026-07-16-a2a-door.md) — the first non-MCP door.
 
 Four layers, cheapest first: the pure pieces (via stamp, wire-convention parser) with no SDK at

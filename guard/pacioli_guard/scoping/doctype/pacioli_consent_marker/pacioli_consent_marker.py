@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Consent Marker — a single-use, document-bound proof that a human agreed.
 
 The DECISION lives in the pure core (``pacioli_guard.scope.consent_verdict``) so it stays

@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — THE CLOSE (Half 2: the Reconciliation). Pure core, no I/O, no clock, no seal.
 
 Half 1 (``close.py``) builds the period Statement from Pacioli's OWN receipt store — it attests only

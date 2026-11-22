@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The principal in the ledger (F3, the transports ruling): with many transports, every intent
 receipt must say WHICH door and WHO asked. One seam — the store stamps ``via`` into every
 intent body when (and only when) a transport declared one; the serving transport's declaration always wins

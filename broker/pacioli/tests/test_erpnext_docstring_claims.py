@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Prose that ENUMERATES code is a claim, and this pins the ones that can rot.
 
 **Why this file exists.** `erpnext.py` is 11,511 lines of which **778 are code**: 92.7% prose,

@@ -6,7 +6,7 @@ app_description = (
     "allowlist of methods and DocTypes, enforced at the credential layer. No core fork."
 )
 app_email = "271895126+john-broadway@users.noreply.github.com"
-app_license = "apache-2.0"
+app_license = "agpl-3.0"
 
 # TWO extension points, because they answer two different questions at the two altitudes where
 # those questions are legible. Both are frappe's own public hooks — no core fork either way.
@@ -58,5 +58,20 @@ doc_events = {
         # `api.py`'s `gate_registered` counts it for that reason. Not seen: `ignore_on_trash=True` (frappe's
         # installer is its only caller) and raw `frappe.db.delete` / SQL.
         "on_trash": "pacioli_guard.act.on_trash",
+        # The EDIT gate (0.18.0). frappe fires `before_update_after_submit` when a document that
+        # is already at docstatus 1 is saved (`model/document.py` `run_before_save_methods`), which
+        # is how its allow-on-submit fields are changed. `flags.ignore_validate_update_after_submit`
+        # does NOT skip it (that flag skips the field-level check only); `flags.ignore_validate`
+        # does, as for submit and cancel. Like `on_trash`, a hook cache that predates the upgrade
+        # leaves this key out and the edit goes through ungated: `api.py` counts it.
+        "before_update_after_submit": "pacioli_guard.act.before_update_after_submit",
+        # The BELT (0.18.0). A document body can preset `_action = "discard"`, after which frappe
+        # runs none of the before/on hooks above for that save; `on_change` is the one it still
+        # runs. Refuses a gated seat's save that carries it. Counted by `api.py` like the rest.
+        "on_change": "pacioli_guard.act.on_change",
+        # Only a stored DRAFT may be discarded (0.18.0). frappe's whitelisted `discard()` checks
+        # the docstatus of the document object it was handed, which `run_doc_method` builds from
+        # the client's body, then cancels with `db_set`. Runs before that write, for everyone.
+        "before_discard": "pacioli_guard.act.before_discard",
     }
 }

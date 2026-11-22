@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Guard — pure decision core for per-credential API capability scoping.
 
 No frappe import: ``classify`` + ``is_permitted`` are pure functions, so the security-critical
@@ -353,7 +353,18 @@ def _classify_v2_full(path, http_method):
         # allows slashes in doc names, e.g. naming series ACC/2024/00001), so the "method" literal
         # and method name are the LAST two segments, NOT a fixed index. A fixed index let a
         # slash-named doc-method fall through to resource CRUD (a resource grant could run submit).
-        if len(parts) >= 4 and parts[-2] == "method":
+        # ...but NOT for PUT, PATCH or DELETE. frappe routes those three to `update_doc` /
+        # `delete_doc` (`api/v2.py` url_rules), so on them the same text is a document whose NAME
+        # ends in `/method/<m>`; reading it as a call to `<m>` let a credential holding only that
+        # method grant write the document, with every resource-write check skipped (review,
+        # 0.18.0). The exception is those three verbs and nothing else. werkzeug answers HEAD from
+        # the GET rule, so HEAD on `.../method/submit` reaches `execute_doc_method`; the first cut
+        # of this fix (which listed GET and POST) let it fall through as a resource READ. In
+        # frappe 16.27.1 that handler then fails on HEAD before it runs anything
+        # (`PERMISSION_MAP` holds GET and POST only), so nothing was exposed, and this comment
+        # said otherwise for one commit. The gate does not rest on that accident: any verb this
+        # function does not know stays the method call.
+        if len(parts) >= 4 and parts[-2] == "method" and http_method not in ("PUT", "PATCH", "DELETE"):
             return ("method", f"{doctype}.{parts[-1]}", True)
         return ("resource", (doctype, _RESOURCE_VERB.get(http_method, "read")), False)
     return ("other", None, False)
@@ -794,7 +805,7 @@ def _docstatus_body_verb(doc):
         return None
     try:
         ds_int = int(ds)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):  # OverflowError: int(float("inf"))
         return _DENY
     if ds_int == 0:
         return None
@@ -1067,6 +1078,254 @@ def body_scoped_target(kind, target, http_method, form):
     return None
 
 
+# -- A resource write that moves docstatus (0.18.0) -----------------------------------------------
+# `body_scoped_target` above returns None for every `resource` call, so until 0.18.0 a plain
+# `PUT /api/resource/<DocType>/<name>` with `{"docstatus": 1}` was judged as a field write and
+# nothing else: the `write` verb was enough to post a document and the methods allowlist was never
+# asked. frappe's `Document.save()`/`insert()` treat that body as the real transition
+# (`check_docstatus_transition`), so it is a submit or a cancel and needs that grant AS WELL AS the
+# resource verb. Reported privately by hariprasanth9317-tech (GHSA-7267-5929-54c6).
+
+RESOURCE_BODY_UNREADABLE = object()  # a body the handler would apply and this gate cannot read
+_RESOURCE_WRITE_HTTP = frozenset({"POST", "PUT", "PATCH"})
+# What may precede the first byte of a JSON document for SOME parser: JSON whitespace, plus the
+# byte-order mark and the other characters `str.strip` treats as space. Wider than any one
+# parser accepts, on purpose: it only ever turns "not a document" into "cannot tell".
+_JSON_LEADING_NOISE = " \t\n\r\x0b\x0c\ufeff\u00a0\u2028\u2029"
+
+
+def resource_write_bodies(path, form, raw_body):
+    """Every body frappe's resource handler could apply to the document, as a tuple. Pure.
+
+    ``form`` is ``frappe.form_dict``; ``raw_body`` is the request body as text, or ``None`` when it
+    could not be read. An entry is a dict, or :data:`RESOURCE_BODY_UNREADABLE`.
+
+    **v2** (``/api/v2/document/…``) applies ``frappe.form_dict`` itself (``api/v2.py``
+    ``create_doc``/``update_doc``: ``data = frappe.form_dict``), so that is the only candidate.
+
+    **v1** (``/api/resource/…``) applies ``get_request_form_data()`` (``api/v1.py``): the ``data``
+    key of ``form_dict`` when present, else the RAW request body, parsed as JSON; and when that
+    parse fails, ``form_dict``. Three request shapes therefore carry a ``docstatus`` that
+    ``form_dict`` does not show at its top level: a ``data=<json>`` form field or query parameter, a
+    JSON body sent under a non-JSON content type (``make_form_dict`` only parses a body werkzeug
+    calls JSON, ``app.py``), and a JSON body whose own ``data`` key holds the document.
+
+    **Why v1 returns two candidates and never picks one.** frappe parses with orjson and this
+    package with the standard library, and which body frappe applies depends on whether ITS parse
+    failed. Two parsers do not agree on every input (``NaN``, an integer past 64 bits, a lone
+    surrogate), so a gate that trusted its own parse could read a draft while frappe fell back to a
+    ``docstatus`` in the query string. Returning both, and letting any candidate that moves
+    ``docstatus`` decide, needs no agreement between the parsers. The cost is a refusal for a
+    request whose two candidates disagree, which no honest client sends.
+    """
+    if not isinstance(form, dict):
+        return (RESOURCE_BODY_UNREADABLE,)
+    if isinstance(path, str) and path.startswith("/api/v2/"):
+        return (form,)
+    data = form.get("data")
+    if data is None:
+        if not isinstance(raw_body, str):
+            return (RESOURCE_BODY_UNREADABLE, form)
+        data = raw_body
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except RecursionError:
+            return (RESOURCE_BODY_UNREADABLE, form)
+        except ValueError:
+            # This parser refused it. That is not proof frappe's did: text that OPENS an object
+            # may still be one to orjson (found by review on the first cut, which returned only
+            # `form` here and so read "I could not parse it" as "frappe will fall back"). Anything
+            # else frappe could parse from here is a list or a scalar, which is not a document.
+            # An ordinary form post (`a=1&b=2`) does not open an object and stays readable.
+            if data.lstrip(_JSON_LEADING_NOISE).startswith("{"):
+                return (RESOURCE_BODY_UNREADABLE, form)
+            return (form,)
+    if isinstance(data, dict):
+        return (data, form)
+    return (RESOURCE_BODY_UNREADABLE, form)
+
+
+def _resource_item_name(path):
+    """The document a resource ITEM path names, slashes and all, or ``None``. Pure.
+
+    Not :func:`_docname_from_path`: that returns one segment, and a document name may hold
+    slashes (``ACC/2026/0001``; frappe routes ``<path:name>``). The whole remainder after the
+    DocType is the name, with a v2 trailing ``/`` dropped.
+    """
+    if not isinstance(path, str):
+        return None
+    if path.startswith("/api/v1/"):
+        path = "/api" + path[len("/api/v1"):]
+    for prefix in ("/api/v2/document/", "/api/resource/"):
+        if path.startswith(prefix):
+            # The text after the DocType IS the name: not unquoted (the path arrives decoded, and
+            # decoding again let `A%2FB` read as `A/B`), and empty segments kept (frappe's router
+            # is built with `merge_slashes=False`, so `A//B` is a different document from `A/B`).
+            # Only the one trailing slash frappe's own rules end with is dropped.
+            _, sep, name = path[len(prefix):].partition("/")
+            if name.endswith("/"):
+                name = name[:-1]
+            return name if sep and name else None
+    return None
+
+def resource_identity_problem(path, http_method, bodies):
+    """Why this resource UPDATE is not an update of the document its path names, or ``None``. Pure.
+
+    frappe's ``update_doc`` loads the document the PATH names and then applies the body with
+    ``doc.update(body)``, which sets any key that is not reserved, ``name`` and ``__islocal``
+    included (``model/base_document.py`` ``RESERVED_KEYWORDS`` holds ``doctype`` and ``flags``,
+    not those). ``Document._save`` then reads the document back: ``if self.get("__islocal") or not
+    self.get("name"): return self.insert()``. So a body can turn the update of a SUBMITTED document
+    into an insert of a new one that keeps docstatus 1 (frappe runs it as a submit), or point
+    ``name`` at another document and write the loaded one's state onto it. Neither carries a
+    ``docstatus`` key, so :func:`resource_docstatus_target` sees a plain field write, and the
+    ``create`` verb is never asked either. Found by review of the first cut of 0.18.0.
+
+    Refused, on every candidate body: any key that starts with ``__`` (frappe's client-state
+    keys; a document read from the API carries none), and a ``name`` that is not exactly the name
+    in the path. A whole document PUT back under its own name passes.
+
+    Not judged here: ``parent``/``parenttype`` in the body of a child-row update, which make the
+    v1 and v2 handlers re-save whatever document they name. That is a save with no change applied
+    and is left with the child-table residual.
+    """
+    if http_method not in _RESOURCE_WRITE_HTTP:
+        return None
+    # On a create as well as an update: `_action` is not reserved either, `check_if_latest` keeps
+    # one that is already set (`if not hasattr(self, "_action")`), and "discard" skips frappe's
+    # docstatus transition check and every before/on hook, the consent gate's included. Only this
+    # key: `_user_tags`, `_comments`, `_assign` and `_liked_by` are real columns a read returns.
+    for body in bodies or ():
+        if isinstance(body, dict) and "_action" in body:
+            return "its body sets `_action`, which is frappe's own record of what a save is doing"
+    if http_method not in ("PUT", "PATCH"):
+        return None
+    path_name = _resource_item_name(path)
+    for body in bodies or ():
+        if not isinstance(body, dict):
+            continue
+        for key in body:
+            if isinstance(key, str) and key.startswith("__"):
+                return f"its body carries the client-state key {key[:40]!r}"
+        if "name" in body:
+            name = body["name"]
+            # A str, or a positive int (an autoincrement name): the only values that are a
+            # name to frappe (`not self.get("name")` inserts on 0, "" and None) and can equal
+            # the path's text without a coercion deciding it.
+            # (An empty str needs no clause of its own: the path's name is never empty.)
+            is_name = isinstance(name, str) or (
+                isinstance(name, int) and not isinstance(name, bool) and name > 0)
+            if not is_name or path_name is None or str(name) != path_name:
+                return "its body sets `name` to something other than the document in the path"
+    return None
+
+
+# The request keys under which frappe core loads a whole document or a list of them:
+# `frappe.client.submit/save/insert` and `savedocs` (`doc`), `insert_many`, `bulk_update` and v1
+# `run_doc_method` (`docs`), v2 `run_doc_method` (`document`), v1 resource bodies (`data`).
+_DOCUMENT_KEYS = frozenset({"doc", "docs", "document", "data"})
+
+
+def body_presets_save_action(form):
+    """Does a request carry a document that presets frappe's ``_action``? Pure, deny-biased.
+
+    frappe keeps any non-reserved key of a document dict (``BaseDocument.update``), and
+    ``Document.check_if_latest`` keeps an ``_action`` that is already set. Preset to "discard",
+    frappe skips the docstatus transition check (and the submit/cancel permission check inside
+    it), and runs no before/on hook: the consent gate and the ledger posting never run, and the
+    document is written with whatever ``docstatus`` it carries. frappe's own ``discard()`` never
+    calls ``save()``, so no client has a reason to send the key. Found by review on 0.18.0's
+    branch, after the resource routes had been closed: ``frappe.client.submit``/``insert``/
+    ``save``, ``savedocs`` and ``run_doc_method`` take a whole document in the body too.
+
+    Judged: the request's own top-level keys, and each top-level value that is a document, a list
+    of documents, or text that parses as one. Text that opens ``{`` or ``[`` and does not parse
+    reads as carrying it only under a key frappe loads as a document (``_DOCUMENT_KEYS``), since
+    this parser failing is not proof frappe's did. Not judged: a key inside a child row, which
+    frappe saves with ``db_update`` and never reads ``_action`` from; and a document nested deeper
+    than one level (``{"args": {"doc": {...}}}``). No frappe core method loads one from there; an
+    app's own whitelisted method that does would pass this scan, and the document-layer belt
+    (``act.on_change``) is what stands behind it for a consent-gated seat.
+    """
+    if not isinstance(form, dict):
+        return False
+    if "_action" in form:
+        return True
+    # `frappe.client.set_value(doctype, name, fieldname="_action", value=...)` puts the key on the
+    # document by NAME (`doc.update({fieldname: value})`, then `save()`): the value is not a
+    # document, the field name is the key. Found by review of 0.18.0's branch.
+    if form.get("fieldname") == "_action":
+        return True
+
+    def carries(value):
+        if isinstance(value, dict):
+            return "_action" in value
+        if isinstance(value, list):
+            return any(isinstance(item, dict) and "_action" in item for item in value)
+        return False
+
+    for key, value in form.items():
+        if isinstance(value, str):
+            text = value.lstrip(_JSON_LEADING_NOISE)
+            if not text.startswith(("{", "[")):
+                continue
+            try:
+                value = json.loads(text)
+            except (ValueError, RecursionError):
+                # Unparseable text is refused only under a key frappe loads as a document. A
+                # free-text field that happens to open with a bracket ("[URGENT] ...") is not one,
+                # and refusing it was a false denial (found by review of 0.18.0's branch).
+                if key in _DOCUMENT_KEYS:
+                    return True
+                continue
+        if carries(value):
+            return True
+    return False
+
+
+def resource_docstatus_target(kind, target, http_method, bodies):
+    """The submit/cancel grant a resource WRITE also needs, or ``None`` when it needs none. Pure.
+
+    ``bodies`` is :func:`resource_write_bodies`' tuple. Returns ``("method", "<DocType>.submit")``
+    or ``"….cancel"`` when a candidate body carries ``docstatus`` 1 or 2 — the same target a
+    ``run_method=submit`` call classifies to, so one grant covers both routes — and
+    ``("other", None)`` (which :func:`is_permitted` always refuses) when the move cannot be named:
+    a candidate that is not readable, a ``docstatus`` that is not 0/1/2, candidates that name
+    different acts, or no candidate at all.
+
+    The caller must require this IN ADDITION TO the resource permission, not instead of it: the
+    same request writes the body's other fields, which is the ``write``/``create`` verb.
+
+    Stated cost: a client that PUTs a whole submitted document back with its ``docstatus: 1`` in
+    the body, to edit an allow-on-submit field, is read as a submit and needs the submit grant.
+    This function cannot read the document's current state and does not guess. Send the changed
+    fields only.
+
+    Not judged here: ``GET`` and ``DELETE`` (frappe's handlers apply no body on them), and a
+    ``docstatus`` inside a child row (frappe takes a child's docstatus from its parent).
+    """
+    if kind != "resource" or http_method not in _RESOURCE_WRITE_HTTP:
+        return None
+    doctype = target[0] if isinstance(target, (tuple, list)) and target else None
+    if not bodies:
+        return ("other", None)
+    verbs = set()
+    for body in bodies:
+        if body is RESOURCE_BODY_UNREADABLE:
+            return ("other", None)
+        verb = _docstatus_body_verb(body)
+        if verb is _DENY:
+            return ("other", None)
+        if verb is not None:
+            verbs.add(verb)
+    if not verbs:
+        return None
+    if len(verbs) > 1:
+        return ("other", None)
+    return _body_doctype_rewrite(doctype, verbs.pop())
+
+
 def docstatus_target_doctype(kind, target, form=None):
     """Pure: extract the DocType name a docstatus-changing ``(kind, target[, form])`` names, for the
     Workflow-existence lookup ``enforce.py`` feeds to frappe's internal ``get_workflow_name``.
@@ -1172,7 +1431,9 @@ def consent_token_hash(token):
 # draft is the irreversible step and takes its own submit marker. Delete joined in 0.17.0 after the
 # lab showed a gated seat erasing a draft with nothing asked (2026-10-04): a delete posts nothing,
 # but it erases a document, and for a cancelled one the ledger rows that recorded its reversal.
-CONSENT_ACTS = ("submit", "cancel", "delete")
+# Update joined in 0.18.0 after two outside reports (GHSA-wc4v-5w73-74w4, GHSA-9h6v-f656-p77h): a
+# gated seat could change the allow-on-submit fields of a posted document with nothing asked.
+CONSENT_ACTS = ("submit", "cancel", "delete", "update")
 
 # A consent grant is meant to be SHORT-LIVED. Same range the broker CLI's `--ttl` enforces, for the
 # same reason: an unbounded TTL is a standing permission wearing a marker's clothes.
@@ -1458,7 +1719,7 @@ def consent_verdict(presented, doctype, docname, action, record, now, principal)
     marker_action = _consent_field(record, "action")
     if not action or not marker_action:
         return False, ("the act being authorised could not be determined — consent binds to a "
-                       "named act (submit, cancel or delete), and an unreadable act binds to "
+                       f"named act ({', '.join(CONSENT_ACTS)}), and an unreadable act binds to "
                        "nothing")
     if str(marker_action).strip().lower() != str(action).strip().lower():
         return False, (f"this consent marker authorises {str(marker_action).strip().lower()}, "

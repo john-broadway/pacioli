@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Runtime/CLI tests — config assembly, seal-key handling, and the human mint path."""
 import io
 import os

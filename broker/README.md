@@ -1090,7 +1090,7 @@ A zone typo refuses when a window is converted (with the zone named), never when
 
 ## License
 
-Apache-2.0.
+AGPL-3.0-or-later. Releases through 0.40.1 were Apache-2.0 and stay Apache-2.0.
 
 
 ---

@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The act-level consent gate at the DOCUMENT layer (``pacioli_guard.act``).
 
 Why this layer exists, and why the same gate at ``auth_hooks`` was not enough. Consent is a property
@@ -322,9 +322,10 @@ class TestBackwardCompatibilityAndRegistration(unittest.TestCase):
 
     ``test_does_not_gate_a_call_that_changes_no_docstatus`` mattered at the transport layer because
     the gate saw every request and had to decide which ones were docstatus moves. At this layer that
-    is structural rather than conditional: only ``before_submit`` and ``before_cancel`` are
-    registered, so a read, a draft save, or an update-after-submit never reaches the gate at all.
-    The equivalent assertion is therefore on the registration itself.
+    is structural rather than conditional: only the events below are registered, so a read or a
+    draft save never reaches the gate at all. (Until 0.18.0 this sentence also listed an
+    update-after-submit as never reaching it. That was the gap two outside reports named, and it
+    is the sixth gate now.) The equivalent assertion is therefore on the registration itself.
     """
 
     def test_a_grant_predating_the_column_reads_as_not_gated(self):
@@ -348,22 +349,36 @@ class TestBackwardCompatibilityAndRegistration(unittest.TestCase):
         # gates three and four, not recorders — but they refuse only a preview and they do not spend
         # the marker. `after_insert` remains the one non-gate: it reads no grant and refuses nothing.
         # Gate five, 0.17.0: `on_trash` — the lab showed a gated seat erasing a draft (row 36).
+        # Gate six, 0.18.0: `before_update_after_submit` — two outside reports showed a gated seat
+        # editing a posted document unasked (`test_update_after_submit.py`).
+        # Gate seven, 0.18.0: `on_change` — the belt for a save whose `_action` was preset to switch
+        # every hook above off (`test_preset_action.py`).
+        # Gate eight, 0.18.0: `before_discard` — only a STORED draft may be discarded; frappe's
+        # `discard()` checked the client's description of the document (`test_preset_action.py`).
         from pacioli_guard import hooks
 
         self.assertEqual(
             set(hooks.doc_events["*"]),
             {"before_submit", "before_cancel", "after_insert",
-             "before_gl_preview", "before_sl_preview", "on_trash"})
+             "before_gl_preview", "before_sl_preview", "on_trash",
+             "before_update_after_submit", "on_change", "before_discard"})
         for event in ("before_submit", "before_cancel", "after_insert",
-                      "before_gl_preview", "before_sl_preview"):
+                      "before_gl_preview", "before_sl_preview", "before_update_after_submit"):
             self.assertEqual(hooks.doc_events["*"][event], f"pacioli_guard.act.{event}")
 
     def test_the_docstatus_gates_are_still_exactly_two(self):
         """The preview handlers must never become docstatus gates by accident."""
         from pacioli_guard import hooks
 
+        # `before_update_after_submit` (0.18.0) is a `before_` event that moves no docstatus: the
+        # document is at 1 before and after. It is named here so that adding it is a decision
+        # this test records, and any OTHER new `before_` event still turns it red.
+        # `before_discard` (0.18.0) is named for the same reason. It is not a CONSENT gate: it
+        # refuses a discard of a document that is not a stored draft, for everyone, and asks for no
+        # marker. A discard of a real draft passes it as before.
+        named = {"before_update_after_submit", "before_discard"}
         docstatus_events = {e for e in hooks.doc_events["*"] if e.startswith("before_")
-                            and "preview" not in e}
+                            and "preview" not in e and e not in named}
         self.assertEqual(docstatus_events, {"before_submit", "before_cancel"})
 
     def test_the_recording_hook_refuses_nothing_and_reads_no_grant(self):

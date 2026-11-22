@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Bench-free unit tests for the CONSENT pure core (pacioli.consent) — the marker.
 
 A marker is a single-use, out-of-band, human-minted grant the agent cannot derive, bound to a

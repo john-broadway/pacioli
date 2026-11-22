@@ -41,7 +41,8 @@ untouched. "Which credential is this" only exists at authentication time, so thi
 here, which also means it governs api-key requests and not OAuth `Bearer`, desk sessions, or
 background jobs.
 
-**`doc_events` `before_submit` / `before_cancel` / `on_trash` — was this act consented?** Consent is
+**`doc_events` `before_submit` / `before_cancel` / `on_trash` / `before_update_after_submit` — was
+this act consented?** Consent is
 a property of a document, so it is checked on the document. Every path that **posts to the ledger**
 through the ORM passes it, including the ones the credential hook never sees. It is inert for anyone
 without a grant that sets `require_consent`, so installing this app does not change a site that has
@@ -57,6 +58,19 @@ cancel (UNDO deletes what the posting created) or a document the act itself made
 enclosing delete, because frappe runs a document's own `on_trash` before any app's handler, so a
 parent's cascaded deletes are judged first, each on its own marker — one header carries several.
 The changelog names the ERPNext paths that cost a marker, two of them at draft save time.
+
+**`before_update_after_submit` is the edit gate** (0.18.0). A fourth act, `update`: changing a
+document that is already submitted, which is how its allow-on-submit fields are edited. Reported
+privately by sandhiyabalaji32-tech and, with a run reproduction, by nikhilagrawalsf. A direct edit
+by a gated seat needs its own `update` marker. An edit ERPNext makes while it posts or reverses
+another document rides that governed submit or cancel: the Payment Entry an invoice's advances
+table names, the Bank Transaction a cancelled voucher was matched to. That first one is filled by
+the caller, so it is a stated residual and not a detail. An edit under a draft save, under a
+delete, or under another consented edit does not ride. Field writes that never call `save()`
+(`db_set`, `frappe.db.set_value`) are not seen, and that is how ERPNext itself updates most linked fields.
+Driven on a frappe 16.35.0 / erpnext 16.36.0 lab bench on a Journal Entry: refused with no marker
+and with a submit marker, allowed once with an update marker, refused on replay. The advances ride
+was read from source and tested bench-free, not driven there.
 
 **`doc_events` `before_gl_preview` / `before_sl_preview` — was this REHEARSAL consented?** (0.13.0.)
 ERPNext previews a ledger by performing the posting and rolling the transaction back
@@ -95,6 +109,10 @@ than the agent's narration.
 adds a field and two `doc_events` keys. Skip the migrate and **every** governed write refuses; skip
 the cache clear and previews stay refused. Both fail closed, and both look like the upgrade did
 nothing. `SECURITY.md` has the detail.
+
+🔴 **Upgrading to 0.18.0: the same two steps again.** Skipping both leaves the edit gate out of
+the cached hook registry and a gated seat's edit of a submitted document stays ungated.
+`SECURITY.md` also lists the requests a scoped credential is newly refused.
 
 🔴 **Upgrading to 0.17.0: the same two steps, and skipping BOTH now fails OPEN.** An in-place pip
 upgrade plus a worker restart leaves frappe's cached hook registry as it was, so `on_trash` is not
@@ -521,7 +539,7 @@ verdict is recorded in the workshop's internal research verdict (a 73-agent adve
 Part of **Pacioli** — least-privilege governance for ERPNext. Pacioli Guard is the foundation;
 the Pacioli MCP broker (planned/consented/proven/reversible tool calls) is the agent front door built on top.
 
-License: Apache-2.0.
+License: AGPL-3.0-or-later. Releases through 0.17.0 were Apache-2.0 and stay Apache-2.0.
 
 
 ---

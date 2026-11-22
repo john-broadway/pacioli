@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """`pacioli attest` / `pacioli close-status` (Half 3, Fork A1, Task 3,
 docs/plans/2026-07-15-close-half3-close-record.md).
 

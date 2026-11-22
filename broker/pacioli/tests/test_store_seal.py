@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Store-layer seal state (CONTAIN's persistence) — the ``seal_events`` table, genesis seeding,
 and the ``seal``/``unseal``/``seal_state``/``seal_events`` methods on :class:`BrokerStore`.
 

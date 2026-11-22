@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Bench-free unit tests for the WORKFLOW pure core (pacioli.workflow) — CONSENT's second gate,
 the company's own ERPNext Workflow ridden (not replaced) as separation-of-duties law.
 

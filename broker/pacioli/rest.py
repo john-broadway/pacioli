@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The REST door. **A door admits; it never decides.**
 
 John, 2026-08-17: *"every door governed"*, and the surface is the **governed verb set**, not the

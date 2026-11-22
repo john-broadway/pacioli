@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Glue-level tests for guard.enforce — the frappe wall around the pure decision core.
 
 These use an in-memory ``frappe`` fake, injected by reassigning ``enforce.frappe``. The design
@@ -65,6 +65,12 @@ class FakeReq:
         self.path = path
         self.method = method
 
+    def get_data(self, as_text=False, **_):
+        # A real request can always hand over its body. Empty here: these tests carry the document
+        # in ``form_dict``, which is what frappe's v1 reader falls back to when the raw body is not
+        # JSON. ``test_resource_body.py`` drives the shapes where the raw body is the document.
+        return "" if as_text else b""
+
 
 class FakeLocal:
     def __init__(self, request=None):
@@ -94,8 +100,13 @@ class FakeDB:
         self._scopes = scopes            # {user: FakeScopeDoc}
         self._legacy = legacy            # {user: raw api_scope value (str/dict)}
         self._legacy_columns = set(legacy_columns)
-        # {(ref_doctype, ref_docname): marker dict} — the consent markers on the bench
+        # {(ref_doctype, ref_docname): marker dict, or a LIST of them in creation order} — the
+        # consent markers on the bench. One dict per document was all this could hold until
+        # 0.18.0, so it could not represent two markers for one document, and an outside report
+        # (GHSA-7p4h-gwc5-w282) pointed out that no test could therefore see how the lookup chose
+        # between them. A list is oldest first, the order `creation` sorts ascending.
         self.markers = dict(markers or {})
+        self.marker_reads = []           # (filters, order_by) of every marker lookup
         self.set_values = []             # (doctype, name, field, value) writes the gate made
         self.sql_calls = []              # (query, values) the gate issued
         self._cursor = FakeCursor()
@@ -106,6 +117,25 @@ class FakeDB:
         # discovery, and the test would then prove "a totally dead DB denies" rather than "a
         # broken MARKER LOOKUP denies", which is the seam README residual #2 is about.
         self.consent_read_raises = False
+        # 0.18.0: a document's STORED docstatus, {(doctype, name): value}, for `before_discard`,
+        # which must judge the stored row and not the object it was handed. A value that is an
+        # Exception instance is raised by the read.
+        self.docstatus = {}
+        self.docstatus_reads = []        # (doctype, name, for_update)
+        self.events = []                 # ordered "rollback" entries, so a test can see the order
+        self.rollback_raises = False
+        # frappe raises this counter around every doc_events handler, and while it is non-zero
+        # `Database.rollback()` only warns (`database/database.py`). A double that rolled back
+        # regardless is what let the first version of the belt pass here and fail on the lab.
+        self._disable_transaction_control = 0
+
+    def rollback(self, *args, **kwargs):
+        if self._disable_transaction_control:
+            self.events.append("rollback ignored")
+            return
+        self.events.append("rollback")
+        if self.rollback_raises:
+            raise RuntimeError("rollback failed")
 
     def sql(self, query, values=None, **kwargs):
         """Only the consent claim reaches here. Applies the real WHERE burned = 0 semantics so the
@@ -116,7 +146,7 @@ class FakeDB:
             raise RuntimeError("db exploded mid-claim")
         name = values[0] if isinstance(values, (list, tuple)) and values else values
         affected = 0
-        for row in self.markers.values():
+        for row in self.marker_rows():
             if row.get("name") == name and not row.get("burned"):
                 row["burned"] = 1
                 affected = 1
@@ -125,16 +155,41 @@ class FakeDB:
 
     def set_value(self, doctype, name, fieldname, value):
         self.set_values.append((doctype, name, fieldname, value))
-        for key, row in self.markers.items():
+        for row in self.marker_rows():
             if row.get("name") == name:
                 row[fieldname] = value
 
-    def get_value(self, doctype, filters, fieldname=None, as_dict=False):
+    def marker_rows(self):
+        """Every marker row, oldest first."""
+        rows = []
+        for value in self.markers.values():
+            rows.extend(value if isinstance(value, list) else [value])
+        return rows
+
+    def get_value(self, doctype, filters, fieldname=None, as_dict=False, order_by=None,
+                  for_update=False):
+        if fieldname == "docstatus" and isinstance(filters, str):
+            self.docstatus_reads.append((doctype, filters, for_update))
+            value = self.docstatus.get((doctype, filters))
+            if isinstance(value, Exception):
+                raise value
+            return value
         if doctype == enforce.CONSENT_DOCTYPE:
             if self.consent_read_raises:
                 raise RuntimeError("marker table unreadable")
-            row = self.markers.get((filters.get("ref_doctype"), filters.get("ref_docname")))
-            return dict(row) if (row and as_dict) else row
+            self.marker_reads.append((dict(filters), order_by))
+            # Every filter key is an equality on the row, as frappe's dict filter is. `burned`
+            # compares as a number, since a stored Check is 0/1 and a fixture may leave it out.
+            rows = [r for r in self.marker_rows()
+                    if all((int(r.get(k) or 0) == int(v or 0)) if k == "burned" else r.get(k) == v
+                           for k, v in filters.items())]
+            if not rows:
+                return None
+            # frappe sorts a bare `creation` DESCENDING outside db_query_compat
+            # (`database/query.py`), and so does an absent order_by. Only an explicit `asc` is
+            # oldest first.
+            row = rows[0] if (order_by or "").strip().lower().endswith(" asc") else rows[-1]
+            return dict(row) if as_dict else row
         # scope-doc discovery: get_value("API Key Scope", {"user": u}, "name")
         if doctype == enforce.SCOPE_DOCTYPE and isinstance(filters, dict) and "user" in filters:
             u = filters["user"]
@@ -904,7 +959,10 @@ class TestWorkflowEnforcement(_Base):
         self.assertIn("Journal Entry.apply_workflow", str(ctx.exception))
 
     def test_raw_put_with_docstatus_to_a_workflow_doctype_is_denied(self):
+        # The submit grant is given (0.18.0: without it the scope check refuses first), so the
+        # refusal asserted below is the workflow gate's.
         doc = FakeScopeDoc(allow_resource=True, resource_doctypes=["Sales Invoice"],
+                           method_patterns=["Sales Invoice.submit"],
                            verb_read=1, verb_create=1, verb_write=1, verb_delete=1,
                            enforce_workflow=1)
         enforce.frappe = self._fake(
@@ -915,6 +973,7 @@ class TestWorkflowEnforcement(_Base):
         with self.assertRaises(FakePermissionError) as ctx:
             enforce.check_scope()
         self.assertIn("Sales Invoice", str(ctx.exception))
+        self.assertIn("workflow bypass", enforce.frappe.denial_logs[0][0])
 
     def test_workflow_lookup_error_on_docstatus_changing_call_is_denied(self):
         # Deny-biased: the internal lookup itself raised. An unverifiable answer is never read as
@@ -1036,7 +1095,10 @@ class TestWorkflowEnforcement(_Base):
 
     def test_post_create_as_submitted_on_a_workflow_doctype_is_denied(self):
         # Insert-as-submitted (redteam MEDIUM): POST create carrying docstatus 1.
+        # Since 0.18.0 a create-as-submitted also needs the submit grant, and without it the scope
+        # check refuses first. The grant is given here so this still tests the WORKFLOW gate.
         doc = FakeScopeDoc(allow_resource=True, resource_doctypes=["Sales Invoice"],
+                           method_patterns=["Sales Invoice.submit"],
                            verb_read=1, verb_create=1, verb_write=1, verb_delete=1,
                            enforce_workflow=1)
         enforce.frappe = self._fake(

@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The in-door perimeter (docs/plans/2026-07-16-webguard-parity.md) — Host allowlist,
 cross-origin guard, and a receive-side body-size cap, as ONE raw-ASGI wrapper both network doors
 mount outside their bearer gate.

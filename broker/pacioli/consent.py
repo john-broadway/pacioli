@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — CONSENT: the marker (pure core).
 
 Two hands on every entry: the clerk writes, the merchant grants — the agent must not approve its

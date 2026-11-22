@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """``close`` under a declared ``site_tz`` — the clock-domain ruling (T1) wired to the CLI.
 
 With ``site_tz`` on the target, ``--since/--until`` mean SITE time (the books' own calendar),

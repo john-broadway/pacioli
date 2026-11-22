@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The Close — Half 1, the period Statement (docs/plans/2026-07-09-the-close.md).
 
 Pure-core tests, bench-free: build_statement reads receipts (constructed directly — it never

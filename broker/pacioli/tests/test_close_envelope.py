@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """``close --respond --envelope`` + auto-seal on CONTAIN (Task 4,
 docs/plans/2026-07-14-close-half3-seal-slice.md).
 

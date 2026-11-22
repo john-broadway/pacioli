@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — CLI: the human-run commands (glue, stdlib-only).
 
 The half of CONSENT the agent must never touch. ``pacioli mint`` generates a **high-entropy token

@@ -1,0 +1,459 @@
+# THE JUDGEMENT beside the vendor's table. A person writes this file; a script writes the table.
+#
+# [served.<Doctype>]  how the spine governs this doctype: the party, date and amount fields a PLAN
+#                     reads (null where the vendor has none), the verb that submits it, and a why.
+# [held.<Doctype>]    the door refuses submit/cancel/amend with this sentence. `ask = true` marks a
+#                     sentence Claude wrote on 2026-10-10 from the vendor's doctype definitions and
+#                     ERPNext's documented behaviour; John's ruling replaces it or drops the flag.
+#
+# Every submittable doctype the vendor publishes is in exactly one of the two tables, or the
+# coverage receipt (`scripts/vendor_meta.py coverage`) goes red and the door refuses it as
+# unjudged. Editing this file IS the act of granting. Reads (get, list) are not judged here: the
+# seat's scope on the floor governs them.
+#
+# The 51 served rows were carried from `pacioli/erpnext.py` SUPPORTED_DOCTYPES on 2026-10-10 and a
+# test holds the two equal until the Python table goes. The why on each is the one-line reason the
+# spine governs that document; the long per-doctype dossiers stay in erpnext.py's prose until they
+# move to docs.
+
+[served."Asset"]
+party_field = ""
+date_field = "available_for_use_date"
+submit_via = "run_method"
+why = "capitalises a fixed asset: submit opens its depreciation life, cancel reverses it"
+
+[served."Asset Capitalization"]
+party_field = ""
+date_field = "posting_date"
+submit_via = "run_method"
+why = "turns stock items or assets into a composite asset: GL and stock both move"
+
+[served."Asset Maintenance Log"]
+party_field = ""
+date_field = "completion_date"
+submit_via = "run_method"
+why = "closes a maintenance task against an asset; submitted, it is the maintenance record"
+
+[served."Asset Movement"]
+party_field = ""
+date_field = "transaction_date"
+submit_via = "run_method"
+why = "moves an asset between locations or custodians; the asset's location follows the submit"
+
+[served."Asset Repair"]
+party_field = ""
+date_field = "completion_date"
+submit_via = "run_method"
+why = "records a repair; capitalised repairs change the asset's value and the GL"
+
+[served."Asset Value Adjustment"]
+party_field = ""
+date_field = "date"
+submit_via = "run_method"
+why = "writes an asset's value up or down with a journal entry"
+
+[served."BOM"]
+party_field = ""
+date_field = ""
+submit_via = "run_method"
+why = "a submitted bill of materials is what production plans and work orders explode"
+
+[served."BOM Creator"]
+party_field = ""
+date_field = ""
+submit_via = "run_method"
+why = "submit creates the whole BOM tree it describes"
+
+[served."Bank Guarantee"]
+party_field = ""
+date_field = "start_date"
+submit_via = "run_method"
+why = "a guarantee against a sales or purchase order; submitted, it is a live commitment"
+
+[served."Blanket Order"]
+party_field = ""
+date_field = "from_date"
+submit_via = "run_method"
+why = "a standing agreement that later orders draw down against"
+
+[served."Budget"]
+party_field = ""
+date_field = "budget_start_date"
+submit_via = "run_method"
+why = "submitted, it starts refusing or warning on postings that exceed it"
+
+[served."Contract"]
+party_field = ""
+date_field = "signed_on"
+submit_via = "run_method"
+why = "a signed contract with a party; submit fixes its terms"
+
+[served."Cost Center Allocation"]
+party_field = ""
+date_field = "valid_from"
+submit_via = "run_method"
+why = "redirects every posting to one cost center across others from its valid date"
+
+[served."Delivery Note"]
+party_field = "customer"
+date_field = "posting_date"
+submit_via = "run_method"
+why = "goods leave stock: stock ledger moves, and with perpetual inventory the GL moves"
+
+[served."Delivery Trip"]
+party_field = ""
+date_field = "departure_time"
+submit_via = "run_method"
+why = "a route of delivery notes; submit stamps the notes it carries"
+
+[served."Dunning"]
+party_field = "customer"
+date_field = "posting_date"
+submit_via = "run_method"
+why = "a demand for overdue payment with fees; submit posts the fee income"
+
+[served."Installation Note"]
+party_field = "customer"
+date_field = "inst_date"
+submit_via = "run_method"
+why = "records installation of delivered goods against the delivery note"
+
+[served."Invoice Discounting"]
+party_field = ""
+date_field = "posting_date"
+submit_via = "run_method"
+why = "borrows against receivables: GL moves on submit and again on disbursement"
+
+[served."Job Card"]
+party_field = ""
+date_field = "posting_date"
+submit_via = "run_method"
+why = "an operation on a work order; submit books the time and the operation's completion"
+
+[served."Journal Entry"]
+party_field = ""
+date_field = "posting_date"
+submit_via = "client_rpc"
+why = "the raw general-ledger posting: any account, any amount; submitted through frappe.client.submit"
+
+[served."Landed Cost Voucher"]
+party_field = ""
+date_field = "posting_date"
+submit_via = "run_method"
+why = "adds freight and duty to received stock: valuation and GL both move"
+
+[served."Maintenance Schedule"]
+party_field = "customer"
+date_field = "transaction_date"
+submit_via = "run_method"
+why = "submit generates the scheduled maintenance visits for a customer"
+
+[served."Maintenance Visit"]
+party_field = "customer"
+date_field = "mntc_date"
+submit_via = "run_method"
+why = "a completed visit against a schedule"
+
+[served."Material Request"]
+party_field = ""
+date_field = "transaction_date"
+submit_via = "run_method"
+why = "a request for stock: purchase orders, transfers and work orders are made from it"
+
+[served."POS Invoice"]
+party_field = "customer"
+date_field = "posting_date"
+submit_via = "run_method"
+why = "a point-of-sale invoice, consolidated into Sales Invoices at shift close"
+
+[served."Packing Slip"]
+party_field = ""
+date_field = ""
+submit_via = "run_method"
+why = "what is in each parcel of a delivery note"
+
+[served."Payment Entry"]
+party_field = "party"
+date_field = "posting_date"
+amount_field = "base_paid_amount"
+submit_via = "run_method"
+why = "money moves: bank or cash against a party, with the allocation to invoices"
+
+[served."Payment Order"]
+party_field = ""
+date_field = "posting_date"
+submit_via = "run_method"
+why = "an instruction to the bank to pay a batch of suppliers"
+
+[served."Pick List"]
+party_field = "customer"
+date_field = ""
+submit_via = "run_method"
+why = "what to pick, from where, for which orders; submit reserves the picks"
+
+[served."Production Plan"]
+party_field = ""
+date_field = "posting_date"
+submit_via = "run_method"
+why = "submit is what work orders and material requests are generated from"
+
+[served."Project Update"]
+party_field = ""
+date_field = "date"
+submit_via = "run_method"
+why = "a dated status record on a project"
+
+[served."Purchase Invoice"]
+party_field = "supplier"
+date_field = "posting_date"
+amount_field = "base_grand_total"
+submit_via = "run_method"
+why = "the payable: GL moves against the supplier on submit"
+
+[served."Purchase Order"]
+party_field = "supplier"
+date_field = "transaction_date"
+submit_via = "run_method"
+why = "a commitment to buy; receipts and invoices are made against it"
+
+[served."Purchase Receipt"]
+party_field = "supplier"
+date_field = "posting_date"
+submit_via = "run_method"
+why = "goods arrive: stock ledger moves, and with perpetual inventory the GL moves"
+
+[served."Quality Inspection"]
+party_field = ""
+date_field = "report_date"
+submit_via = "run_method"
+why = "accept or reject a lot; receipts and deliveries wait on it"
+
+[served."Quotation"]
+party_field = ""
+date_field = "transaction_date"
+submit_via = "run_method"
+why = "an offer to a customer or lead; sales orders are made from it"
+
+[served."Request for Quotation"]
+party_field = ""
+date_field = "transaction_date"
+submit_via = "run_method"
+why = "asks suppliers to quote; submit can send it to them"
+
+[served."Sales Forecast"]
+party_field = ""
+date_field = "posting_date"
+submit_via = "run_method"
+why = "demand input to production planning"
+
+[served."Sales Invoice"]
+party_field = "customer"
+date_field = "posting_date"
+amount_field = "base_grand_total"
+submit_via = "run_method"
+why = "the receivable: GL moves against the customer on submit; the first document the spine governed"
+
+[served."Sales Order"]
+party_field = "customer"
+date_field = "transaction_date"
+submit_via = "run_method"
+why = "a commitment to sell; deliveries and invoices are made against it"
+
+[served."Share Transfer"]
+party_field = ""
+date_field = "date"
+submit_via = "run_method"
+why = "moves company shares between shareholders with a journal entry"
+
+[served."Shipment"]
+party_field = ""
+date_field = "pickup_date"
+submit_via = "run_method"
+why = "a parcel booked with a carrier against delivery notes"
+
+[served."Stock Entry"]
+party_field = ""
+date_field = "posting_date"
+submit_via = "run_method"
+why = "receipts, issues, transfers and manufacture: stock ledger moves, GL under perpetual inventory"
+
+[served."Stock Reconciliation"]
+party_field = ""
+date_field = "posting_date"
+submit_via = "client_rpc"
+why = "sets stock quantity and valuation to a counted figure; submitted through frappe.client.submit"
+
+[served."Subcontracting Inward Order"]
+party_field = "customer"
+date_field = "transaction_date"
+submit_via = "run_method"
+why = "work taken in from a customer for subcontract processing"
+
+[served."Subcontracting Order"]
+party_field = "supplier"
+date_field = "transaction_date"
+submit_via = "run_method"
+why = "work sent to a supplier with the raw materials to do it"
+
+[served."Subcontracting Receipt"]
+party_field = "supplier"
+date_field = "posting_date"
+submit_via = "run_method"
+why = "finished goods back from a subcontractor: stock moves, materials consumed"
+
+[served."Supplier Quotation"]
+party_field = "supplier"
+date_field = "transaction_date"
+submit_via = "run_method"
+why = "a supplier's offer against a request for quotation"
+
+[served."Supplier Scorecard Period"]
+party_field = "supplier"
+date_field = "start_date"
+submit_via = "run_method"
+why = "a scored period of a supplier's performance"
+
+[served."Timesheet"]
+party_field = "customer"
+date_field = "start_date"
+submit_via = "run_method"
+why = "billable and payable hours; invoices and salary slips draw on it"
+
+[served."Work Order"]
+party_field = ""
+date_field = "planned_start_date"
+submit_via = "run_method"
+why = "submit reserves materials and opens the job cards for making an item"
+
+# ---------------------------------------------------------------------------------------------
+# HELD. Every sentence below is Claude's (2026-10-10) and every row carries ask = true: John's
+# ruling replaces the sentence or drops the flag. Each row's `source` names where in the vendor's
+# own source (frappe 16.27.1 / erpnext 16.28.0, paths relative to the app) the mechanism claim was
+# READ, not recalled: the controller's lifecycle hooks, the module that creates the document, the
+# hooks.py scheduler line. Held means the door refuses submit, cancel and amend for a seat through
+# this door; the floor's consent gate still sees any other door.
+
+[held."Transaction Deletion Record"]
+why = "its on_submit deletes a company's transactions; created from Company's delete-transactions action; no seat should hold that act"
+source = "setup/doctype/transaction_deletion_record/transaction_deletion_record.py (before_submit, on_submit); setup/doctype/company/company.py creates it; hooks.py:351 watches the running job"
+ask = true
+
+[held."Period Closing Voucher"]
+why = "on_submit posts the period's closing entries and the year-end transfer; the Close is a human ceremony"
+source = "accounts/doctype/period_closing_voucher/period_closing_voucher.py (on_submit, on_cancel); hooks.py:326 period_closing_doctypes"
+ask = true
+
+[held."Process Period Closing Voucher"]
+why = "created by Period Closing Voucher itself to run the close in the background; the parent is the human's act"
+source = "accounts/doctype/period_closing_voucher/period_closing_voucher.py:138 creates it"
+ask = true
+
+[held."Stock Closing Entry"]
+why = "on_submit closes stock balances for a period; the Close for stock"
+source = "stock/doctype/stock_closing_entry/stock_closing_entry.py (on_submit, on_cancel)"
+ask = true
+
+[held."Repost Accounting Ledger"]
+why = "created by ERPNext itself when posted vouchers change; its on_submit rewrites GL rows after the fact; the reconciliation's target class, never its author"
+source = "controllers/accounts_controller.py creates it; accounts/doctype/repost_accounting_ledger/repost_accounting_ledger.py (on_submit)"
+ask = true
+
+[held."Repost Item Valuation"]
+why = "created by the stock controller and run by the scheduler; rewrites stock valuation after the fact"
+source = "controllers/stock_controller.py creates it; hooks.py:438 run_parallel_reposting, :452 repost_entries"
+ask = true
+
+[held."Repost Payment Ledger"]
+why = "on_submit rewrites payment ledger rows; an operator's repair tool"
+source = "accounts/doctype/repost_payment_ledger/repost_payment_ledger.py (on_submit only; nothing else creates it)"
+ask = true
+
+[held."Unreconcile Payment"]
+why = "on_submit removes allocations between payments and invoices; undoes what the Close may already have attested"
+source = "accounts/doctype/unreconcile_payment/unreconcile_payment.py (on_submit)"
+ask = true
+
+[held."Exchange Rate Revaluation"]
+why = "created by the scheduler daily, weekly and monthly; its journal entry revalues every open foreign-currency balance at once"
+source = "hooks.py:483/:494/:499 auto_create_exchange_rate_revaluation_*; accounts/utils.py creates it; accounts/doctype/exchange_rate_revaluation (before_submit)"
+ask = true
+
+[held."POS Opening Entry"]
+why = "created by the POS page when a cashier opens a shift; a human at a register"
+source = "selling/page/point_of_sale/point_of_sale.py creates it; accounts/doctype/pos_opening_entry (on_submit)"
+ask = true
+
+[held."POS Closing Entry"]
+why = "the cashier's shift close; on_submit consolidates POS Invoices into Sales Invoices"
+source = "accounts/doctype/pos_closing_entry/pos_closing_entry.py (on_submit, on_cancel); nothing else creates it"
+ask = true
+
+[held."Cashier Closing"]
+why = "a cash-count form with a validate hook and nothing on submit: nothing posts; a human's shift record"
+source = "accounts/doctype/cashier_closing/cashier_closing.py (validate only, no on_submit)"
+ask = true
+
+[held."POS Invoice Merge Log"]
+why = "created by the POS Invoice consolidation; its on_submit creates the Sales Invoice"
+source = "accounts/doctype/pos_invoice/pos_invoice.py:1040 creates it; accounts/doctype/pos_invoice_merge_log (on_submit, on_cancel)"
+ask = true
+
+[held."Process Deferred Accounting"]
+why = "created by the scheduler; posts deferred revenue and expense company-wide"
+source = "hooks.py:498 accounts.deferred_revenue.process_deferred_accounting; accounts/deferred_revenue.py creates it"
+ask = true
+
+[held."Process Payment Reconciliation"]
+why = "a batch runner started from the Payment Reconciliation tool; on_submit reconciles payments company-wide"
+source = "accounts/doctype/process_payment_reconciliation/process_payment_reconciliation.py (on_submit, on_cancel)"
+ask = true
+
+[held."Process Subscription"]
+why = "created by the scheduler; generates subscription invoices"
+source = "hooks.py:487 process_subscription.create_subscription_process; accounts/doctype/process_subscription (on_submit)"
+ask = true
+
+[held."Asset Depreciation Schedule"]
+why = "created by Asset; served through its parent"
+source = "assets/doctype/asset/asset.py:157 creates it; assets/doctype/asset_depreciation_schedule (on_submit, on_cancel)"
+ask = true
+
+[held."Asset Shift Allocation"]
+why = "a shift re-allocation of an asset's depreciation; on_submit rewrites the schedule of a held document"
+source = "assets/doctype/asset_shift_allocation/asset_shift_allocation.py (after_insert, on_submit)"
+ask = true
+
+[held."Serial and Batch Bundle"]
+why = "created by the stock transaction that carries it; served through its parent"
+source = "stock/doctype/stock_entry/stock_entry.py, stock_reconciliation.py, stock_reservation_entry.py, stock/serial_batch_bundle.py create it"
+ask = true
+
+[held."Stock Reservation Entry"]
+why = "the vendor marks it system-created (in_create); created from Sales Order and subcontracting; reservations follow their parent"
+source = "stock_reservation_entry.json in_create=1; stock/doctype/stock_reservation_entry/stock_reservation_entry.py and controllers/subcontracting_inward_controller.py create it"
+ask = true
+
+[held."BOM Update Log"]
+why = "the vendor marks it system-created (in_create); created by the BOM Update Tool and resumed by the scheduler"
+source = "bom_update_log.json in_create=1; manufacturing/doctype/bom_update_tool/bom_update_tool.py creates it; hooks.py:435 resume_bom_cost_update_jobs"
+ask = true
+
+[held."Payment Request"]
+why = "the vendor marks it system-created (in_create); raised from an invoice or order, its before_submit emails the customer for money on an inward request unless muted; on_submit only updates the advance payment status"
+source = "payment_request.json in_create=1; controllers/accounts_controller.py creates it; hooks.py:414 validate_payment; accounts/doctype/payment_request/payment_request.py:204 before_submit, :237 send_email, :240 on_submit"
+ask = true
+
+[held."Bank Transaction"]
+why = "created by the bank statement import and the Plaid sync; a seat submitting one by hand fabricates a bank record"
+source = "accounts/doctype/bank_statement_import_log and erpnext_integrations/doctype/plaid_settings create it; hooks.py:456 automatic_synchronization; accounts/doctype/bank_transaction (before_submit)"
+ask = true
+
+[held."Telephony Call Type"]
+why = "a telephony setting the vendor marks submittable with no controller logic at all; no accounting consequence"
+source = "telephony/doctype/telephony_call_type: no lifecycle hooks, nothing creates it"
+ask = true
+
+[held."DuckDB Sync"]
+why = "frappe's own analytics sync job: on_submit enqueues the sync, the scheduler cleans old ones; not a business document"
+source = "frappe: core/doctype/duckdb_sync/duckdb_sync.py:45 on_submit enqueues; frappe hooks.py:272 cleanup_old_syncs"
+ask = true

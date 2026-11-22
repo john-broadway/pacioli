@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Operator CLI: `pacioli seal` / `pacioli unseal` / `pacioli seal-status` (Task 3,
 docs/plans/2026-07-14-close-half3-seal-slice.md; `seal-status --anchor`,
 docs/plans/2026-07-15-seal-anchor-slice.md Task 3).

@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The OPERATOR tools — the CLI door's three audit reads, gated at the spine.
 
 ``close --reconcile`` was the one path in the package that constructed its own

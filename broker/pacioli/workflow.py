@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — WORKFLOW: CONSENT's second gate, ridden not replaced (pure core).
 
 The root README's duality table carries an honest asterisk: the human-minted **marker** is

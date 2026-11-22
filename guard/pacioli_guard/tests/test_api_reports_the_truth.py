@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """``api.py`` is the operator's only window onto their own grant. These pin it against inverting.
 
 **Two behavioural defects, found 2026-08-11 by an independent review of a docstring pass.** Both

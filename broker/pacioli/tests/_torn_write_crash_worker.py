@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """NOT a test module (no ``test_`` prefix — pytest never collects this). A standalone worker
 process for ``test_store_torn_write.py::TestMidTxnCrashRecovery``.
 

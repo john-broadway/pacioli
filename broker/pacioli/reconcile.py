@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — RECONCILE: governed payment reconciliation (pure core).
 
 A pure core, no bench imports (I/O is injected, exactly like ``cascade.py``/``spine.py``): one

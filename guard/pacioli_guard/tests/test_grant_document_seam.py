@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Bench-free tests for the seam between the pure decision core and the grant DOCUMENT.
 
 Run: `python3 -m unittest pacioli_guard.tests.test_grant_document_seam` from the app root.

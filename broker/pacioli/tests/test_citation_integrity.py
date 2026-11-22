@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """A citation is a claim. These check the ones that can be checked mechanically.
 
 Two classes of citation appear in this codebase's prose, and only one of them is safe:

@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The Close, Half 2 — the Reconciliation: the READ LAYER's period-sweep tests.
 
 Two new ``ErpnextClient`` reads, over the same injected-transport fake every other test in this

@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The operator tools (``pacioli.operator``) — the CLI door's three audit reads, gated at the
 spine (``docs/plans/2026-08-17-the-cli-is-a-door.md``, corrected 2026-08-18).
 

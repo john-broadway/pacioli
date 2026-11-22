@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — AMEND: the corrected re-draft after a governed cancel (pure core).
 
 After a governed cancel the human's story continues with the *corrected* entry. ERPNext has no

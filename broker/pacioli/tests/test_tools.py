@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Tool-layer tests — the MCP surface, exercised without the MCP SDK.
 
 A fake ERPNext client + real in-memory stores drive the full governed flow the way an MCP client

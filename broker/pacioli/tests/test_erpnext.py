@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """ERPNext client tests — request shaping + response parsing over an injected transport.
 
 The transport is a fake that records every call; nothing here touches a network. The real calls
@@ -17,6 +17,8 @@ resource-CRUD surface Sales Invoice already rides) — NOT live-verified against
 falsification is a future bench gate.
 """
 import json
+import os
+from pathlib import Path
 import unittest
 import urllib.error
 
@@ -1643,6 +1645,57 @@ class TestSupportedDoctypesConfig(unittest.TestCase):
             if cfg.get("amount_field") == "base_grand_total":
                 self.assertNotIn(name, known_without_base_grand_total,
                                  f"{name} has no base_grand_total field in erpnext v16")
+
+    def test_payment_entry_list_asks_only_for_fields_it_has(self):
+        """The lab (CT 31341, 2026-10-26) refused list_payment_entries with HTTP 417 "Field not
+        permitted in query: grand_total": Payment Entry rode the generic list branch, which asks
+        for grand_total unconditionally. payment_entry.json (erpnext v16.28.0) has no grand_total;
+        its money fields are paid_amount and received_amount, and payment_type/party_type say
+        which way the money moved. A schema sweep of all 51 supported doctypes against the v16
+        JSON found this the only list branch asking for a field its doctype lacks."""
+        from pacioli.erpnext import PAYMENT_ENTRY, _list_fields
+        fields = _list_fields(PAYMENT_ENTRY, SUPPORTED_DOCTYPES[PAYMENT_ENTRY]["party_field"])
+        self.assertNotIn("grand_total", fields)
+        self.assertEqual(fields, ["name", "status", "docstatus", "payment_type", "party_type",
+                                  "party", "company", "posting_date", "paid_amount",
+                                  "received_amount", "modified"])
+
+
+class TestListFieldsAgainstSchema(unittest.TestCase):
+    """Every supported doctype's list fields, read against the vendor's own DocType JSON (skips
+    loudly without it). The 2026-10-26 lab 417 (Payment Entry asked for grand_total) was the
+    first live sign; this sweep is what would have caught it before a bench did."""
+
+    STANDARD = {"name", "docstatus", "modified", "creation", "owner", "modified_by", "idx"}
+
+    def setUp(self):
+        erp, fr = os.environ.get("PACIOLI_ERPNEXT_REFS", ""), os.environ.get("PACIOLI_FRAPPE_REFS", "")
+        if not (erp and fr):
+            self.skipTest("PACIOLI_ERPNEXT_REFS / PACIOLI_FRAPPE_REFS unset: list fields are UNVERIFIED "
+                          "against the DocType schema in this environment.")
+        self.schema = {}
+        for root in (Path(erp) / "erpnext", Path(fr) / "frappe"):
+            if not (root / "hooks.py").exists():
+                self.skipTest(f"no hooks.py under {root}: list fields are UNVERIFIED in this environment.")
+            for path in root.glob("**/doctype/*/*.json"):
+                if path.stem != path.parent.name:
+                    continue
+                doc = json.loads(path.read_text())
+                if doc.get("doctype") == "DocType":
+                    self.schema[doc["name"]] = {f["fieldname"] for f in doc.get("fields", [])
+                                                if "fieldname" in f}
+
+    def test_every_list_field_exists_on_its_doctype(self):
+        from pacioli.erpnext import _list_fields
+        self.assertTrue(self.schema, "no DocType JSON found under the refs")
+        for doctype, cfg in SUPPORTED_DOCTYPES.items():
+            with self.subTest(doctype=doctype):
+                self.assertIn(doctype, self.schema, f"{doctype} has no DocType JSON in the refs")
+                fields = _list_fields(doctype, cfg.get("party_field"),
+                                      cfg.get("date_field", "posting_date"))
+                missing = [f for f in fields if f and f not in self.schema[doctype]
+                           and f not in self.STANDARD]
+                self.assertEqual(missing, [], f"{doctype} list asks for fields it lacks")
 
 
 class TestAuthAndShape(unittest.TestCase):

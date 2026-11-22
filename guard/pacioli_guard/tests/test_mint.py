@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The human mint route (``pacioli_guard.mint``) — the frappe glue around ``plan_consent_marker``.
 
 Why this module exists: until now the only way to create a floor marker was an ad-hoc script run as

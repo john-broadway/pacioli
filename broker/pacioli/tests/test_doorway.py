@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The doorway (``pacioli.doorway`` + its three ``_tool_pacioli_*`` handlers + the doors'
 served-surface selection) — ``docs/plans/2026-08-08-doorway-design.md``.
 

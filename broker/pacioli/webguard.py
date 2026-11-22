@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — WEBGUARD: the in-door perimeter shared by both network doors.
 
 A raw-ASGI hardening wrapper both the HTTP door (:func:`pacioli.server.serve_http`) and the A2A

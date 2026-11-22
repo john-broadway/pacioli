@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """One whitelisted endpoint: let a credential ask the floor about ITSELF.
 
 Why this exists. `require_consent` is opt-in, so an install can upgrade to 0.7.0 and still be
@@ -52,6 +52,14 @@ CONSENT_HANDLERS = {
     # `on_trash` out of the cached registry and deletes UNGATED — fail-OPEN, where a skipped migrate
     # alone refuses to mint the act. `gate_registered: false` is the operator's only receipt.
     "on_trash": "pacioli_guard.act.on_trash",
+    # 0.18.0. Fail-OPEN on a stale hook cache in the same way as `on_trash`: without the key
+    # frappe never calls the handler, and a gated seat edits a submitted document unasked.
+    "before_update_after_submit": "pacioli_guard.act.before_update_after_submit",
+    # 0.18.0, the belt for a save whose `_action` was preset to switch the gates above off.
+    "on_change": "pacioli_guard.act.on_change",
+    # 0.18.0. Fail-OPEN on a stale hook cache too: without the key a posted document can be
+    # cancelled through `discard` by anyone who may write it.
+    "before_discard": "pacioli_guard.act.before_discard",
 }
 
 

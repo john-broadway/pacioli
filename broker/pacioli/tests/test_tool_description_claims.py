@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """A tool description is a PROMPT, so a false one is a capability bug, not a typo.
 
 **The defect these pin, found 2026-08-11 by an independent review.** `_DOCTYPE_PROP`'s

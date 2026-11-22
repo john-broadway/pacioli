@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The HTTP transport (``serve --http``) — pure config/auth seams, SDK-free.
 
 The transports ruling (docs/plans/2026-07-16-any-transport-one-spine.md, John: "cover it all

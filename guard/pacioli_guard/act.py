@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Act-level consent, enforced at the DOCUMENT layer via ``doc_events``.
 
 **Why this is not in ``auth_hooks`` any more.** Consent is a property of an ACT ON A DOCUMENT. The
@@ -65,6 +65,7 @@ from pacioli_guard.scope import MINT_ROUTE_HINT, consent_verdict
 SUBMIT = "submit"
 CANCEL = "cancel"
 DELETE = "delete"   # 0.17.0 — see :func:`on_trash`
+UPDATE = "update"   # 0.18.0 — see :func:`before_update_after_submit`
 
 # Frame names frappe uses when it writes ONE document, and the module they must belong to.
 # KNOWLEDGE-PINNED against frappe 16 `model/document.py`: `insert` (:431) and `_save` (:552) each own
@@ -123,8 +124,8 @@ def _writing_document(frame):
 #
 # (2) is the load-bearing one and it does not depend on frappe's caching behaviour staying put.
 #
-# Its VALUE is the act consent was established for (``SUBMIT`` / ``CANCEL`` / ``DELETE``), not a
-# bare True. A
+# Its VALUE is the act consent was established for (``SUBMIT`` / ``CANCEL`` / ``DELETE`` /
+# ``UPDATE``), not a bare True. A
 # bare True was the 0.9.6 shape and it is what let a submit marker license a cancel: the ride
 # decision could see THAT an enclosing act was governed but not WHICH act, so it could not refuse
 # the crossing. See :func:`_may_ride`.
@@ -229,7 +230,8 @@ def _same_document(a, b):
 
 
 def _enclosing_governed_act(doc):
-    """The ACT (``SUBMIT``/``CANCEL``) of the nearest enclosing write of a DIFFERENT document that
+    """The ACT (any of the four; a spent ``update`` or ``delete`` marker stamps too) of the nearest
+    enclosing write of a DIFFERENT document that
     already established consent, or ``None``. Non-``None`` means this act is happening INSIDE
     another act, i.e. it is a CONSEQUENCE of an act already being governed rather than an act of
     its own.
@@ -323,6 +325,62 @@ def _enclosing_governed_act(doc):
         # A different document IS being written, but this gate never established consent for it.
         # Keep walking rather than concluding anything: an OUTER frame may still be the governed
         # act, and a consequence of a consequence legitimately rides the original.
+        frame = frame.f_back
+    return None
+
+
+def _enclosing_own_act(doc):
+    """The act an ENCLOSING write of this same document established consent for, or ``None``.
+
+    :func:`_enclosing_governed_act` looks only at frames writing a DIFFERENT document, which is
+    right for a cascade and blind to one case the edit gate meets: a controller that calls
+    ``self.save()`` from its own ``on_submit`` or ``on_cancel``. That inner save is a post-submit
+    edit of the very document whose governed act is still running. Demanding a second marker for
+    it would abort every governed submit of such a doctype, on a document the human already
+    approved by name.
+
+    **The innermost frame for this document is skipped.** It is the save being judged right now.
+    Only a write frame FURTHER OUT, still live, holding this same document and stamped by this
+    gate with submit or cancel, counts. The stamp is read from the OUTER frame's document, because
+    the inner save may be a fresh ``get_doc`` object for the same name with no stamp.
+
+    **What this does NOT establish, corrected after review.** The first version of this docstring
+    said a top-level edit has exactly one frame for its document, and that the outer act's handler
+    always ran before anything nested in it. Neither holds: frappe runs a controller's own method
+    BEFORE any app handler (``Document.hook``: ``compose(f, *hooks)``), so a controller whose own
+    ``before_update_after_submit`` calls ``save()`` reaches this gate for the INNER save first,
+    with two frames on the stack. Two cases follow.
+
+      - The outer save is an edit nobody consented to. No stamp of submit or cancel is on the
+        outer document, the inner save is asked for a marker, and it is refused. Correct.
+      - The outer document still carries a submit or cancel stamp from an act that ALREADY
+        FINISHED earlier in this process, on the same Python object. The inner save rides that
+        stale stamp. The outer save's own handler then runs and refuses, and the throw rolls
+        the inner one back, unless the outer save set ``flags.ignore_validate`` and so has no
+        handler. That last combination is an unconsented edit that rides: STATED RESIDUAL. It
+        needs one object reused across two acts in one process, an outer save that skips
+        validation, and a nested save of the same document inside it. A stamp cannot be tied to
+        the frame that earned it without changing what every stamp in this file is, and frappe's
+        ``_action`` cannot tell the cases apart (a ``self.save()`` overwrites it on the very
+        object the outer frame holds).
+
+    Two frames for one document do not arise from ``_save`` delegating to ``insert``, the
+    collision that broke the 0.9.1 frame COUNT: a document receiving
+    ``before_update_after_submit`` is at docstatus 1 and has a name.
+
+    **Direction of failure:** a renamed frappe internal means no frame is recognised, this returns
+    ``None``, and the inner save is asked for its own marker. Loud, and closed.
+    """
+    frame = sys._getframe(1)
+    passed_innermost = False
+    while frame is not None:
+        other = _writing_document(frame)
+        if other is not None and _same_document(other, doc):
+            if passed_innermost:
+                established = _flag_value(other, _CONSENT_ESTABLISHED)
+                if established:
+                    return established
+            passed_innermost = True
         frame = frame.f_back
     return None
 
@@ -501,6 +559,10 @@ def _may_ride(doc, action, enclosing_act):
     the lifecycle while a DRAFT is being saved, so a gated seat's draft save of such a document needs
     a delete marker for that bundle.
     """
+    if action == UPDATE:
+        # An edit to a submitted document rides a governed SUBMIT or CANCEL and nothing else.
+        # See :func:`before_update_after_submit` for the sweep this rests on and what it admits.
+        return enclosing_act in (SUBMIT, CANCEL)
     if action == CANCEL:
         return enclosing_act == CANCEL
     if action == DELETE and enclosing_act == CANCEL:
@@ -570,6 +632,10 @@ _RESIDUAL = {
              "document lifecycle entirely (raw SQL, `frappe.db.delete`)"),
 }
 _RESIDUAL[CANCEL] = _RESIDUAL[SUBMIT]
+# The edit path shares the submit pair's hole (`flags.ignore_validate` returns before
+# `before_update_after_submit` at the same line) and adds the commonest one of all: a field write
+# that never calls `save()`. ERPNext updates most linked-document status and billing fields that way.
+_RESIDUAL[UPDATE] = _RESIDUAL[SUBMIT]
 
 
 def _require_consent(doc, action):
@@ -611,6 +677,11 @@ def _require_consent(doc, action):
     # was a proxy that missed every two-step `save(); submit()` creation. On the cancel path the
     # discriminator is the ENCLOSING act instead, because a cancel is always of a document that
     # already has a name. `_may_ride` owns both splits and states the residual each leaves.
+    if action == UPDATE and _enclosing_own_act(doc) in (SUBMIT, CANCEL):
+        # The document is saving ITSELF inside its own governed submit or cancel. Same act, and
+        # deliberately NOT re-stamped: the stamp must keep naming the act a human approved, or a
+        # cancel cascading after this save would be judged against `update` and refused.
+        return
     enclosing_act = _enclosing_governed_act(doc)
     # Consulted ONLY when the write-frame walk found nothing, so this can never widen an answer the
     # existing walk already gave. A preview is not a document write, so its cascade arrives here with
@@ -623,11 +694,22 @@ def _require_consent(doc, action):
         # ungoverned once it is two levels deep. Stamped with THIS act, so a cancel nested under a
         # ridden submit is judged against the submit and refused rather than inheriting a cancel
         # authority from further up the stack.
-        _flag_set(doc, _CONSENT_ESTABLISHED, action)
+        #
+        # A ridden EDIT is not stamped at all. The stamp exists to narrow what nests under a
+        # ridden act (a cancel under a ridden submit is judged against the submit). An edited
+        # document needs no such narrowing: with no stamp on it the walk in
+        # `_enclosing_governed_act` passes its frame and finds the governed act further out, still
+        # live, so everything nested is judged against the act a human approved. And a stamp is
+        # authority that outlives the frame it was earned in: the first cut stamped the edited
+        # document with the act it rode, which left `cancel` on a caller-named Payment Entry
+        # after the invoice's cancel was over, where any later write of that object that fires
+        # no handler of its own (`flags.ignore_validate`) would have let cancels ride under it.
+        if action != UPDATE:
+            _flag_set(doc, _CONSENT_ESTABLISHED, action)
         return
     doctype = getattr(doc, "doctype", None)
     docname = getattr(doc, "name", None)
-    record = _consent_record(doctype, docname) if doctype and docname else None
+    record = _consent_record(doctype, docname, action) if doctype and docname else None
     allowed, reason = consent_verdict(_presented_consent(), doctype, docname, action, record,
                                       time.time(), user)
     if not allowed:
@@ -703,11 +785,15 @@ def _establish_consent_for_preview(doc):
         return
     # Already established for this document in this request: a nested preview, or a preview inside a
     # governed act. Nothing to verify and nothing to re-stamp.
-    if _flag_value(doc, _CONSENT_ESTABLISHED):
+    #
+    # Only a SUBMIT stamp. This returned on any stamp until 0.18.0, which was harmless while every
+    # stamp a document could carry here meant a posting had been consented. An `update` stamp
+    # does not: consent to edit a posted document is not consent to post one.
+    if _flag_value(doc, _CONSENT_ESTABLISHED) == SUBMIT:
         return
     doctype = getattr(doc, "doctype", None)
     docname = getattr(doc, "name", None)
-    record = _consent_record(doctype, docname) if doctype and docname else None
+    record = _consent_record(doctype, docname, SUBMIT) if doctype and docname else None
     # SUBMIT, not a new "preview" act: the human authorised a posting, and this is that posting being
     # rehearsed. Inventing a third act would mean a marker that authorises a preview and nothing
     # else, which is a second ceremony for no gain.
@@ -792,6 +878,233 @@ def on_trash(doc, method=None):
     gate before the parent does and are judged on their own — see :func:`_may_ride`.
     """
     _require_consent(doc, DELETE)
+
+
+def before_update_after_submit(doc, method=None):
+    """The EDIT gate (0.18.0): as :func:`before_submit`, for changing a document that is already
+    submitted.
+
+    **Why.** Two outside reports (GHSA-wc4v-5w73-74w4 by sandhiyabalaji32-tech, filed first;
+    GHSA-9h6v-f656-p77h by nikhilagrawalsf, with a run reproduction). A seat that must ask a human
+    before it posts, reverses or erases could still change a posted document's allow-on-submit
+    fields with nothing asked, and on Sales Invoice and Purchase Invoice those include account
+    references. An edit is a fourth act with its own marker: a submit, cancel or delete marker
+    never spends here, and an update marker never spends there (``consent_verdict``'s act binding).
+
+    **Where frappe fires it, read in frappe 16 source.** ``Document.save`` on a document stored at
+    docstatus 1 sets ``_action = "update_after_submit"`` and ``run_before_save_methods`` calls
+    ``run_method("before_update_after_submit")`` (``model/document.py:1410-1411`` at 16.27.1).
+    ``flags.ignore_validate_update_after_submit`` skips the field-level check only (``:1164-1166``);
+    the event still fires. Every lifecycle route reaches it: REST v1 and v2 updates,
+    ``frappe.client.save``/``set_value``, the desk's Update, a background job, the console.
+
+    **What rides, and the sweep behind it.** ERPNext saves already-submitted documents itself while
+    it posts or reverses another one. Every ``.save(`` in erpnext 16 outside its tests was classified
+    on 2026-11-21 (the design note has the method and its limits). Inside ``on_submit``/``on_cancel``:
+    the Payment Entry or Journal Entry named in an invoice's advances table
+    (``accounts/utils.py`` ``reconcile_against_document``), the Bank Transaction a cancelled voucher
+    was matched to (``bank_transaction.py`` ``remove_from_bank_transaction``), assets, work orders,
+    the POS opening entry, a delivery trip's notes. Those ride a governed submit or cancel
+    (:func:`_may_ride`), and a document saving itself inside its own governed act rides too
+    (:func:`_enclosing_own_act`). A ridden edit leaves no stamp on the document it edited.
+
+    **Residual of the ride, stated.** The advances table is filled by the caller, so one submit
+    marker also lets ERPNext allocate a submitted Payment Entry the human did not approve by name.
+    ERPNext checks that entry is submitted and belongs to the same party first. This is the same
+    kind of residual the cancel path already carries, and a marker does not pin a draft's content
+    in any case (SECURITY.md).
+
+    **What still needs its own marker, by design.** An edit cascaded from a write that established
+    nothing: a DRAFT save of a Delivery Trip re-saves its submitted Delivery Notes; a delete's
+    cascades reach this gate before the parent has established anything (frappe runs a document's
+    own method before any app handler). An edit inside a consented EDIT does not ride either. And
+    the parent re-save frappe performs after a child-row update (``api/v1.py``, ``api/v2.py``
+    ``update_doc``) is a separate save with no enclosing frame, so it is asked for its own marker.
+
+    **What a consented edit may itself cause.** A document the edit CREATES may be submitted or
+    deleted under it, as under any other act: ``Sales Invoice.on_update_after_submit`` (and the
+    Purchase Invoice, Payment Entry and Journal Entry ones) call ``repost_accounting_entries``
+    when an account field changed, which inserts and submits a ``Repost Accounting Ledger``. So
+    an ``update`` marker can cause a ledger repost. Before 0.18.0 that repost was the one thing
+    that stopped a gated seat's account edit: the edit was ungated, the repost's submit was not,
+    and the refusal rolled the edit back. A pre-existing document is not submitted, cancelled or
+    deleted under a consented edit. An edit also rides a ledger PREVIEW of a consented submit,
+    which ERPNext rolls back.
+
+    **Not seen:** ``flags.ignore_validate``, and field writes that never call ``save()``
+    (``db_set``, ``frappe.db.set_value``, ``db_update_all``), which is how ERPNext itself updates
+    most linked-document fields. Driven on the lab bench 2026-11-22 (frappe 16.35.0, erpnext
+    16.36.0, Journal Entry): a gated seat's edit refused without a marker and with a submit marker,
+    allowed once with an update marker and refused on replay, and an account edit that made ERPNext
+    create and submit a Repost Accounting Ledger under the update marker. The advances-table and
+    self-save rides were not driven there.
+    """
+    _require_consent(doc, UPDATE)
+
+
+def _inside_own_write(doc):
+    """Is a frappe document-write frame (``_save``/``insert``) for THIS document on the stack?"""
+    frame = sys._getframe(1)
+    while frame is not None:
+        other = _writing_document(frame)
+        if other is not None and _same_document(other, doc):
+            return True
+        frame = frame.f_back
+    return None
+
+
+def _roll_back_this_transaction():
+    """Roll the current transaction back from INSIDE a document hook.
+
+    frappe turns transaction control off while it runs a ``doc_events`` handler
+    (``Document.hook``'s runner raises ``frappe.db._disable_transaction_control`` around each
+    handler, ``model/document.py``), and while it is raised ``Database.rollback()`` only warns and
+    does nothing. The first version of this belt called ``rollback()`` plainly; the unit tests'
+    database double rolled back regardless and passed, and the lab showed the write still
+    committed. frappe's own ``Database.sql_ddl`` lowers the same counter to commit and restores it
+    afterwards; this does the same for a rollback. Never raises: a rollback that fails must not
+    turn the refusal that follows it off.
+    """
+    db = getattr(frappe, "db", None)
+    if db is None:
+        return
+    held = getattr(db, "_disable_transaction_control", None)
+    rolled_back = False
+    try:
+        if held:
+            db._disable_transaction_control = 0
+        db.rollback()
+        rolled_back = True
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        if held:
+            db._disable_transaction_control = held
+    if held is None or not rolled_back:
+        # The rollback cannot be CONFIRMED: a frappe without the counter, or a rollback that
+        # raised. If it raised in `before_rollback` or the SQL, the write is still in the
+        # transaction; if it raised later (`begin()`, an `after_rollback` callback such as a
+        # Redis cache clear) the write is already gone and this refusal costs the rest of the
+        # request its commit. Fail closed either way. frappe resets `before_commit` at the start
+        # of a rollback, so a callback added after it stands. It refuses ONE commit
+        # (`CallbackManager.run` pops it): a caller that catches that and commits again would get
+        # through. On the request path the refusal surfaces as a bare 500 (frappe's
+        # `sync_database` runs outside its exception handler) and the worker's connection keeps
+        # its open transaction and row locks until its next request. Stated, not closed.
+        try:
+            db.before_commit.add(_refuse_the_commit)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _refuse_the_commit():
+    raise frappe.PermissionError(
+        "Pacioli Guard refused a save in this transaction and could not confirm it was rolled back; "
+        "the transaction is not committed."
+    )
+
+
+def on_change(doc, method=None):
+    """The belt for a save that switched its own gates off (0.18.0).
+
+    A document dict may carry ``_action``; frappe keeps it (``BaseDocument.update``) and
+    ``check_if_latest`` keeps one already set. Preset to "discard", ``run_before_save_methods``
+    and ``run_post_save_methods`` run no before/on hook, so ``before_submit``,
+    ``before_cancel`` and ``before_update_after_submit`` never reach this module, and the
+    transition check that would have asked for the submit permission is skipped. The document is
+    written with whatever ``docstatus`` it carries. ``on_change`` is the one hook frappe still
+    runs (``run_post_save_methods`` ends with it, whatever the action), so a consent-gated seat's
+    save is judged here.
+
+    **Telling frappe's own discard apart.** ``Document.discard()`` sets ``_action = "discard"`` and
+    writes with ``db_set``, which runs ``on_change`` too, but it never calls ``save()``. So a
+    discard is refused only when a frappe ``_save``/``insert`` frame for this same document is on
+    the stack: that save was not started by frappe. (A discard of a document that is not a draft
+    is ``before_discard``'s to refuse, before anything is written.)
+
+    **The row is already written when this runs**, and frappe runs no hook before the write for a
+    save whose action is "discard". A caller that catches the refusal and carries on would commit
+    it: ``frappe.client.bulk_update`` catches every exception per document and the request then
+    commits (found by review of 0.18.0's branch). So the refusal rolls the transaction back itself
+    before it raises, past frappe's own lock on transaction control inside a hook
+    (``_roll_back_this_transaction``). The cost is stated: anything the same transaction wrote before this save
+    is rolled back with it, so a ``bulk_update`` batch that carries this body loses the documents
+    saved ahead of it in that batch while reporting them saved. Only a body nobody honest sends
+    reaches this line.
+
+    An insert that carries "discard" never gets here: frappe's ``check_if_latest`` reads
+    ``previous.modified`` with no previous document and raises first (``model/document.py``,
+    ``check_if_latest``). The check covers it anyway, should frappe change that.
+
+    The request layer refuses the same body for a scoped api-key credential
+    (``scope.body_presets_save_action``); this covers the paths that never pass it: OAuth Bearer,
+    desk sessions, background jobs, server scripts, the console. Inert for anyone not gated.
+    """
+    if getattr(doc, "_action", None) != "discard":
+        return
+    user = getattr(getattr(frappe, "session", None), "user", None)
+    if not user or not _gated(user):
+        return
+    if not _inside_own_write(doc):
+        return
+    _roll_back_this_transaction()
+    _deny(
+        "consent (document layer)",
+        f"This credential requires human consent for submitting, cancelling, deleting and editing a "
+        f"submitted document, and this save of "
+        f"{getattr(doc, 'doctype', None)} {getattr(doc, 'name', None)} arrived with `_action` set "
+        f"to 'discard', which switches off frappe's transition check and every hook, this gate's "
+        f"included. frappe's own discard never saves. Refused; leave `_action` out of the "
+        f"document.",
+    )
+
+
+def before_discard(doc, method=None):
+    """Only a DRAFT may be discarded, judged from the stored row (0.18.0).
+
+    ``Document.discard()`` (whitelisted, so ``run_doc_method`` and v2's
+    ``/document/<dt>/<name>/method/discard`` reach it) checks ``docstatus.is_draft()`` on the
+    document object it was handed. Through ``run_doc_method`` that object is built from the
+    CLIENT's body (``frappe.get_doc(docs)``). ``run_doc_method`` first calls ``check_if_latest``
+    itself, which refuses a body that says ``docstatus: 0`` about a submitted document, UNLESS the
+    body also presets ``_action: "discard"``, which skips that transition check. With both, the
+    ``is_draft()`` check passes on the client's description and ``db_set("docstatus", 2)``
+    cancels the posted document with no ``before_cancel``, no consent, and its ledger rows left
+    live. Lab-driven on frappe 16.35.0 / ERPNext 16.36.0: a desk user with no grant did it to a
+    posted Journal Entry through v1 and v2 ``run_doc_method``. A scoped api-key credential is
+    already refused by the request scan (the body carries ``_action``); this covers everyone else:
+    OAuth, desk sessions, server scripts. frappe 16.50.0 and later drop a client's ``_action``
+    (``RESERVED_KEYWORDS``), and on 16.60.2 the same body is refused by frappe's own transition
+    check; this stays for earlier 16.x and as a belt.
+
+    ``before_discard`` runs before that ``db_set``, so this refuses before anything is written.
+    It applies to EVERY principal, not only consent-gated seats: it enforces frappe's own rule
+    ("Only draft documents can be discarded"), which frappe means for everyone and here checks on
+    the wrong object. A discard of a real draft is untouched. A row that cannot be read is
+    refused, since a discard that cannot be judged is a write nobody needs to have go through.
+    """
+    doctype, name = getattr(doc, "doctype", None), getattr(doc, "name", None)
+    if not doctype or not name:
+        return
+    try:
+        stored = frappe.db.get_value(doctype, name, "docstatus", for_update=True)
+    except Exception:  # noqa: BLE001 — unreadable reads as refused, never as a draft
+        stored = "unreadable"
+    if stored is None:
+        return  # no stored row: frappe's own discard fails on its own terms
+    try:
+        draft = int(stored) == 0
+    except (TypeError, ValueError):
+        draft = False
+    if draft:
+        return
+    _deny(
+        "discard of a document that is not a draft",
+        f"{doctype} {name} is stored with docstatus {stored}, and only a draft may be discarded. "
+        f"The request described it as a draft; frappe's discard checked that description, not "
+        f"the stored document. Refused before anything was written. To reverse a submitted "
+        f"document, cancel it.",
+    )
 
 
 def after_insert(doc, method=None):

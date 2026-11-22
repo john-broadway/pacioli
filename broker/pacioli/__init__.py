@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — the governed MCP broker for ERPNext.
 
 The security-critical pillar logic lives in the pure cores (``prove``, ``consent``, ``plan``,

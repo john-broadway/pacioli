@@ -50,6 +50,8 @@ DENY_PREFIXES: tuple[str, ...] = (
     # publishing them hands out a map of private infrastructure. See KEEP_PATHS for the one
     # parameterised file that is meant for the public thread.
     "deploy/bench/",
+    # `docs/specs/` = design specs for unreleased work (2026-11-22, with the 0.18.0 flip).
+    "docs/specs/",
 )
 
 # Exact paths that survive a DENY_PREFIX. This overrides the prefix rule ONLY — never

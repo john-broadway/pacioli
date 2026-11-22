@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Prove the INSTALLED broker's MCP door builds and answers, credential-free.
 
 Run by ``scripts/install_smoke.sh`` inside the smoke venv, against the artifact that

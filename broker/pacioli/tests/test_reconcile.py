@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Bench-free unit tests for the RECONCILE pure core (pacioli.reconcile) — governed payment
 reconciliation: preflight-all -> consent -> one reconcile call -> readback-driven outcome.
 

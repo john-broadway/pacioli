@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The spine's own docstring, held to the spine's own code.
 
 **Why this file exists, and it is the worst finding of the campaign.** The docstring-claim pass of

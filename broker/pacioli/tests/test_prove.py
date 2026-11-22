@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Bench-free unit tests for the PROVE pure core (pacioli.prove) — the hash-chained receipt ledger.
 
 Run: `python3 -m unittest pacioli.tests.test_prove` from the broker app root. No frappe required.

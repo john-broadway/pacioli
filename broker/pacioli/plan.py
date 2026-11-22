@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — PLAN: the memorandum, TOCTOU freshness, and the closed-books refusal (pure core).
 
 PLAN is the memorandum (Pacioli's *memoriale*): everything written down first, before any formal

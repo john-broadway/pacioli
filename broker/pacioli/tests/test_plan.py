@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Bench-free unit tests for the PLAN pure core (pacioli.plan) — plan record, TOCTOU freshness,
 and the closed-books check (period-lock) refusal.
 

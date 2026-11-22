@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Store-layer close-record + attestation gate (Half 3, Fork A1, Task 1) — the ``close_records``
 table, canonical/HMAC helpers, and the ``record_close``/``attest``/``close_cursor``/
 ``close_gate_state`` methods on :class:`BrokerStore`.

@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — THE CLOSE (Half 1: the period Statement). Pure core, no I/O, no clock, no seal.
 
 Double-entry's power in 1494 was not recording — it was the CLOSE: at period end the books balance

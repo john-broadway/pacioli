@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — THE CLOSE (Half 3: response-to-gap). Pure core, no I/O, no clock, no seal, no store.
 
 Halves 1 and 2 DETECT: ``close.py`` attests the period from Pacioli's own receipt store (the

@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Bench-free unit tests for the SQLite persistence (pacioli.store) — the real implementation of the
 guarantees the pure cores delegate to the glue: an atomic CAS marker claim, single-writer append,
 and an atomic outcome+marker settle. Plus an end-to-end run of the spine against a real store.

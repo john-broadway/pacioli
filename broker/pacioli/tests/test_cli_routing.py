@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """`cli.main` routes each verb to its handler — the one thing nothing tested.
 
 Every other CLI suite calls `cmd_*` directly, so the dispatch chain in `main()` (about fifty

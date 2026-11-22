@@ -9,7 +9,7 @@ version = "0.40.1"
 description = "Governed agent broker for ERPNext (MCP + A2A doors, one spine) — no debit without a credit: PLAN, CONSENT, PROVE, UNDO over the books, on the Pacioli Guard credential floor"
 readme = "README.md"
 requires-python = ">=3.12"
-license = "Apache-2.0"
+license = "AGPL-3.0-or-later"
 authors = [{ name = "John Broadway" }]
 keywords = ["mcp", "erpnext", "frappe", "ai-agents", "governance", "audit", "accounting"]
 classifiers = [
@@ -149,6 +149,11 @@ pacioli = "pacioli.cli:main"
 [tool.setuptools.packages.find]
 include = ["pacioli*"]
 exclude = ["pacioli.tests*"]   # tests are for the repo, not the wheel
+
+[tool.setuptools.package-data]
+# The core door's two data files ride in the wheel: the vendor's table (written by
+# scripts/vendor_meta.py fetch) and the judgement beside it (written by a person).
+"pacioli.core" = ["doctypes.toml", "meta/*.json.gz"]
 
 [tool.coverage.run]
 # BRANCH mode deliberately. Measured 2026-08-11: statement coverage scored `prove.py` at 98%

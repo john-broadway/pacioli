@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — DOCTOR: the inventory (read-only config & readiness checks; glue, stdlib-only).
 
 Pacioli starts the merchant with a complete inventory before a single entry — survey what you

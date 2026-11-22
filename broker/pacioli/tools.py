@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — TOOLS: the MCP tool surface (glue, SDK-free).
 
 The tool schemas and the dispatcher live here, with **no MCP SDK import**, so the whole surface is
@@ -1920,6 +1920,7 @@ Journal Entry dict, never inserted or submitted). Nothing granted, no tool built
 from __future__ import annotations
 
 import difflib
+import functools
 import math
 import sqlite3
 import time
@@ -1929,6 +1930,8 @@ from datetime import datetime, timezone
 
 from pacioli import consent  # noqa: F401 — re-exported for the CLI's mint path
 from pacioli import doorway, history
+from pacioli.core import door as core_door
+from pacioli.core.table import Table as _CoreTable
 from pacioli.doorway import DOORWAY_NAMES, DOORWAY_TOOLS
 from pacioli.operator import OPERATOR_NAMES, OPERATOR_TOOLS
 from pacioli import workflow
@@ -2518,7 +2521,7 @@ TOOLS = _close_schemas(_generate_mechanical_tools() + _GENERIC_TOOLS)
 # hand-listed, so it cannot drift from what is published.
 _DECLARED_ARGS = {
     tool["name"]: frozenset(tool.get("inputSchema", {}).get("properties", {}) or {})
-    for tool in list(TOOLS) + list(DOORWAY_TOOLS) + list(OPERATOR_TOOLS)
+    for tool in list(TOOLS) + list(DOORWAY_TOOLS) + list(OPERATOR_TOOLS) + list(core_door.CORE_TOOLS)
 }
 
 
@@ -2571,7 +2574,11 @@ _DOCTYPE_IN_NAME = frozenset(
 # Every argument name any served tool declares, minus `pacioli_call`'s own envelope — used to
 # tell "this key belongs INSIDE arguments" from "this key is a typo of tool/arguments".
 _INNER_TOOL_ARGS = frozenset(
-    k for name, keys in _DECLARED_ARGS.items() if name != "pacioli_call" for k in keys
+    k for name, keys in _DECLARED_ARGS.items()
+    # The core door's own keys (`doctype`, `act`) are NOT inner-tool arguments: inner tools spell
+    # the doctype `pacioli_doctype`, and the 2026-07-30 incident was exactly that pair.
+    if name != "pacioli_call" and name not in core_door.CORE_NAMES
+    for k in keys
 ) - {"tool", "arguments"}
 
 
@@ -2711,7 +2718,20 @@ READ_ONLY_TOOLS = frozenset(
     # Reachability is the SPINE GATE's job (dispatch refuses them off the CLI door); read-only
     # classification only says the seal never blocks them.
     | OPERATOR_NAMES
+    # The core door's two reads: pacioli_find is a pure read over the table in this process,
+    # pacioli_read routes to a get_*/list_* read. pacioli_plan and pacioli_act are NOT here: they
+    # carry pacioli_target at the top level, so the outer seal gate resolves the RIGHT books (the
+    # reason pacioli_call could not be governed does not apply to them).
+    | frozenset({"pacioli_find", "pacioli_read"})
 )
+
+_CORE_SLUGS = {d.doctype: (d.slug, d.plural) for d in DESCRIPTORS}
+
+
+@functools.lru_cache(maxsize=1)
+def _core_table() -> _CoreTable:
+    """The vendor's table and the policy, read from disk once per process."""
+    return _CoreTable.load()
 
 
 def _now_epoch():
@@ -8258,7 +8278,8 @@ class PacioliBroker:
         # design review, finding 1). Non-string names take the same deny every unknown name does.
         if not isinstance(name, str) or (name not in tool_names()
                                          and name not in DOORWAY_NAMES
-                                         and name not in OPERATOR_NAMES):
+                                         and name not in OPERATOR_NAMES
+                                         and name not in core_door.CORE_NAMES):
             return _deny(f"unknown tool {name!r}")
         if name in OPERATOR_NAMES and (self._via or {}).get("transport") != "cli":
             # The SPINE gate (corrected plan, 2026-08-18): the operator three exist for
@@ -10746,6 +10767,29 @@ class PacioliBroker:
             return _deny("'arguments' must be an object: the named tool's own arguments, "
                          "exactly as pacioli_tool_schema declares them")
         return self.dispatch(tool, arguments or {})
+
+    # --- the CORE door (pacioli.core): four tools over the vendor's table --------------------
+    # Same invariant as pacioli_call: a routed act goes through ``self.dispatch`` and nothing
+    # else, so the inner tool's own gate runs with the inner tool's own args. The route itself is
+    # pure (pacioli.core.door.route) and decides nothing but the address and the policy's sentence.
+
+    def _core_route(self, name, args):
+        inner, inner_args, deny = core_door.route(_core_table(), name, args or {}, _CORE_SLUGS)
+        if deny is not None:
+            return _deny(deny, stage="request")
+        return self.dispatch(inner, inner_args)
+
+    def _tool_pacioli_find(self, args):
+        return core_door.find(_core_table(), args or {})
+
+    def _tool_pacioli_plan(self, args):
+        return self._core_route("pacioli_plan", args)
+
+    def _tool_pacioli_read(self, args):
+        return self._core_route("pacioli_read", args)
+
+    def _tool_pacioli_act(self, args):
+        return self._core_route("pacioli_act", args)
 
     # --- OPERATOR tools (CLI door only — the dispatch gate refuses every other via) ----------
     # The three audit reads `close --reconcile` needs and no catalog tool covers

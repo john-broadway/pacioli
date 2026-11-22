@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The human mint route — create a `Pacioli Consent Marker` from the books side.
 
 **Why this exists.** The floor has refused unconsented writes since 0.7.0, but this package shipped

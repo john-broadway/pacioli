@@ -10,6 +10,17 @@ bumped deliberately; a public release is a separate act. Deploy identity = git c
 
 The version heading is written at release classification. Content, in landing order:
 
+- **License: Apache-2.0 to AGPL-3.0-or-later from the next release.** John's call, 2026-10-31:
+  stop people from taking it closed. Every release through 0.40.1 was Apache-2.0 and stays
+  Apache-2.0. `LICENSE` is the GNU text byte for byte (sha256 `0d96a4ff…abcb0`).
+- **Fix: `list_payment_entries` asked ERPNext for a field Payment Entry does not have.** It rode
+  the generic list branch, which always asks for `grand_total`; `payment_entry.json` (v16) has
+  none, so a real bench answered HTTP 417 "Field not permitted in query: grand_total" (found on
+  the lab, 2026-10-26). Payment Entry now lists `payment_type`, `party_type`, `paid_amount` and
+  `received_amount` in its place. A new test reads every supported doctype's list fields against
+  the vendor's DocType JSON (set `PACIOLI_ERPNEXT_REFS` and `PACIOLI_FRAPPE_REFS`, else it skips
+  and says so); across all 51 doctypes this was the only one asking for a field it lacks.
+
 ## 0.40.1 - 2026-09-08 - doctor reads roles from the floor
 
 PATCH. **One behaviour fix in `doctor`, found by the first real customer build.** frappe

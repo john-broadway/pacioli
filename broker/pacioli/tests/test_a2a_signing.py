@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """A2A agent-card signing (docs/plans/2026-07-17-a2a-card-signing.md) — the operator presses an
 ES256/JOSE seal onto the card, publishes the public key at a JWKS endpoint, and a peer verifies.
 

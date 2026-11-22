@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The seal gate — the choke point (Task 2, docs/plans/2026-07-14-close-half3-seal-slice.md).
 
 Task 1 gave ``BrokerStore`` a fail-closed, evented seal state (``seal``/``unseal``/``seal_state``/
@@ -582,6 +582,11 @@ def _read_args(name):
         return {"name": "get_sales_invoice"}
     if name == "pacioli_call":
         return {"tool": "get_sales_invoice", "arguments": {"name": "SI-1"}}
+    # The core door's two reads, same law: run the tool, never assert survival about a deny.
+    if name == "pacioli_find":
+        return {"query": "invoice"}
+    if name == "pacioli_read":
+        return {"doctype": "Sales Invoice", "name": "SI-1"}
     # The operator three (the CLI door's audit reads) — same law as the doorway three above:
     # the sweep must genuinely run the tool, or read-survival is asserted about a deny.
     if name in ("sweep_gl_entries", "get_reposts"):
@@ -664,6 +669,10 @@ class TestClassificationCompleteness(unittest.TestCase):
         "amend_subcontracting_receipt",
         "plan_submit", "plan_cancel", "plan_cascade_cancel", "cascade_cancel",
         "plan_reconcile", "reconcile", "request_workflow_transition",
+        # The core door's two governed tools (TestCoreDoorIsGatedAtTheOuterLayer below): they
+        # carry pacioli_target at the top level, so the OUTER seal gate resolves the right books
+        # and refuses before the route even runs.
+        "pacioli_plan", "pacioli_act",
     })
 
     def test_every_tool_is_read_only_or_gate_covered(self):
@@ -689,9 +698,11 @@ class TestClassificationCompleteness(unittest.TestCase):
         # object on the right would let a wrong OPERATOR_NAMES shift both sides together and
         # pass — the expected side must owe nothing to the code under test (the 08-17 law;
         # lens 1, 2026-08-18). The doorway three carry the same latent shape, pre-dating this.
+        # The core door's four, as LITERALS for the same reason as the operator three.
         self.assertEqual(READ_ONLY_TOOLS | self.GOVERNED_TOOLS_COVERED_BY_THIS_SUITE,
                          set(tool_names()) | DOORWAY_NAMES
-                         | {"sweep_gl_entries", "get_accounts_settings", "get_reposts"})
+                         | {"sweep_gl_entries", "get_accounts_settings", "get_reposts"}
+                         | {"pacioli_find", "pacioli_plan", "pacioli_read", "pacioli_act"})
         self.assertEqual(READ_ONLY_TOOLS & self.GOVERNED_TOOLS_COVERED_BY_THIS_SUITE, set())
 
 
@@ -738,6 +749,37 @@ class TestReadOnlyToolsSurviveSealed(unittest.TestCase):
             with self.subTest(tool=name):
                 out = broker.dispatch(name, _read_args(name))
                 self.assertTrue(out["ok"], f"{name} must still succeed while sealed: {out}")
+
+
+class TestCoreDoorIsGatedAtTheOuterLayer(unittest.TestCase):
+    """The core door's governed two (pacioli_plan, pacioli_act) carry pacioli_target at the TOP
+    level, so unlike pacioli_call they are gated by the OUTER dispatch: a sealed store refuses them
+    before the route runs, with the same envelope a direct governed call gets, and the client is
+    never touched. Its reads (pacioli_find, pacioli_read) survive sealed like every other read."""
+
+    def test_plan_and_act_refused_while_sealed_before_the_route_runs(self):
+        client = NoCallClient()
+        broker, _, stores = make_broker(client=client)
+        stores("prod").seal("incident under investigation", source="operator")
+        direct = broker.dispatch("plan_submit", {"name": "SI-1"})
+        for name, args in (("pacioli_plan", {"doctype": "Sales Invoice", "act": "submit", "name": "SI-1"}),
+                           ("pacioli_act", {"doctype": "Sales Invoice", "act": "submit", "name": "SI-1",
+                                            "plan_id": "p", "marker": "m"}),
+                           # a HELD doctype too: the seal outranks the policy's own refusal
+                           ("pacioli_act", {"doctype": "Transaction Deletion Record", "act": "submit",
+                                            "name": "x", "plan_id": "p", "marker": "m"})):
+            with self.subTest(tool=name):
+                out = broker.dispatch(name, args)
+                self.assertFalse(out["ok"])
+                self.assertEqual(out["stage"], "seal", out)
+                self.assertEqual(out["reason"], direct["reason"])
+        self.assertEqual(client.calls, [])
+
+    def test_core_reads_survive_sealed(self):
+        broker, client, stores = make_broker()
+        stores("prod").seal("incident", source="operator")
+        self.assertTrue(broker.dispatch("pacioli_read", {"doctype": "Sales Invoice", "name": "SI-1"})["ok"])
+        self.assertTrue(broker.dispatch("pacioli_find", {"query": "sales invoice"})["ok"])
 
 
 class TestDoorwayDelegatesTheSealGate(unittest.TestCase):

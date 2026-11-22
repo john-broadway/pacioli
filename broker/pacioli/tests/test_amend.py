@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """AMEND core tests — the strip-list is the security surface, so it is pinned field by field:
 identity/audit/state must NOT copy, ``amended_from`` is SET (never copied), and the child tables
 survive with their data but without their row identity."""

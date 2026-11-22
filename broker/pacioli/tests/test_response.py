@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The Close — Half 3, response-to-gap (docs/plans/2026-07-11-close-half3-response-to-gap.md).
 
 Pure-core tests, bench-free. ``build_response`` is a pure consumer of the two dicts Halves 1 and 2

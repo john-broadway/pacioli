@@ -3,7 +3,7 @@
 </div>
 
 <p align="center">
-  <a href="https://github.com/john-broadway/pacioli/actions/workflows/ci.yml"><img src="https://github.com/john-broadway/pacioli/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/john-broadway/pacioli/actions/workflows/codeql.yml"><img src="https://github.com/john-broadway/pacioli/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a> <a href="https://github.com/john-broadway/pacioli/releases"><img src="https://img.shields.io/github/v/release/john-broadway/pacioli" alt="Release"></a> <a href="https://pypi.org/project/pacioli/"><img src="https://img.shields.io/pypi/v/pacioli?label=pypi%20pacioli" alt="PyPI pacioli"></a> <a href="https://pypi.org/project/pacioli-guard/"><img src="https://img.shields.io/pypi/v/pacioli-guard?label=pypi%20pacioli-guard" alt="PyPI pacioli-guard"></a> <a href="broker/pyproject.toml"><img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+"></a> <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License Apache-2.0"></a> <a href="https://scorecard.dev/viewer/?uri=github.com/john-broadway/pacioli"><img src="https://api.scorecard.dev/projects/github.com/john-broadway/pacioli/badge" alt="OpenSSF Scorecard"></a>
+  <a href="https://github.com/john-broadway/pacioli/actions/workflows/ci.yml"><img src="https://github.com/john-broadway/pacioli/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/john-broadway/pacioli/actions/workflows/codeql.yml"><img src="https://github.com/john-broadway/pacioli/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a> <a href="https://github.com/john-broadway/pacioli/releases"><img src="https://img.shields.io/github/v/release/john-broadway/pacioli" alt="Release"></a> <a href="https://pypi.org/project/pacioli/"><img src="https://img.shields.io/pypi/v/pacioli?label=pypi%20pacioli" alt="PyPI pacioli"></a> <a href="https://pypi.org/project/pacioli-guard/"><img src="https://img.shields.io/pypi/v/pacioli-guard?label=pypi%20pacioli-guard" alt="PyPI pacioli-guard"></a> <a href="broker/pyproject.toml"><img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+"></a> <a href="./LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue" alt="License AGPL-3.0-or-later"></a> <a href="https://scorecard.dev/viewer/?uri=github.com/john-broadway/pacioli"><img src="https://api.scorecard.dev/projects/github.com/john-broadway/pacioli/badge" alt="OpenSSF Scorecard"></a>
 </p>
 
 **Least-privilege governance for ERPNext, and a governed agent front door built on top of it — MCP and A2A, one spine behind both. A door admits; it never decides.**
@@ -277,7 +277,7 @@ written up leg-by-leg in [`SCOPED-TOKEN-PROOF.md`](./SCOPED-TOKEN-PROOF.md) (PHA
 
 ## License
 
-Apache-2.0.
+AGPL-3.0-or-later. Copyright 2026 John Broadway. Every release through pacioli 0.40.1 and pacioli-guard 0.17.0 was Apache-2.0 and stays Apache-2.0.
 
 <img src="assets/marks/rule.svg" width="100%" height="10" alt=""/>
 

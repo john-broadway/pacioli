@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The DOORWAY — a searchable catalog instead of 265 resident tool schemas.
 
 WHY THIS EXISTS. The broker's ``tools/list`` payload is ~229k bytes across 265 tools — roughly
@@ -11,7 +11,8 @@ flip — ported here per ``docs/plans/2026-08-08-doorway-design.md``).
 
 Opt-in via ``PACIOLI_TOOLSETS=dynamic``; unset (or ``all``) serves today's surface byte-identical.
 In dynamic mode the door advertises nine tools — this module's three plus the PLAN/PROVE spine —
-and every catalog tool stays callable: advertisement is a context choice, never reachability, and
+and in core mode six (``pacioli.core.door``: four tools over the vendor's table plus the PROVE pair);
+in both, every catalog tool stays callable: advertisement is a context choice, never reachability, and
 never authorization (the guard enforces at the floor regardless of what any door advertises).
 
     pacioli_find_tools(query)       search names + one-line summaries
@@ -236,7 +237,7 @@ DOORWAY_NAMES = frozenset(t["name"] for t in DOORWAY_TOOLS)
 RESIDENT_SPINE = ("plan_submit", "plan_cancel", "plan_cascade_cancel", "plan_reconcile",
                   "prove_verify", "prove_orphans")
 
-_MODES = ("dynamic", "all")
+_MODES = ("dynamic", "all", "core")
 
 
 def served_tools(env=None) -> list[dict]:
@@ -247,6 +248,7 @@ def served_tools(env=None) -> list[dict]:
     - unset / empty / ``all`` → the full catalog, byte-identical to the pre-doorway surface
       (the doorway tools are callable but not advertised — advertisement is not reachability).
     - ``dynamic`` → nine residents: the three doorway tools + :data:`RESIDENT_SPINE`.
+    - ``core`` → six residents: the four core-door tools + the PROVE pair (``pacioli.core.door``).
     - anything else → ``ValueError`` — a typo'd mode REFUSES TO START rather than serving a
       surprise; every door treats this exactly like a transport-config refusal (exit 2).
 
@@ -260,9 +262,14 @@ def served_tools(env=None) -> list[dict]:
     if mode not in _MODES:
         raise ValueError(
             f"PACIOLI_TOOLSETS={raw.strip()!r} is not a mode — valid: dynamic (the 9-tool "
-            "doorway; every catalog tool stays callable through it), all (the full resident "
-            "catalog, the default). Refusing to start rather than serving a surprise.")
+            "doorway; every catalog tool stays callable through it), core (the 6-tool door over "
+            "the vendor's table), all (the full resident catalog, the default). Refusing to start "
+            "rather than serving a surprise.")
+    spine = {t["name"]: t for t in TOOLS}
     if mode == "dynamic":
-        spine = {t["name"]: t for t in TOOLS}
         return DOORWAY_TOOLS + [spine[n] for n in RESIDENT_SPINE]
+    if mode == "core":
+        from pacioli.core.door import CORE_RESIDENT_SPINE, CORE_TOOLS  # lazy: same reason as TOOLS
+
+        return list(CORE_TOOLS) + [spine[n] for n in CORE_RESIDENT_SPINE]
     return list(TOOLS)

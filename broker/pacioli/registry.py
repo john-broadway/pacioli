@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — REGISTRY: the TOML target registry, auth by reference (glue, stdlib-only).
 
 Multi-site/company routing (SPEC §4): a ``pacioli_target=`` travels with each call, and this

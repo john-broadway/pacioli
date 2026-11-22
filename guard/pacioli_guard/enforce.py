@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Guard — frappe glue: enforce a credential's ApiScope at the ``auth_hooks`` chokepoint.
 
 Registered via ``hooks.py`` ``auth_hooks``. Frappe runs auth hooks inside ``validate_auth()``,
@@ -32,6 +32,10 @@ from pacioli_guard.scope import (
     is_permitted,
     is_rate_allowed,
     method_target_resolved,
+    body_presets_save_action,
+    resource_docstatus_target,
+    resource_identity_problem,
+    resource_write_bodies,
 )
 
 # The grant is read from the dedicated **API Key Scope** DocType (one per credential-owning User,
@@ -394,6 +398,52 @@ def check_scope():
             f"({perm_kind}: {perm_target}).",
         )
         return
+    # A body that presets frappe's `_action` turns off the transition check and every hook of the
+    # save it rides (see `body_presets_save_action`). Refused on every route, before the per-route
+    # checks below, whatever the credential was granted.
+    if body_presets_save_action(form):
+        _deny(
+            "out of scope",
+            f"This credential is scoped, and this request carries a document that sets `_action`, "
+            f"which is frappe's own record of what a save is doing and switches off its transition "
+            f"check and hooks ({kind}: {target}). Leave `_action` out of the document.",
+        )
+        return
+    # A resource write whose body moves `docstatus` IS a submit or a cancel (0.18.0, reported
+    # privately as GHSA-7267-5929-54c6). The check above only asked "may this credential write this
+    # DocType", so the `write` verb alone posted a document and the methods allowlist was never
+    # consulted. Required IN ADDITION to the resource permission, judged on every body frappe's
+    # handler could apply (`resource_write_bodies` says why that is more than `form_dict`).
+    write_bodies = ()
+    lifecycle = None
+    if kind == "resource" and req.method in ("POST", "PUT", "PATCH"):
+        write_bodies = resource_write_bodies(req.path, form, _raw_request_body(req))
+        not_an_update = resource_identity_problem(req.path, req.method, write_bodies)
+        if not_an_update:
+            _deny(
+                "out of scope",
+                f"This credential is scoped and may write this resource, but {not_an_update} "
+                f"({kind}: {target}). frappe would not perform it as a plain write to the "
+                f"document the URL names. Send the changed fields only, to that document.",
+            )
+            return
+        lifecycle = resource_docstatus_target(kind, target, req.method, write_bodies)
+        if lifecycle is not None and not is_permitted(scope, *lifecycle, method_resolved=True):
+            if lifecycle[1] is None:
+                why = ("its body could not be read as one document, or carries a docstatus this "
+                       "gate cannot name as a submit or a cancel")
+                need = "Send one JSON object, with docstatus 0, 1 or 2 if it is sent at all."
+            else:
+                why = (f"its body sets docstatus, which frappe performs as a real "
+                       f"{lifecycle[1].rpartition('.')[2]}")
+                need = (f"That needs the method grant {lifecycle[1]!r} as well as the resource "
+                        f"verb; a field write that leaves docstatus out does not.")
+            _deny(
+                "out of scope",
+                f"This credential is scoped and may write this resource, but {why} "
+                f"({kind}: {target}). {need}",
+            )
+            return
     # The workflow gate must judge the REAL target, not classify()'s pre-rewrite one. A body-doctype
     # submit/cancel (frappe.client.submit/.cancel, the Desk cancel, bulk submit/cancel, run_doc_method,
     # savedocs) classifies as a generic method name like "frappe.client.submit" — feeding THAT to the
@@ -403,7 +453,19 @@ def check_scope():
     # ("method","<DocType>.submit") target when body_scoped_target produced one; a body_target that
     # fails closed already denied above (is_permitted), so here it is None or a real rewrite.
     wf_kind, wf_target = (kind, target) if body_target is None else body_target
-    if scope.enforce_workflow and is_docstatus_changing(wf_kind, wf_target, req.method, form):
+    # For a resource write the gate reads the bodies frappe could APPLY, not `form_dict` alone: on
+    # v1 the handler can take the document from a `data` field or from a raw body `form_dict`
+    # never held, and a docstatus hidden there walked past this gate until 0.18.0.
+    # `lifecycle is not None` is the scope check's own reading of the same bodies. The workflow
+    # gate must never read a body more loosely than the gate before it (review, first cut: a
+    # create with docstatus " 1" was a submit to one and a draft to the other).
+    if wf_kind == "resource" and write_bodies:
+        moves_docstatus = lifecycle is not None or any(
+            is_docstatus_changing(wf_kind, wf_target, req.method, b)
+            for b in write_bodies if isinstance(b, dict))
+    else:
+        moves_docstatus = is_docstatus_changing(wf_kind, wf_target, req.method, form)
+    if scope.enforce_workflow and moves_docstatus:
         doctype = docstatus_target_doctype(wf_kind, wf_target, form)
         workflow_name = _active_workflow_name(doctype) if doctype else _WORKFLOW_LOOKUP_FAILED
         if workflow_name is _WORKFLOW_LOOKUP_FAILED or workflow_name:
@@ -440,6 +502,21 @@ def check_scope():
     # is acting, and therefore what it may call at all. A door admits; it does not decide.
 
 
+def _raw_request_body(req):
+    """The request body as text, or ``None`` when it cannot be read.
+
+    frappe's v1 resource handler parses these same bytes (``api/v1.py`` ``get_request_form_data``),
+    so the gate reads them too. werkzeug caches the body on first read and ``make_form_dict`` has
+    already read it by the time ``auth_hooks`` run, so this costs no second read of the stream.
+    ``None`` is never "empty": the pure core refuses a v1 write whose body it could not see.
+    """
+    try:
+        data = req.get_data(as_text=True)
+    except Exception:  # noqa: BLE001 — an unreadable body must refuse, not read as a draft write
+        return None
+    return data if isinstance(data, str) else None
+
+
 def _expiry_instant(row):
     """The marker's expiry as epoch seconds. Prefers ``expires_at_epoch``; falls back to the Datetime.
 
@@ -467,18 +544,62 @@ def _expiry_instant(row):
     return _epoch(row.get("expires_at"))
 
 
-def _consent_record(doctype, docname):
-    """Load the live consent marker for one document, normalised for the pure core.
+_MARKER_FIELDS = ["name", "token_hash", "ref_doctype", "ref_docname", "ref_action",
+                  "expires_at", "expires_at_epoch", "burned", "minted_by"]
+# Stated, never left to frappe's default. That default happens to be newest-first (a bare
+# `creation` sorts DESCENDING outside `db_query_compat`, `database/query.py`), and a gate whose
+# choice of row rests on a default nobody wrote down is one frappe release from choosing another.
+_MARKER_ORDER = "creation desc"
+
+
+def _consent_record(doctype, docname, action=None):
+    """Load the consent marker that bears on one act on one document, normalised for the pure core.
 
     Fails CLOSED: any lookup error reads as "no marker", never as "no gate". The stored fields
     are `ref_doctype`/`ref_docname` because `doctype` is reserved on every frappe doc.
+
+    **Asks for the act (0.18.0).** Until then this read ONE row per document, whichever came
+    first, so a newer marker for another act hid an older live one, and a spent marker could hide
+    a fresh one minted after it. Reported privately by sandhiyabalaji32-tech (GHSA-7p4h-gwc5-w282).
+    Up to three reads, each the newest row of its kind, stopping at the first that finds one:
+
+      1. an UNSPENT marker for this act: the only row that can permit anything;
+      2. any marker for this act, so a spent one still earns "already used";
+      3. any marker for the document, so a marker for another act still earns "authorises X,
+         not Y" instead of "no marker".
+
+    Reads 2 and 3 are there for the refusal text. Whatever row comes back, ``consent_verdict``
+    judges it in full (spent, expired, document, act, minter, token) and the claim burns that same
+    row by name, so no read can produce a permit for the wrong act, a spent marker, another
+    document or a self-minted marker. ``action=None`` skips straight to 3. (This said reads 2 and
+    3 "cannot permit". A review showed one case where read 3 does, correctly: see the first limit.)
+
+    Limits, all of which refuse rather than permit:
+
+      - **An act stored in a non-canonical spelling.** Reads 1 and 2 match ``ref_action`` exactly;
+        the verdict compares it stripped and lowercased. A marker stored as ``" Update"`` is
+        missed by 1 and 2 and found by 3 only when it is the newest row for the document, and if
+        a spent marker for the act exists read 2 returns that one first and the act is refused
+        as already used. Before 0.18.0 the single read would have spent it. frappe's Select
+        validation strips and requires an exact option on every insert outside a Data Import or
+        raw SQL, so this needs a row written around the DocType.
+      - **The newest unspent marker for the act is the one judged.** An older live one behind it
+        is not reached: a second marker minted for the same act, a newer expired one, or a newer
+        one minted by the caller itself all refuse the older marker's token. True before 0.18.0
+        too. Creating a marker needs the DocType's create permission (System Manager).
+        Choosing the row by the presented token's hash would close both limits; not built.
     """
+    base = {"ref_doctype": doctype, "ref_docname": docname}
+    wanted = [base]
+    if action:
+        wanted = [dict(base, ref_action=action, burned=0), dict(base, ref_action=action), base]
     try:
-        row = frappe.db.get_value(
-            CONSENT_DOCTYPE, {"ref_doctype": doctype, "ref_docname": docname},
-            ["name", "token_hash", "ref_doctype", "ref_docname", "ref_action",
-             "expires_at", "expires_at_epoch", "burned", "minted_by"],
-            as_dict=True)
+        row = None
+        for filters in wanted:
+            row = frappe.db.get_value(CONSENT_DOCTYPE, filters, _MARKER_FIELDS, as_dict=True,
+                                      order_by=_MARKER_ORDER)
+            if row:
+                break
     except Exception:  # noqa: BLE001 — a broken lookup must deny, not open the gate
         return None
     if not row:

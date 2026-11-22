@@ -3,6 +3,141 @@
 Least-privilege API capability scoping for Frappe/ERPNext. Honest pre-1.0 semver.
 Distribution name `pacioli-guard`; Frappe app / import module `pacioli_guard`.
 
+## 0.18.0 - 2026-11-22 - the floor sees edits and hidden submits
+
+MINOR. **Four security fixes from outside reports (GHSA-7267, GHSA-wc4v with GHSA-9h6v, GHSA-mqmm,
+GHSA-7p4h), one new act, requests newly refused for a scoped credential, and the same fail-OPEN
+upgrade step as 0.17.0.** Reported privately through
+GitHub, with reproductions, by hariprasanth9317-tech, sandhiyabalaji32-tech and nikhilagrawalsf.
+Thank you: every finding below that carries a name was theirs first.
+
+- **License: Apache-2.0 to AGPL-3.0-or-later.** John's call, 2026-10-31: stop people from taking
+  it closed. Every release through 0.17.0 was Apache-2.0 and stays Apache-2.0. `LICENSE` and
+  `license.txt` are the GNU text byte for byte; `app_license` follows.
+- **A resource write that moves `docstatus` needs the submit or cancel grant** (GHSA-7267-5929-54c6,
+  reported by hariprasanth9317-tech). A credential holding the resource `write` or `create` verb
+  and no `<DocType>.submit` grant could post or reverse a document with a plain REST body carrying
+  `docstatus` 1 or 2; the methods allowlist was never asked. `check_scope` now requires the method
+  grant as well as the verb, judged on every body frappe's handler could apply: on v1 that is
+  more than `form_dict` (a `data` field, or a JSON body under a non-JSON content type), and it
+  falls back to `form_dict` when frappe's own parse fails, so both candidates are judged. The
+  `enforce_workflow` gate reads the same bodies.
+- **A resource update must be an update of the document its path names.** Found by our own
+  reviews while fixing the above. frappe applies the body with `doc.update()`, which sets `name`,
+  `__islocal` and `_action` like any other key: `{"__islocal": 1}` on a posted document inserted a
+  posted COPY, and `{"_action": "discard"}` put a posted document back to draft with its ledger
+  rows left in place. Refused now: any body key starting with `__`, a `name` other than the
+  document in the path, and `_action` on a create or an update.
+- **No route may preset frappe's `_action`.** frappe 16.50.0 and later drop a client's `_action`
+  themselves (it joined `RESERVED_KEYWORDS` in frappe commit `3810616f86`, 2026-10-01, with no
+  frappe advisory), so on those releases none of the bodies below reaches a save carrying it; the
+  refusals here are what covers frappe 16 before 16.50.0, and stay as a belt after it. Driven on
+  16.35.0 (holes open, then closed by this guard) and on 16.60.2 (closed by frappe and by this
+  guard). Found by review after the resource routes were closed:
+  `frappe.client.submit`, `insert` and `save`, `savedocs` and `run_doc_method` take a whole
+  document in the body, and frappe keeps an `_action` key from it. Preset to "discard", frappe
+  skips its transition check (and the submit or cancel permission check inside it) and runs no
+  before/on hook, so a seat holding the submit grant could mark a document submitted with no
+  consent marker and no ledger rows. Refused now at the request on every route, and, for a
+  consent-gated seat on paths the request check never sees (OAuth, desk, jobs), at the document:
+  a new `on_change` handler, the one hook frappe still runs, refuses a save that carries it.
+  frappe's own `discard()` writes with `db_set` and never saves, so it passes. The row is already
+  written when `on_change` runs, and `frappe.client.bulk_update` catches every error per document
+  and then commits, so the handler rolls the transaction back itself before it refuses; anything
+  the same transaction wrote ahead of that save goes with it. frappe turns transaction control off
+  inside every document hook, so a plain `rollback()` there does nothing (the first version of this
+  fix did exactly that, passed its unit tests and failed on the lab); the handler lowers frappe's
+  counter around its rollback, as frappe's own `sql_ddl` does. When the rollback cannot be
+  confirmed (a frappe without that counter, or a rollback that raised, whether before or after its
+  SQL ran) it refuses the transaction's next commit instead: one commit, so a caller that catches
+  that refusal and commits again gets through; on the request path it surfaces as a bare 500 and
+  the worker keeps its row locks until its next request. A document's OWN `on_change` runs before
+  this app's and may commit; a row committed there is not undone. A full rollback also ends
+  every savepoint a caller higher up holds, so such a caller fails with its own error, and what
+  already left the database (an email sent, a search-index queue entry) is not undone. (An insert carrying "discard" never
+  reaches the handler: frappe's `check_if_latest` raises first.) Lab-driven on frappe 16.35.0 /
+  ERPNext 16.36.0: on the previous build, a gated seat with no marker marked Journal Entries
+  submitted with no ledger rows through `frappe.client.submit`, `save` and `savedocs`, by api key
+  and by desk session, and changed a locked field on a posted entry; on this one every case was
+  refused and a consented submit still posted.
+- **Only a stored draft may be discarded.** Found by review: frappe's whitelisted
+  `Document.discard()` checks the docstatus of the document object it was handed, and
+  `run_doc_method` builds that object from the client's body. A body that describes a submitted
+  document as a draft AND presets `_action: "discard"` (which skips the transition check
+  `run_doc_method` runs first) passed, and `discard` then cancelled the posted document with
+  `db_set`: no `before_cancel`, no consent, its ledger rows left live. Lab-driven on frappe 16.35.0:
+  a desk user with no grant did it to a posted Journal Entry through v1 and v2 `run_doc_method`,
+  and so did a consent-gated seat on a desk session. (Whether that desk user also held the cancel
+  permission was not read, so this does not show a user WITHOUT cancel doing it.) A scoped api-key credential
+  was already refused by the request scan. A new `before_discard` handler reads the stored
+  docstatus and refuses before anything is written, for every principal, since it is frappe's own
+  rule ("Only draft documents can be discarded") checked on the wrong object. A real draft
+  discards as before. frappe fixed the cause in 16.50.0 (the `_action` reservation above): on
+  16.60.2 the same body is refused by frappe's own transition check, stock and with this guard,
+  for a user that may write but not submit or cancel. The handler stays for frappe 16 before
+  16.50.0 and as a belt.
+- **A v2 PUT, PATCH or DELETE on a path ending `/method/<m>` is a resource write**, not a call to
+  `<m>`: frappe routes that shape to `update_doc`/`delete_doc` for those verbs, so a credential
+  holding only the method grant could write a document whose name ends that way. Predates this
+  release; found by review.
+- **The fourth consent act: `update`** (GHSA-wc4v-5w73-74w4, reported first by
+  sandhiyabalaji32-tech; GHSA-9h6v-f656-p77h, with a run reproduction, by nikhilagrawalsf). A
+  consent-gated seat could change the allow-on-submit fields of a posted document with nothing
+  asked. `doc_events["*"]["before_update_after_submit"]` -> `pacioli_guard.act.before_update_after_submit`
+  now needs an `update` marker, minted by a different hand, bound to that document, single-use.
+  An edit ERPNext makes inside a governed submit or cancel rides that act; a direct edit, or one
+  under a draft save, a delete or another consented edit, does not. Stated residual: one submit
+  marker also covers the submitted Payment Entry or Journal Entry an invoice's advances table
+  names. A consented edit can itself cause a ledger repost (ERPNext creates and submits a
+  `Repost Accounting Ledger` when an account field changes). The same gate meets the parent
+  re-save frappe performs after a v1/v2 child-row update (GHSA-mqmm-jvxm-423w, reported by
+  sandhiyabalaji32-tech): a grant on a child DocType no longer lets a consent-gated seat change a
+  submitted parent with nothing asked. The scope gate still does not see that re-save (below).
+- **The marker lookup asks for the act** (GHSA-7p4h-gwc5-w282, reported by sandhiyabalaji32-tech).
+  It read one row per document, so with several acts on one document a newer marker for one act
+  hid an older live one for another. The report said the OLDEST row always won; frappe in fact
+  sorts a bare `creation` descending, so the newest was read and the plain submit-then-cancel flow
+  worked. The gap behind it was real, and so was the report's point that the test double held one
+  marker per document and could not show the choice. The lookup now reads newest first with a
+  stated order: an unspent marker for the act, then any for the act, then any for the document.
+- `CONSENT_ACTS` and the `Pacioli Consent Marker.ref_action` Select gain `update`;
+  `consent_status.gate_registered` counts the three new handlers (`before_update_after_submit`,
+  `on_change`, `before_discard`).
+- 🔴 **Upgrade: `bench migrate` AND `bench clear-cache`, and skipping both is fail-OPEN again**:
+  the cached hook registry has none of the new keys, frappe never calls those handlers, and a
+  gated seat's edit of a posted document stays ungated, as does a discard of a posted document.
+  Read `gate_registered`.
+- **Newly refused for a scoped api-key credential**, so check your clients: a resource write whose
+  body carries `docstatus` 1 or 2 without the matching method grant (a whole posted document PUT
+  back with its `docstatus` reads as a submit; send the changed fields only); a body key starting
+  with `__`; a body `name` that is not the document in the URL; `_action` in any write, or in
+  any document a method call carries (text under `doc`, `docs`, `document` or `data` that opens
+  `{` or `[` and does not parse counts as carrying it; free text elsewhere does not). For every
+  principal: a `discard` of a document whose stored docstatus is not 0. For a scoped api-key
+  credential: `frappe.client.set_value` with `fieldname` `_action`.
+- Not covered and stated in `SECURITY.md`: a child row named in a body that belongs to another
+  document; the parent re-save after a child-row update; frappe 16.56.0+'s `/api/v2/mcp` endpoint
+  for OAuth Bearer callers (an api-key credential is refused there); an `_action` nested deeper than
+  the documents directly under a request's keys, which no frappe core method reads but an app's own
+  method could; a preset `_action` on a Single, which skips that save's hooks (Singles are not
+  submittable); on frappe before 16.50.0 only, `frappe.client.set_value` with `fieldname` as
+  JSON naming `_action` and `docstatus` together (refused by stock frappe 16.60.2 in the lab), which
+  lets any user with write permission and no grant set docstatus 1
+  or 2 with no submit or cancel permission check and no `on_submit`/`on_cancel` (frappe's own;
+  refused for a scoped api-key credential by the scan, and for a consent-gated seat by
+  `on_change`; the same body reaches a save through a v1 resource `PUT`, `frappe.client.save` and
+  `bulk_update` too); `frappe.client.bulk_update` moving a draft's child row onto a submitted
+  document by its `parent`, which a consent-gated principal off the api-key path can do with no
+  marker, and a v1 `POST` of a new child row naming a submitted parent, both driven on frappe
+  16.60.2 (a fix is planned for a later release; see SECURITY.md (7)); a resource update's
+  parent re-save reaching a document of a DocType outside the credential's allowlist.
+- **Driven on a lab bench** (frappe 16.35.0, erpnext 16.36.0, Journal Entry), 0.17.0 first as the
+  control and then this release: on 0.17.0 every reported request succeeded; here every one is
+  refused, an ordinary draft write and a whole-document PUT still pass, a governed submit and
+  cancel complete, and an account edit under an `update` marker reposts. Not driven there: the
+  advances-table ride, a document re-saving itself inside its own submit, the bank-transaction
+  cancel cascade.
+
 ## 0.17.0 - 2026-10-05 - the floor sees a delete
 
 MINOR. **One new gate, one new act, and an upgrade step that fails OPEN if skipped.**

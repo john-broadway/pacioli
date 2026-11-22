@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The REST door: routing, refusals, and the spine underneath.
 
 John, 2026-08-17: *"every door governed"*. This is the fourth door, and it was built after a night

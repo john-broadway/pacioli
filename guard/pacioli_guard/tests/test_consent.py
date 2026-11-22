@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Consent verification at the floor.
 
 Why this gate exists: on 2026-07-25 the live bench proved that scoping the broker's own

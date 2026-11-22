@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Bench-free tests for the off-box PROVE anchor — the pure record/compare core (pacioli.anchor)
 and the `pacioli anchor write` / `pacioli anchor check` CLI glue.
 

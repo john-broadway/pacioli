@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The HTTP door, driven through the REAL SDK stack on whichever mcp major is installed.
 
 Every other HTTP test in this suite runs against a ``FakeManager``. That made the perimeter and

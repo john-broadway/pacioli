@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — the A2A door (glue): the first non-MCP door.
 
 **A DOOR ADMITS; IT NEVER DECIDES** (the doors ruling). Stdio and streamable-HTTP are both MCP;

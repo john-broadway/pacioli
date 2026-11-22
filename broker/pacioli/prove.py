@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — PROVE: the journal (pure hash-chained, HMAC-keyed receipt book).
 
 This is the *giornale*: every mutation in fixed form, chronological, permanent — the intent receipt

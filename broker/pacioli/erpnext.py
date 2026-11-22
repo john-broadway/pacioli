@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """Pacioli Broker — ERPNEXT: the REST client (glue, stdlib-only).
 
 Thin, shape-pinned calls to a bench's documented REST surface, over an **injected transport**
@@ -9705,7 +9705,7 @@ def _list_fields(doctype, party_field, date_field="posting_date"):
     """The list-tier field set. For every doctype except Journal Entry, Material Request, Stock
     Entry, and Quotation (the four doctypes forcing their own branch, below): the doctype's own
     party field spliced in (``customer`` for Sales Invoice, ``supplier`` for Purchase Invoice,
-    ``party`` for Payment Entry, ``customer`` again for Sales Order, ``supplier`` again for
+    ``customer`` again for Sales Order, ``supplier`` again for
     Purchase Order, ``customer`` again for Delivery Note, ``supplier`` again for Purchase
     Receipt, ``supplier`` again for Supplier Quotation) alongside the original baked list,
     unchanged from before this breadth increment.
@@ -10304,6 +10304,12 @@ def _list_fields(doctype, party_field, date_field="posting_date"):
     if doctype == JOURNAL_ENTRY:
         return ["name", "docstatus", "voucher_type", "company", "posting_date",
                 "total_debit", "total_credit", "modified"]
+    if doctype == PAYMENT_ENTRY:
+        # No grand_total on payment_entry.json (v16); asking for it is HTTP 417 on a real bench
+        # (lab, 2026-10-26). Its money is paid_amount/received_amount; payment_type and
+        # party_type say which way it moved.
+        return ["name", "status", "docstatus", "payment_type", "party_type", party_field,
+                "company", date_field, "paid_amount", "received_amount", "modified"]
     if doctype == MATERIAL_REQUEST:
         return ["name", "status", "docstatus", "material_request_type", "company", date_field,
                 "per_ordered", "per_received", "modified"]

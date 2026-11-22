@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The clock-domain seam (``pacioli.clock``) — pure site-clock <-> store-clock conversion.
 
 Born from the 2026-07-16 bench finding (pins G3): one ``--since/--until`` window string was

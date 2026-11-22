@@ -1,5 +1,5 @@
 # Copyright (c) 2026, John Broadway and contributors
-# License: Apache-2.0
+# License: AGPL-3.0-or-later
 """The door, driven through the REAL mcp SDK, on whichever major is installed.
 
 Every other adapter test uses fakes, and fakes are why this defect class keeps recurring: mcp 2.0.0

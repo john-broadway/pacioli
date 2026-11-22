@@ -39,7 +39,7 @@
   {
    "fieldname": "ref_action",
    "fieldtype": "Select",
-   "options": "\nsubmit\ncancel\ndelete",
+   "options": "\nsubmit\ncancel\ndelete\nupdate",
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Act",
